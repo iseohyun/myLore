@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "myLore",
+  "version": "0.1.0",
+  "identifier": "com.iseohyun.mylore",
+  "build": {
+    "beforeBuildCommand": "npm.cmd run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "myLore — 지식 · 일기 · 프로젝트 · 라이프로그 통합 관리",
+        "width": 1440,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+out/
+src-tauri/target/
+src-tauri/gen/
+.mylore/
+*.exe
+*.dll
+*.pdb
+*.log
+.DS_Store
