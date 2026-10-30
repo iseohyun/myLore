@@ -11,6 +11,7 @@ import {
   LifelogMessage,
   MediaInboxItem,
   MobilePairingPayload,
+  MobileSyncProgressPayload,
   MyLoreAppSettings,
   ScanProgressPayload,
   SearchMatchItem,
@@ -741,6 +742,20 @@ export async function triggerFullMobileResync(): Promise<MobilePairingPayload> {
     return await invoke<MobilePairingPayload>('trigger_full_mobile_resync');
   }
   return await getMobilePairingInfo();
+}
+
+export async function triggerSequentialMobileSync(): Promise<string> {
+  if (isTauriEnv()) {
+    return await invoke<string>('trigger_sequential_mobile_sync');
+  }
+  return 'Tauri 환경에서만 동작합니다.';
+}
+
+export async function getMobileSyncProgressState(): Promise<MobileSyncProgressPayload | null> {
+  if (isTauriEnv()) {
+    return await invoke<MobileSyncProgressPayload>('get_mobile_sync_progress_state');
+  }
+  return null;
 }
 
 export async function getAllLifelogMessages(

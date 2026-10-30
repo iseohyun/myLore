@@ -6,6 +6,33 @@ export interface MarkdownRendererProps {
   onUpdateTaskStatus: (lineIndex: number, nextCode: TaskPriorityCode) => void;
   onNavigateUuid: (uuid: string) => void;
   onOpenExternalUrl?: (url: string) => void;
+  activeAudioLineIndex?: number | null;
+  onSeekAudioTime?: (seconds: number, lineIndex: number) => void;
+  enableAudioTimestampSync?: boolean;
+}
+
+/**
+ * 문장 내 `[00:00:00]` (`[HH:MM:SS]`) 또는 `[MM:SS]` 오프셋 시각을 초(seconds) 단위로 파싱합니다.
+ */
+export function parseAudioOffsetSecondsFromLine(line: string): number | null {
+  const hmsMatch = line.match(/\[(\d{1,2}):(\d{2}):(\d{2})\]/);
+  if (hmsMatch) {
+    const h = parseInt(hmsMatch[1], 10);
+    const m = parseInt(hmsMatch[2], 10);
+    const s = parseInt(hmsMatch[3], 10);
+    if (!Number.isNaN(h) && !Number.isNaN(m) && !Number.isNaN(s)) {
+      return h * 3600 + m * 60 + s;
+    }
+  }
+  const msMatch = line.match(/\[(\d{1,2}):(\d{2})\]/);
+  if (msMatch) {
+    const m = parseInt(msMatch[1], 10);
+    const s = parseInt(msMatch[2], 10);
+    if (!Number.isNaN(m) && !Number.isNaN(s)) {
+      return m * 60 + s;
+    }
+  }
+  return null;
 }
 
 type TableAlignment = 'left' | 'center' | 'right' | undefined;
@@ -244,14 +271,23 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
   onUpdateTaskStatus,
   onNavigateUuid,
   onOpenExternalUrl,
+  activeAudioLineIndex,
+  onSeekAudioTime,
+  enableAudioTimestampSync,
 }) => {
   const lines = bodyText.replace(/\r\n/g, '\n').split('\n');
   const elements: React.ReactNode[] = [];
+  let inScriptSection = false;
 
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const trimmed = line.trim();
+    if (/^#{1,4}\s+.*스크립트/.test(trimmed)) {
+      inScriptSection = true;
+    } else if (/^#{1,3}\s+/.test(trimmed) && !trimmed.includes('스크립트')) {
+      inScriptSection = false;
+    }
 
     // 1. 빈 줄
     if (trimmed === '') {
@@ -445,10 +481,6 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         i++;
       }
       const quoteEnd = Math.max(quoteStart, i - 1);
-      const joinedQuote = quoteLines.join('\n');
-      const audioMatch = joinedQuote.match(
-        /`audio\/([^`]+\.(?:m4a|amr|mp3|wav|ogg|aac))`/i
-      );
       elements.push(
         <blockquote
           key={`bq-${quoteStart}`}
@@ -461,39 +493,6 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
               {renderInlineMarkdown(qLine, onNavigateUuid, onOpenExternalUrl)}
             </p>
           ))}
-          {audioMatch && (
-            <div
-              style={{
-                marginTop: '10px',
-                padding: '10px 12px',
-                borderRadius: '8px',
-                background: 'rgba(15, 23, 42, 0.55)',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: '0.76rem',
-                  fontWeight: 700,
-                  color: '#38bdf8',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <span>🔊 통화 녹음 원본 재생 ({audioMatch[1]})</span>
-              </div>
-              <audio
-                controls
-                preload="metadata"
-                style={{ width: '100%', height: '34px' }}
-                src={`http://127.0.0.1:18443/api/v1/local-media?sub=calls/audio&file=${encodeURIComponent(audioMatch[1])}`}
-              />
-            </div>
-          )}
         </blockquote>
       );
       continue;
@@ -593,9 +592,36 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
             );
             const mediaFileName = mediaFileMatch ? mediaFileMatch[1].trim() : '';
 
+            const audioOffsetSec =
+              enableAudioTimestampSync || inScriptSection
+                ? parseAudioOffsetSecondsFromLine(it.text)
+                : null;
+            const isAudioCue = audioOffsetSec !== null && Boolean(onSeekAudioTime);
+            const isActiveAudioCue =
+              isAudioCue && activeAudioLineIndex === it.idx;
+
             return (
               <li
                 key={`li-${it.idx}`}
+                data-source-line={it.idx}
+                data-source-line-end={it.idx}
+                data-audio-line={isAudioCue ? it.idx : undefined}
+                data-audio-active={isActiveAudioCue ? 'true' : undefined}
+                className={
+                  isAudioCue
+                    ? `md-audio-cue-line ${isActiveAudioCue ? 'active' : ''}`
+                    : undefined
+                }
+                onClick={
+                  isAudioCue && onSeekAudioTime && audioOffsetSec !== null
+                    ? () => onSeekAudioTime(audioOffsetSec, it.idx)
+                    : undefined
+                }
+                title={
+                  isAudioCue
+                    ? '클릭하여 이 문장 위치부터 음성 재생'
+                    : undefined
+                }
                 style={{
                   marginLeft: `${it.indent * 16}px`,
                   listStyleType: isImgMeta || isVidMeta ? 'none' : undefined,
@@ -748,8 +774,32 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
     }
 
     // 12. 일반 문단
+    const pAudioOffset =
+      enableAudioTimestampSync || inScriptSection
+        ? parseAudioOffsetSecondsFromLine(line)
+        : null;
+    const isPAudioCue = pAudioOffset !== null && Boolean(onSeekAudioTime);
+    const isPActiveCue = isPAudioCue && activeAudioLineIndex === i;
+    const pLineIdx = i;
     elements.push(
-      <p key={`p-${i}`} data-source-line={i} data-source-line-end={i}>
+      <p
+        key={`p-${pLineIdx}`}
+        data-source-line={pLineIdx}
+        data-source-line-end={pLineIdx}
+        data-audio-line={isPAudioCue ? pLineIdx : undefined}
+        data-audio-active={isPActiveCue ? 'true' : undefined}
+        className={
+          isPAudioCue
+            ? `md-audio-cue-line ${isPActiveCue ? 'active' : ''}`
+            : undefined
+        }
+        onClick={
+          isPAudioCue && onSeekAudioTime && pAudioOffset !== null
+            ? () => onSeekAudioTime(pAudioOffset, pLineIdx)
+            : undefined
+        }
+        title={isPAudioCue ? '클릭하여 이 문장 위치부터 음성 재생' : undefined}
+      >
         {renderInlineMarkdown(line, onNavigateUuid, onOpenExternalUrl)}
       </p>
     );

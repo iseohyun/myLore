@@ -64,9 +64,11 @@ export interface ParsedTaskItem {
   subLines: string[];
 }
 
+export type LifelogSourceType = 'kakaotalk' | 'sms' | 'notification' | 'call' | 'recording' | 'health';
+
 export interface LifelogMessage {
   id: number;
-  source: 'kakaotalk' | 'sms' | 'notification' | 'call';
+  source: LifelogSourceType;
   roomOrSender: string;
   sender: string;
   message: string;
@@ -266,6 +268,37 @@ export interface CallPlayInfoPayload {
   fileName: string;
   contactDisplay: string;
   hasTranscript: boolean;
+  audioBase64?: string;
+  mimeType?: string;
 }
+
+export interface MobileSyncSegment {
+  kind: 'skip' | 'download';
+  widthPct: number;
+}
+
+export interface MobileSyncStepSummary {
+  key: string;
+  label: string;
+  status: 'pending' | 'running' | 'done';
+  percent: number;
+  totalCount: number;
+  skippedCount: number;
+  downloadedCount: number;
+  segments: MobileSyncSegment[];
+}
+
+export interface MobileSyncProgressPayload {
+  isRunning: boolean;
+  isCompleted: boolean;
+  currentStepIndex: number;
+  totalSteps: number;
+  currentKey: string;
+  currentLabel: string;
+  currentPercent: number;
+  queuedJobs?: number;
+  steps: MobileSyncStepSummary[];
+}
+
 
 

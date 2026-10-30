@@ -13,8 +13,10 @@ import {
   FinanceTransaction,
   GeminiApiKeyStatus,
   LifelogMessage,
+  LifelogSourceType,
   MediaInboxItem,
   MobilePairingPayload,
+  MobileSyncProgressPayload,
   MyLoreAppSettings,
   OpenDocumentTab,
   ScanProgressPayload,
@@ -42,6 +44,7 @@ import {
   getLifelogForDate,
   getMobileContactsMap,
   getMobilePairingInfo,
+  getMobileSyncProgressState,
   getScanProgress,
   getVaultTemplates,
   getVirtualTree,
@@ -95,6 +98,7 @@ import {
 } from './utils/markdownAutoFormat';
 import {
   MarkdownPreviewRenderer,
+  parseAudioOffsetSecondsFromLine,
   scrollPreviewPaneToSourceLine,
 } from './utils/markdownRenderer';
 
@@ -679,7 +683,15 @@ export default function App() {
     fullPath: string;
     fileName: string;
     contactDisplay: string;
+    autoPlay?: boolean;
   } | null>(null);
+  const [activeAudioLineIndex, setActiveAudioLineIndex] = useState<number | null>(
+    null
+  );
+  const docTabsBarRef = useRef<HTMLDivElement | null>(null);
+  const callAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastEditorKeyPressMsRef = useRef<number>(0);
+  const pendingSeekSecondsRef = useRef<number | null>(null);
   const [isTranscribingSingleCall, setIsTranscribingSingleCall] =
     useState(false);
 
@@ -687,16 +699,18 @@ export default function App() {
   const [lifelogDashboardTab, setLifelogDashboardTab] = useState<
     'settings' | 'mobile'
   >('settings');
-  const [mobileSidebarTab, setMobileSidebarTab] = useState<
-    'kakaotalk' | 'notification' | 'sms' | 'call'
-  >('kakaotalk');
+  const [mobileSidebarTab, setMobileSidebarTab] = useState<LifelogSourceType>(
+    'kakaotalk'
+  );
   const [allLifelogMessages, setAllLifelogMessages] = useState<
     LifelogMessage[]
   >([]);
   const [mobilePersonFilter, setMobilePersonFilter] = useState<string>('');
   const [mobileSourceFilter, setMobileSourceFilter] = useState<
-    'all' | 'kakaotalk' | 'notification' | 'sms' | 'call'
+    'all' | LifelogSourceType
   >('all');
+  const [mobileSyncProgress, setMobileSyncProgress] =
+    useState<MobileSyncProgressPayload | null>(null);
   const [financeSubTab, setFinanceSubTab] = useState<'all' | 'card' | 'bank'>(
     'all'
   );
@@ -704,7 +718,7 @@ export default function App() {
     x: number;
     y: number;
     personName: string;
-    sourceKey: 'kakaotalk' | 'notification' | 'sms' | 'call';
+    sourceKey: LifelogSourceType;
     sourceLabel: string;
     messageItem: LifelogMessage;
   } | null>(null);
@@ -724,25 +738,60 @@ export default function App() {
     return digits;
   };
 
-  // 전화번호를 기본으로 하되, 연락처 주소록에 이미 저장된 번호라면 저장된 이름을 반환
+  // 전화번호를 기본으로 하되, 연락처 주소록에 이미 저장된 번호라면 저장된 이름을 반환하며
+  // `이름_전화번호_날짜` 포맷일 경우 전화번호와 날짜를 제거하고 순수 `이름`만 추출합니다.
   const resolveContactName = (rawNumberOrName: string): string => {
-    const trimmed = (rawNumberOrName || '').trim();
-    if (!trimmed) return '알수없음';
-    if (contactsMap[trimmed]) return contactsMap[trimmed];
-    const digits = normalizePhoneDigits(trimmed);
+    let s = (rawNumberOrName || '')
+      .trim()
+      .replace(/^(통화\s*녹음[_\s]*|Call_)/i, '')
+      .replace(/\s*\([0-9+\-\s]{7,}\)\s*$/, '')
+      .replace(/_(\d{8})_(\d{6})$/, '')
+      .replace(/_(\d{6})_(\d{6})$/, '')
+      .replace(/_(\d{8,14})$/, '')
+      .trim();
+    if (!s) return '알수없음';
+
+    if (s.includes('_')) {
+      const parts = s
+        .split('_')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      if (parts.length > 0) {
+        const first = parts[0];
+        const firstDigits = normalizePhoneDigits(first);
+        const isFirstPhone =
+          firstDigits.length >= 7 && /^[0-9+\-]+$/.test(first);
+        if (!isFirstPhone) {
+          return contactsMap[first] || first;
+        }
+        if (contactsMap[first]) return contactsMap[first];
+        if (contactsMap[firstDigits]) return contactsMap[firstDigits];
+        return first;
+      }
+    }
+
+    if (contactsMap[s]) return contactsMap[s];
+    const digits = normalizePhoneDigits(s);
     if (digits.length >= 8 && contactsMap[digits]) {
       return contactsMap[digits];
     }
-    return trimmed;
+    return s;
   };
 
-  // 현재 편집/열람 중인 모바일 문서의 카테고리('kakaotalk' | 'notification' | 'sms' | 'call' | null) 판별
-  const currentDocMobileSource = useMemo<
-    'kakaotalk' | 'notification' | 'sms' | 'call' | null
-  >(() => {
+  // 현재 편집/열람 중인 모바일 문서의 카테고리('kakaotalk' | 'notification' | 'sms' | 'call' | 'recording' | 'health' | null) 판별
+  const currentDocMobileSource = useMemo<LifelogSourceType | null>(() => {
     if (!currentDoc) return null;
     const cat = (currentDoc.frontmatter['category'] || '').toLowerCase();
     const fp = currentDoc.fullPath;
+    if (
+      cat === 'mobile/recordings' ||
+      /[\\/]mobile[\\/]recordings[\\/]/i.test(fp)
+    ) {
+      return 'recording';
+    }
+    if (cat === 'mobile/health' || /[\\/]mobile[\\/]health[\\/]/i.test(fp)) {
+      return 'health';
+    }
     if (cat === 'mobile/calls' || /[\\/]mobile[\\/]calls[\\/]/i.test(fp)) {
       return 'call';
     }
@@ -763,12 +812,14 @@ export default function App() {
 
   const isCurrentDocMobileLifelog = Boolean(currentDocMobileSource);
   const isCurrentDocSms = currentDocMobileSource === 'sms';
-  const isCurrentDocCall = currentDocMobileSource === 'call';
+  const isCurrentDocCall =
+    currentDocMobileSource === 'call' || currentDocMobileSource === 'recording';
 
-  // 휴대폰 데이터 대쉬보드 탭이거나 모바일 라이프로그(카톡/알림/문자/통화) 문서를 에디터 영역에서 열람 중일 때 4탭 사이드바 유지
+  // 라이프로그 대쉬보드(설정 탭이든 휴대폰데이터 탭이든 무관)가 활성화되었거나
+  // 모바일 라이프로그(카톡/알림/문자/통화/녹음/헬스) 문서를 에디터 영역에서 열람 중일 때 6탭 사이드바 유지
   const isMobileDataSidebarMode =
-    (activeTabPath === 'mylore://dashboard/lifelog' &&
-      lifelogDashboardTab === 'mobile') ||
+    activeTabPath === 'mylore://dashboard/lifelog' ||
+    viewMode === 'dashboard_lifelog' ||
     isCurrentDocMobileLifelog;
 
   // 현재 열람/편집 중인 모바일 문서에 해당하는 사이드바 항목인지 판별
@@ -788,14 +839,26 @@ export default function App() {
         .replace(/\s*\([^)]*\)/g, '')
         .trim();
 
-    if (msg.source === 'call') {
+    if (msg.source === 'call' || msg.source === 'recording') {
       const rawAtt = (msg.attachmentUuid || '')
         .replace(/^transcribed:/, '')
         .replace(/^pending_transcript:/, '')
         .trim();
       if (fmAudio && rawAtt && rawAtt === fmAudio) return true;
       const attStem = rawAtt.replace(/\.(m4a|mp3|amr|wav|ogg|aac)$/i, '').trim();
-      if (attStem && attStem === docStem) return true;
+      if (attStem && (attStem === docStem || docStem.includes(attStem))) {
+        return true;
+      }
+
+      if (msg.source === 'recording') {
+        const msgRoom = (msg.roomOrSender || '').trim();
+        return Boolean(
+          docStem &&
+            (msgRoom === docStem ||
+              docStem.includes(msgRoom) ||
+              msgRoom.includes(docStem))
+        );
+      }
 
       const rawTarget =
         msg.sender && msg.sender !== '통화녹음' && !msg.sender.includes('통화')
@@ -805,7 +868,10 @@ export default function App() {
       const msgRawContact = stripCallDecorations(rawTarget);
 
       const stemContact = stripCallDecorations(
-        docStem.replace(/^통화\s*녹음\s*/i, '').replace(/_\d{6}_\d{6}$/, '')
+        docStem
+          .replace(/^통화\s*녹음\s*/i, '')
+          .replace(/_\d{6}_\d{6}$/, '')
+          .replace(/_\d{14}$/, '')
       );
       const docContact = stripCallDecorations(fmContact || stemContact);
       const resolvedDocContact = stripCallDecorations(
@@ -856,7 +922,7 @@ export default function App() {
       );
     }
 
-    if (msg.source === 'notification') {
+    if (msg.source === 'notification' || msg.source === 'health') {
       const ym = docStem.slice(0, 7);
       return Boolean(ym) && msg.sentDate.startsWith(ym);
     }
@@ -886,11 +952,14 @@ export default function App() {
   }, [currentDoc?.fullPath, currentDocMobileSource]);
 
   useEffect(() => {
-    if (isMobileDataSidebarMode) {
+    if (
+      activeTabPath === 'mylore://dashboard/lifelog' ||
+      isMobileDataSidebarMode
+    ) {
       setRightSidebarOpen(true);
       refreshAllLifelogMessages();
     }
-  }, [isMobileDataSidebarMode]);
+  }, [activeTabPath, isMobileDataSidebarMode]);
 
   // 활성화된 파일(모바일 라이프로그 또는 일반 폴더 트리 문서)의 사이드바 목록 위치로 자동 스크롤
   useEffect(() => {
@@ -939,6 +1008,229 @@ export default function App() {
     }
   }, [currentDoc?.fullPath, isCurrentDocMobileLifelog, isCurrentDocSms, smsRawEditMode]);
 
+  // 편집기 상단 제목 탭 바(.doc-tabs-bar)에서 현재 활성화된 문서 탭이 항상 보이도록 부드럽게 스크롤 애니메이션 수행
+  useEffect(() => {
+    if (!activeTabPath || !docTabsBarRef.current) return;
+    const timer = setTimeout(() => {
+      const barEl = docTabsBarRef.current;
+      if (!barEl) return;
+      const activeTabEl = barEl.querySelector(
+        '[data-tab-active="true"]'
+      ) as HTMLElement | null;
+      if (activeTabEl) {
+        activeTabEl.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+          inline: 'center',
+        });
+      }
+    }, 40);
+    return () => clearTimeout(timer);
+  }, [activeTabPath, openTabs.length]);
+
+  const loadCallAudioIntoStatusBar = async (
+    roomOrSender: string,
+    attachmentUuid?: string,
+    autoPlay = false,
+    seekSec?: number
+  ) => {
+    try {
+      const info = await getCallRecordingPlayInfo({
+        roomOrSender,
+        attachmentUuid,
+      });
+      let playUrl = info.audioUrl;
+      if (info.audioBase64) {
+        try {
+          const binStr = atob(info.audioBase64);
+          const bytes = new Uint8Array(binStr.length);
+          for (let i = 0; i < binStr.length; i++) {
+            bytes[i] = binStr.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], {
+            type: info.mimeType || 'audio/mp4',
+          });
+          playUrl = URL.createObjectURL(blob);
+        } catch (e) {
+          console.error('Base64 오디오 디코딩 실패, URL 폴백:', e);
+        }
+      }
+      if (typeof seekSec === 'number' && seekSec >= 0) {
+        pendingSeekSecondsRef.current = seekSec;
+      } else {
+        pendingSeekSecondsRef.current = null;
+      }
+      setDirectCallPlayInfo((prev) => {
+        if (prev?.audioUrl?.startsWith('blob:')) {
+          URL.revokeObjectURL(prev.audioUrl);
+        }
+        return {
+          audioUrl: playUrl,
+          fullPath: info.fullPath,
+          fileName: info.fileName,
+          contactDisplay: info.contactDisplay,
+          autoPlay,
+        };
+      });
+    } catch {
+      // 오디오 파일이 없는 기록인 경우 무시
+    }
+  };
+
+  // 통화/음성 문서가 열릴 때 하단 상태바에 오디오 재생바 자동 준비
+  useEffect(() => {
+    if (!currentDoc || !isCurrentDocCall) {
+      setActiveAudioLineIndex(null);
+      return;
+    }
+    const fmAudio = (currentDoc.frontmatter['audio_file'] || '').trim();
+    if (!fmAudio) return;
+    const audioFileName = fmAudio.replace(/^audio[\\/]/i, '').trim();
+    const audioStem = audioFileName
+      .replace(/\.(m4a|mp3|amr|wav|ogg|aac)$/i, '')
+      .trim();
+    if (
+      directCallPlayInfo &&
+      (directCallPlayInfo.fileName === audioFileName ||
+        directCallPlayInfo.fullPath.endsWith(audioFileName))
+    ) {
+      return;
+    }
+    loadCallAudioIntoStatusBar(
+      audioStem || currentDoc.frontmatter['contact_name'] || '',
+      `transcribed:${audioStem}`,
+      false
+    );
+  }, [currentDoc?.fullPath, isCurrentDocCall]);
+
+  // 현재 문서 본문(`bodyText`) 내 `[00:00:00]` 오프셋 시각이 포함된 문장 목록 파싱
+  const audioScriptCues = useMemo(() => {
+    if (!isCurrentDocCall || !bodyText) return [];
+    const lines = bodyText.replace(/\r\n/g, '\n').split('\n');
+    const rawCues: Array<{
+      lineIndex: number;
+      startSec: number;
+      endSec: number;
+      charStart: number;
+      charEnd: number;
+    }> = [];
+    let charCursor = 0;
+    let inScriptSec = false;
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const line = lines[idx];
+      const trimmed = line.trim();
+      const lineCharStart = charCursor;
+      const lineCharEnd = charCursor + line.length;
+      charCursor = lineCharEnd + 1;
+
+      if (/^#{1,4}\s+.*스크립트/.test(trimmed)) {
+        inScriptSec = true;
+        continue;
+      }
+      if (/^#{1,3}\s+/.test(trimmed) && !trimmed.includes('스크립트')) {
+        inScriptSec = false;
+      }
+      if (!inScriptSec && !trimmed.startsWith('-') && !trimmed.startsWith('*')) {
+        continue;
+      }
+      const sec = parseAudioOffsetSecondsFromLine(trimmed);
+      if (sec !== null) {
+        rawCues.push({
+          lineIndex: idx,
+          startSec: sec,
+          endSec: Number.POSITIVE_INFINITY,
+          charStart: lineCharStart,
+          charEnd: lineCharEnd,
+        });
+      }
+    }
+
+    for (let i = 0; i < rawCues.length - 1; i++) {
+      rawCues[i].endSec = Math.max(
+        rawCues[i].startSec + 0.5,
+        rawCues[i + 1].startSec
+      );
+    }
+    return rawCues;
+  }, [bodyText, isCurrentDocCall]);
+
+  // 오디오 재생 중 시각(`currentTime`)에 해당하는 스크립트 문장을 자동 Select 및 스크롤 추적
+  const handleAudioTimeUpdate = () => {
+    const audioEl = callAudioRef.current;
+    if (!audioEl || audioScriptCues.length === 0) return;
+    const curSec = audioEl.currentTime;
+    let matchedCue = audioScriptCues[0];
+    for (const cue of audioScriptCues) {
+      if (curSec >= cue.startSec) {
+        matchedCue = cue;
+      } else {
+        break;
+      }
+    }
+    if (!matchedCue || curSec < audioScriptCues[0].startSec) return;
+
+    if (activeAudioLineIndex !== matchedCue.lineIndex) {
+      setActiveAudioLineIndex(matchedCue.lineIndex);
+
+      // 1) 프리뷰 영역에서 해당 문장 부드럽게 스크롤 표시
+      if (previewPaneRef.current) {
+        const targetNode = previewPaneRef.current.querySelector(
+          `[data-audio-line="${matchedCue.lineIndex}"]`
+        ) as HTMLElement | null;
+        if (targetNode) {
+          targetNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
+
+      // 2) 에디터 영역에서 사용자가 타이핑 중이 아닐 때 해당 문장 줄 자동 Select 및 스크롤
+      if (
+        editorRef.current &&
+        !audioEl.paused &&
+        Date.now() - lastEditorKeyPressMsRef.current > 2000
+      ) {
+        const ta = editorRef.current;
+        const totalLines = Math.max(1, bodyText.split('\n').length);
+        const ratio = matchedCue.lineIndex / totalLines;
+        const targetScrollTop = Math.max(
+          0,
+          ratio * ta.scrollHeight - ta.clientHeight * 0.4
+        );
+        ta.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
+        if (document.activeElement !== ta || viewMode === 'editor') {
+          try {
+            ta.setSelectionRange(matchedCue.charStart, matchedCue.charEnd);
+          } catch {
+            // ignore selection error
+          }
+        }
+      }
+    }
+  };
+
+  // 사용자가 스크립트의 특정 문장을 클릭/선택했을 때 해당 오프셋 시각으로 즉시 이동하여 재생
+  const handleSeekAudioTime = async (seconds: number, lineIndex: number) => {
+    setActiveAudioLineIndex(lineIndex);
+    const audioEl = callAudioRef.current;
+    if (audioEl && directCallPlayInfo) {
+      audioEl.currentTime = seconds;
+      audioEl.play().catch(() => {});
+      return;
+    }
+    if (currentDoc && isCurrentDocCall) {
+      const fmAudio = (currentDoc.frontmatter['audio_file'] || '')
+        .replace(/^audio[\\/]/i, '')
+        .replace(/\.(m4a|mp3|amr|wav|ogg|aac)$/i, '')
+        .trim();
+      await loadCallAudioIntoStatusBar(
+        fmAudio || currentDoc.frontmatter['contact_name'] || '',
+        fmAudio ? `transcribed:${fmAudio}` : undefined,
+        true,
+        seconds
+      );
+    }
+  };
+
   const handleSelectLifelogSidebarItem = async (msg: LifelogMessage) => {
     try {
       setSelectedLifelogMsgId(msg.id);
@@ -952,6 +1244,17 @@ export default function App() {
 
       if (msg.source === 'sms') {
         setSmsRawEditMode(false);
+      }
+
+      if (
+        (msg.source === 'call' || msg.source === 'recording') &&
+        msg.hasAudioRecording
+      ) {
+        loadCallAudioIntoStatusBar(
+          msg.roomOrSender,
+          msg.attachmentUuid,
+          false
+        );
       }
 
       const split = splitYamlFrontmatter(doc.rawContent);
@@ -1195,6 +1498,7 @@ export default function App() {
     let unlistenScanFn: (() => void) | null = null;
     let unlistenCliOpenFn: (() => void) | null = null;
     let unlistenMobileSyncFn: (() => void) | null = null;
+    let unlistenMobileProgFn: (() => void) | null = null;
     (async () => {
       try {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -1225,18 +1529,51 @@ export default function App() {
             }
           );
 
+          let syncRefreshTimer: ReturnType<typeof setTimeout> | null = null;
           unlistenMobileSyncFn = await listen<{
-            eventType: string;
+            eventType?: string;
+            type?: string;
             message: string;
-            count: number;
-          }>('mobile-sync-event', async (event) => {
+            count?: number;
+          }>('mobile-sync-event', (event) => {
             const p = event.payload;
             setStatusMessage(p.message);
             setReconcileResultMsg(p.message);
-            await refreshMobilePairingInfo();
-            await refreshFinanceData();
-            await loadLifelogForDate(selectedDateRef.current);
+            // 백그라운드 워커 스레드에서 동기화 사이클이 완전히 종료되었을 때만 메인 데이터/DB 조회를 1회 실행 (통신 중 과부하 원천 차단)
+            const evType = p.type || p.eventType || '';
+            if (
+              evType === 'sync_cycle_complete' ||
+              evType === 'paired' ||
+              evType === 'call_transcript_completed'
+            ) {
+              if (syncRefreshTimer) clearTimeout(syncRefreshTimer);
+              syncRefreshTimer = setTimeout(() => {
+                void refreshMobilePairingInfo();
+                void refreshAllLifelogMessages();
+                void refreshFinanceData();
+                void loadLifelogForDate(selectedDateRef.current);
+              }, 350);
+            }
           });
+
+          unlistenMobileProgFn = await listen<MobileSyncProgressPayload>(
+            'mobile-sync-progress',
+            (event) => {
+              const p = event.payload;
+              setMobileSyncProgress(p);
+              const curStep =
+                p.steps[p.currentStepIndex] || p.steps[p.steps.length - 1];
+              if (p.isRunning && curStep) {
+                const qBadge =
+                  (p.queuedJobs ?? 0) > 0
+                    ? ` | 워커 큐 대기: ${p.queuedJobs}건`
+                    : '';
+                setStatusMessage(
+                  `📡 [${p.currentStepIndex + 1}/${p.totalSteps}] ${p.currentLabel} (${p.currentPercent}%) — 기보유 스킵(파란색): ${curStep.skippedCount}건 | 신규 다운로드(녹색): ${curStep.downloadedCount}건${qBadge}`
+                );
+              }
+            }
+          );
         }
         const loadedSettings = await getAppSettings();
         setAppSettings(loadedSettings);
@@ -1360,8 +1697,28 @@ export default function App() {
       if (unlistenScanFn) unlistenScanFn();
       if (unlistenCliOpenFn) unlistenCliOpenFn();
       if (unlistenMobileSyncFn) unlistenMobileSyncFn();
+      if (unlistenMobileProgFn) unlistenMobileProgFn();
     };
   }, []);
+
+  // 백그라운드 동기화 워커가 동작 중일 때 메인 프로그램은 인메모리 진행 상태만 가볍게 모니터링
+  useEffect(() => {
+    if (!mobileSyncProgress?.isRunning) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      const state = await getMobileSyncProgressState().catch(() => null);
+      if (cancelled || !state) return;
+      setMobileSyncProgress(state);
+      if (!state.isRunning && state.isCompleted) {
+        void refreshAllLifelogMessages();
+        void refreshMobilePairingInfo();
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [mobileSyncProgress?.isRunning]);
 
   // 선택된 문서의 날짜 또는 기본 날짜가 바뀔 때 라이프로그 갱신
   useEffect(() => {
@@ -2250,7 +2607,9 @@ export default function App() {
     setActiveTabPath(fullPath);
     recordEditPosition(fullPath, 0, true);
     if (dashType === 'lifelog') {
+      setRightSidebarOpen(true);
       refreshMobilePairingInfo();
+      refreshAllLifelogMessages();
     } else if (dashType === 'finance') {
       refreshFinanceData();
     }
@@ -2609,7 +2968,7 @@ export default function App() {
         }
 
         // 일반 문서인 경우 우측 사이드바 폴더 트리 탭으로 전환하여 해당 파일 위치로 스크롤 & 하이라이트 보장
-        const isMobilePath = /[\\/]mobile[\\/](kakao|sms|calls|notifications)[\\/]/i.test(
+        const isMobilePath = /[\\/]mobile[\\/](kakao|sms|calls|recordings|notifications|health)[\\/]/i.test(
           item.path
         );
         if (!isMobilePath && rightTab !== 'tree') {
@@ -4872,7 +5231,15 @@ export default function App() {
         </div>
 
         {/* 다중 문서 탭 바 (일반 .md 문서 및 대쉬보드를 동일한 탭으로 구분하고 현재 열린 탭 하이라이트) */}
-        <div className="doc-tabs-bar">
+        <div
+          ref={docTabsBarRef}
+          className="doc-tabs-bar"
+          onWheel={(e) => {
+            if (docTabsBarRef.current && e.deltaY !== 0) {
+              docTabsBarRef.current.scrollLeft += e.deltaY;
+            }
+          }}
+        >
           {openTabs.map((tab) => {
             const isActive = tab.doc.fullPath === activeTabPath;
             const isVirtualDashboard =
@@ -4886,6 +5253,7 @@ export default function App() {
               <div
                 key={tab.doc.fullPath}
                 className={`doc-tab ${isActive ? 'active' : ''}`}
+                data-tab-active={isActive ? 'true' : undefined}
                 onClick={() => {
                   setActiveTabPath(tab.doc.fullPath);
                   recordEditPosition(
@@ -5116,7 +5484,7 @@ export default function App() {
               </div>
             </div>
           ) : activeTabPath === 'mylore://dashboard/lifelog' ? (
-            /* 대쉬보드 > 라이프로그 수집 대쉬보드 (2탭: 설정 | 휴대폰데이터 — 일반 탭으로 동작) */
+            /* 대쉬보드 > 라이프로그 대쉬보드 (2탭: 설정 | 휴대폰데이터 — 일반 탭으로 동작) */
             <div className="finance-workspace">
               <div
                 style={{
@@ -5130,7 +5498,7 @@ export default function App() {
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
                   <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>
-                    📱 라이프로그 수집 대쉬보드
+                    📱 라이프로그 대쉬보드
                   </h2>
                   {/* 2개 메인 탭: 설정 | 휴대폰데이터 */}
                   <div
@@ -5166,25 +5534,251 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <button
-                    className="toolbar-btn"
-                    onClick={async () => {
-                      try {
-                        const msg = await sendMobileUdpWakeBroadcast();
-                        setStatusMessage(msg);
-                        setReconcileResultMsg(msg);
-                      } catch (err) {
-                        setStatusMessage(`UDP 브로드캐스트 오류: ${String(err)}`);
-                      }
-                    }}
-                    title="동일 공유기(Wi-Fi)의 모바일 앱(포트 18444)에 PC 온라인 신호를 즉시 송출합니다"
-                  >
-                    📡 모바일 동기화 신호 송출
-                  </button>
-                </div>
               </div>
+
+              {mobileSyncProgress &&
+                (() => {
+                  const activeStep =
+                    mobileSyncProgress.steps[
+                      mobileSyncProgress.currentStepIndex
+                    ] ||
+                    mobileSyncProgress.steps[
+                      mobileSyncProgress.steps.length - 1
+                    ];
+                  return (
+                    <div
+                      style={{
+                        padding: '14px 16px',
+                        backgroundColor: 'var(--bg-secondary)',
+                        border: '1px solid var(--accent-primary)',
+                        borderRadius: '10px',
+                        marginBottom: '14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '8px',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              fontSize: '13.5px',
+                              color: '#e0e7ff',
+                            }}
+                          >
+                            {mobileSyncProgress.isRunning
+                              ? `🔄 [${mobileSyncProgress.currentStepIndex + 1}/${mobileSyncProgress.totalSteps}] ${mobileSyncProgress.currentLabel}`
+                              : `✅ ${mobileSyncProgress.currentLabel}`}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '12.5px',
+                              fontWeight: 700,
+                              color: '#4ade80',
+                            }}
+                          >
+                            {mobileSyncProgress.currentPercent}%
+                          </span>
+                          {activeStep && (
+                            <span
+                              style={{
+                                fontSize: '12px',
+                                color: 'var(--text-secondary)',
+                              }}
+                            >
+                              (총 {activeStep.totalCount}건)
+                            </span>
+                          )}
+                          {mobileSyncProgress.isRunning && (
+                            <span
+                              style={{
+                                padding: '2px 8px',
+                                borderRadius: '999px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                fontFamily: 'var(--font-mono)',
+                                backgroundColor: 'rgba(56, 189, 248, 0.16)',
+                                border: '1px solid rgba(56, 189, 248, 0.4)',
+                                color: '#7dd3fc',
+                              }}
+                              title="메인 UI 스레드와 분리된 전용 백그라운드 워커 스레드에서 비동기 일괄 적재 중"
+                            >
+                              ⚡ 백그라운드 스레드 처리 중
+                              {(mobileSyncProgress.queuedJobs ?? 0) > 0
+                                ? ` (큐 대기 ${mobileSyncProgress.queuedJobs}건)`
+                                : ''}
+                            </span>
+                          )}
+                        </div>
+
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            fontSize: '11.5px',
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: '10px',
+                                height: '10px',
+                                borderRadius: '2px',
+                                backgroundColor: '#3b82f6',
+                                display: 'inline-block',
+                              }}
+                            />
+                            <span style={{ color: '#93c5fd', fontWeight: 600 }}>
+                              이미 보유(스킵): {activeStep?.skippedCount ?? 0}건
+                            </span>
+                          </span>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: '10px',
+                                height: '10px',
+                                borderRadius: '2px',
+                                backgroundColor: '#22c55e',
+                                display: 'inline-block',
+                              }}
+                            />
+                            <span style={{ color: '#86efac', fontWeight: 600 }}>
+                              신규 다운로드: {activeStep?.downloadedCount ?? 0}건
+                            </span>
+                          </span>
+                          {!mobileSyncProgress.isRunning && (
+                            <button
+                              className="toolbar-btn"
+                              style={{ padding: '2px 8px', fontSize: '11px' }}
+                              onClick={() => setMobileSyncProgress(null)}
+                            >
+                              ✕ 닫기
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 구간별(Segmented) 진행률 바: 이미 보유하여 넘어간 구간은 파란색(#3b82f6), 다운로드 받은 구간은 녹색(#22c55e) */}
+                      <div
+                        style={{
+                           display: 'flex',
+                          width: '100%',
+                          height: '14px',
+                          backgroundColor: 'rgba(15, 23, 42, 0.75)',
+                          borderRadius: '999px',
+                          overflow: 'hidden',
+                          border: '1px solid rgba(148, 163, 184, 0.28)',
+                        }}
+                      >
+                        {(activeStep?.segments || []).map((seg, idx) => (
+                          <div
+                            key={`seg-${idx}`}
+                            style={{
+                              width: `${seg.widthPct}%`,
+                              height: '100%',
+                              backgroundColor:
+                                seg.kind === 'download' ? '#22c55e' : '#3b82f6',
+                              transition: 'width 120ms linear',
+                            }}
+                            title={
+                              seg.kind === 'download'
+                                ? '신규 다운로드 구간 (녹색)'
+                                : '이미 PC에 보유하여 스킵한 구간 (파란색)'
+                            }
+                          />
+                        ))}
+                      </div>
+
+                      {/* 6개 카테고리 순환 단계 배지 */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '6px',
+                          flexWrap: 'wrap',
+                          fontSize: '11.5px',
+                        }}
+                      >
+                        {mobileSyncProgress.steps.map((st) => (
+                          <span
+                            key={st.key}
+                            style={{
+                              padding: '4px 10px',
+                              borderRadius: '6px',
+                              backgroundColor:
+                                st.status === 'running'
+                                  ? 'rgba(79, 70, 229, 0.22)'
+                                  : 'var(--bg-primary)',
+                              border:
+                                st.status === 'running'
+                                  ? '1px solid var(--accent-primary)'
+                                  : '1px solid var(--border-color)',
+                              opacity: st.status === 'pending' ? 0.55 : 1,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <strong style={{ color: '#e2e8f0' }}>
+                              {st.status === 'done'
+                                ? '✓ '
+                                : st.status === 'running'
+                                  ? '⏳ '
+                                  : '• '}
+                              {st.label.replace(' 받아오는 중...', '')} (
+                              {st.percent}%)
+                            </strong>
+                            <span
+                              style={{
+                                color: '#93c5fd',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              스킵 {st.skippedCount}
+                            </span>
+                            <span
+                              style={{
+                                color: '#86efac',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              신규 {st.downloadedCount}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
               {reconcileResultMsg && (
                 <div
@@ -5839,14 +6433,16 @@ export default function App() {
                         onChange={(e) => setMobilePersonFilter(e.target.value)}
                         placeholder="예: 임현정, 캠핑..."
                       />
-                      <div style={{ display: 'inline-flex', gap: '4px' }}>
+                      <div style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
                         {(
                           [
                             { key: 'all', label: '전체 기록' },
-                            { key: 'kakaotalk', label: '💬 카톡' },
-                            { key: 'notification', label: '🔔 알림' },
-                            { key: 'sms', label: '✉️ 문자' },
-                            { key: 'call', label: '📞 통화' },
+                            { key: 'kakaotalk', label: '카톡' },
+                            { key: 'notification', label: '알림' },
+                            { key: 'sms', label: '문자' },
+                            { key: 'call', label: '통화' },
+                            { key: 'recording', label: '녹음' },
+                            { key: 'health', label: '헬스' },
                           ] as const
                         ).map((cat) => (
                           <button
@@ -5874,18 +6470,6 @@ export default function App() {
                         </button>
                       )}
                     </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        💡 우측 사이드바 또는 아래 표에서 항목을 <strong>우클릭</strong>하면 인물별 특정/전체 기록을 즉시 검색합니다.
-                      </span>
-                      <button
-                        className="toolbar-btn"
-                        onClick={() => refreshAllLifelogMessages()}
-                      >
-                        🔄 새로고침
-                      </button>
-                    </div>
                   </div>
 
                   {/* 현재 적용된 인물 검색 필터 배지 */}
@@ -5904,14 +6488,18 @@ export default function App() {
                       <span style={{ fontWeight: 700, color: '#c7d2fe' }}>
                         📌 &lsquo;{mobilePersonFilter}&rsquo;님과의{' '}
                         {mobileSourceFilter === 'all'
-                          ? '모든기록 (카톡·알림·문자·통화)'
+                          ? '모든기록 (카톡·알림·문자·통화·녹음·헬스)'
                           : mobileSourceFilter === 'kakaotalk'
                             ? "'카톡'"
                             : mobileSourceFilter === 'notification'
                               ? "'알림'"
                               : mobileSourceFilter === 'sms'
                                 ? "'문자'"
-                                : "'통화'"}{' '}
+                                : mobileSourceFilter === 'call'
+                                  ? "'통화'"
+                                  : mobileSourceFilter === 'recording'
+                                    ? "'녹음'"
+                                    : "'헬스'"}{' '}
                         검색 결과
                       </span>
                       <button
@@ -5950,6 +6538,8 @@ export default function App() {
                       notification: '알림',
                       sms: '문자',
                       call: '통화',
+                      recording: '녹음',
+                      health: '헬스',
                     };
 
                     return (
@@ -6003,15 +6593,20 @@ export default function App() {
                                         .replace(/\s*\([^)]*\)/g, '')
                                         .trim();
                                 const srcKey = (
-                                  ['kakaotalk', 'notification', 'sms', 'call'].includes(
-                                    m.source
-                                  )
+                                  [
+                                    'kakaotalk',
+                                    'notification',
+                                    'sms',
+                                    'call',
+                                    'recording',
+                                    'health',
+                                  ].includes(m.source)
                                     ? m.source
                                     : 'notification'
-                                ) as 'kakaotalk' | 'notification' | 'sms' | 'call';
+                                ) as LifelogSourceType;
 
                                 const isCallPendingRow =
-                                  m.source === 'call' &&
+                                  (m.source === 'call' || m.source === 'recording') &&
                                   (Boolean(
                                     m.attachmentUuid?.startsWith(
                                       'pending_transcript:'
@@ -7727,7 +8322,12 @@ export default function App() {
                         const rawTime = lm[1].trim();
                         const dirTag = (lm[2] || '').trim();
                         const senderStr = (lm[3] || '').trim();
-                        const msgBody = (lm[4] || '').trim();
+                        const rawMsgBody = (lm[4] || '').trim();
+                        const msgBody = rawMsgBody
+                          .replace(/^\[ì\s*œëª©ì—†ì\s*Œ\]\s*/g, '')
+                          .replace(/^\[제목없음\]\s*/g, '')
+                          .replace(/<br\s*\/?>/gi, '\n')
+                          .trim();
                         const timeHms =
                           /^\d{2}:\d{2}$/.test(rawTime)
                             ? `${rawTime}:00`
@@ -7854,7 +8454,11 @@ export default function App() {
                       className="markdown-textarea"
                       value={bodyText}
                       onScroll={handleEditorScroll}
+                      onKeyDown={() => {
+                        lastEditorKeyPressMsRef.current = Date.now();
+                      }}
                       onChange={(e) => {
+                        lastEditorKeyPressMsRef.current = Date.now();
                         const offset = e.target.selectionStart;
                         setBodyText(e.target.value);
                         if (currentDoc) {
@@ -7862,12 +8466,29 @@ export default function App() {
                         }
                       }}
                       onMouseUp={(e) => {
+                        const selStart = e.currentTarget.selectionStart;
+                        const selEnd = e.currentTarget.selectionEnd;
                         if (currentDoc) {
                           recordEditPosition(
                             currentDoc.fullPath,
-                            e.currentTarget.selectionStart,
+                            selStart,
                             false
                           );
+                        }
+                        if (
+                          isCurrentDocCall &&
+                          audioScriptCues.length > 0 &&
+                          selStart === selEnd
+                        ) {
+                          const clickedCue = audioScriptCues.find(
+                            (c) => selStart >= c.charStart && selStart <= c.charEnd
+                          );
+                          if (clickedCue) {
+                            handleSeekAudioTime(
+                              clickedCue.startSec,
+                              clickedCue.lineIndex
+                            );
+                          }
                         }
                       }}
                       placeholder="여기에 마크다운 본문을 작성하세요..."
@@ -7902,6 +8523,9 @@ export default function App() {
                       onOpenExternalUrl={(url) => {
                         openExternalUrlInChrome(url);
                       }}
+                      activeAudioLineIndex={activeAudioLineIndex}
+                      onSeekAudioTime={handleSeekAudioTime}
+                      enableAudioTimestampSync={isCurrentDocCall}
                     />
 
                     {currentProjectSubDocs.length > 0 &&
@@ -8175,20 +8799,25 @@ export default function App() {
           )}
         </main>
 
-        {/* 3. 우측 접이식 사이드바 (휴대폰 데이터 탭 활성 시 [카톡목록 / 알림목록 / 문자목록 / 통화목록] 자동 전환, 그 외 기본 5개 아이콘) */}
+        {/* 3. 우측 접이식 사이드바 (휴대폰 데이터 탭 활성 시 [카톡 / 알림 / 문자 / 통화 / 녹음 / 헬스] 6탭 자동 전환, 그 외 기본 5개 아이콘) */}
         <aside
           className={`right-sidebar ${rightSidebarOpen ? '' : 'collapsed'}`}
           onMouseDown={() => setIsFolderPaneFocused(true)}
         >
           {isMobileDataSidebarMode ? (
             <>
-              <div className="sidebar-tabs" style={{ gap: '2px', padding: '6px 6px' }}>
+              <div
+                className="sidebar-tabs"
+                style={{ gap: '2px', padding: '5px 4px', flexWrap: 'nowrap' }}
+              >
                 {(
                   [
-                    { key: 'kakaotalk', label: '💬 카톡목록' },
-                    { key: 'notification', label: '🔔 알림목록' },
-                    { key: 'sms', label: '✉️ 문자목록' },
-                    { key: 'call', label: '📞 통화목록' },
+                    { key: 'kakaotalk', label: '카톡' },
+                    { key: 'notification', label: '알림' },
+                    { key: 'sms', label: '문자' },
+                    { key: 'call', label: '통화' },
+                    { key: 'recording', label: '녹음' },
+                    { key: 'health', label: '헬스' },
                   ] as const
                 ).map((t) => (
                   <button
@@ -8198,7 +8827,7 @@ export default function App() {
                       flex: 1,
                       fontSize: '11.5px',
                       fontWeight: 700,
-                      padding: '6px 4px',
+                      padding: '5px 3px',
                       whiteSpace: 'nowrap',
                     }}
                     onClick={() => setMobileSidebarTab(t.key)}
@@ -8208,6 +8837,90 @@ export default function App() {
                   </button>
                 ))}
               </div>
+
+              {mobileSyncProgress &&
+                (() => {
+                  const sbStep =
+                    mobileSyncProgress.steps[
+                      mobileSyncProgress.currentStepIndex
+                    ] ||
+                    mobileSyncProgress.steps[
+                      mobileSyncProgress.steps.length - 1
+                    ];
+                  return (
+                    <div
+                      style={{
+                        padding: '8px 10px',
+                        backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                        borderBottom: '1px solid var(--border-color)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '5px',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                        }}
+                      >
+                        <span style={{ color: '#e0e7ff' }}>
+                          {mobileSyncProgress.isRunning
+                            ? `🔄 ${mobileSyncProgress.currentLabel}`
+                            : `✅ ${mobileSyncProgress.currentLabel}`}
+                        </span>
+                        <span
+                          style={{
+                            color: '#4ade80',
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        >
+                          {mobileSyncProgress.currentPercent}%
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          width: '100%',
+                          height: '8px',
+                          backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                          borderRadius: '999px',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {(sbStep?.segments || []).map((seg, idx) => (
+                          <div
+                            key={`sb-seg-${idx}`}
+                            style={{
+                              width: `${seg.widthPct}%`,
+                              height: '100%',
+                              backgroundColor:
+                                seg.kind === 'download' ? '#22c55e' : '#3b82f6',
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          fontSize: '10px',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        <span style={{ color: '#93c5fd' }}>
+                          🟦 기보유 스킵: {sbStep?.skippedCount ?? 0}
+                        </span>
+                        <span style={{ color: '#86efac' }}>
+                          🟩 신규 다운로드: {sbStep?.downloadedCount ?? 0}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
               <div className="sidebar-content">
                 {(() => {
@@ -8225,22 +8938,24 @@ export default function App() {
                     nowLocal.getMonth() + 1
                   ).padStart(2, '0')}-01`;
 
-                  const sourceLabelMap: Record<
-                    'kakaotalk' | 'notification' | 'sms' | 'call',
-                    string
-                  > = {
+                  const sourceLabelMap: Record<LifelogSourceType, string> = {
                     kakaotalk: '카톡',
                     notification: '알림',
                     sms: '문자',
                     call: '통화',
+                    recording: '녹음',
+                    health: '헬스',
                   };
 
                   const rawCategoryMsgs = allLifelogMessages.filter(
                     (m) => m.source === mobileSidebarTab
                   );
 
-                  // 사이드바에서는 최신 목록만 보이고 동일한 사용자(대화방/발신자)와의 이전 기록은 숨김
+                  // 사이드바에서는 최신 목록만 보이고 동일한 사용자(대화방/발신자)와의 이전 기록은 숨김 (녹음·헬스는 개별 기록 단위로 모두 표시)
                   const getPersonDedupKey = (m: LifelogMessage): string => {
+                    if (m.source === 'recording' || m.source === 'health') {
+                      return `${m.source}-${m.id}-${m.sentDate}-${m.sentTime}-${m.roomOrSender}`;
+                    }
                     if (m.source === 'sms') {
                       return resolveContactName(
                         m.roomOrSender || m.sender
@@ -8273,7 +8988,7 @@ export default function App() {
                       personMap.set(key, clone);
                       categoryMsgs.push(clone);
                     } else if (
-                      m.source === 'call' &&
+                      (m.source === 'call' || m.source === 'recording') &&
                       !existing.hasAudioRecording &&
                       m.hasAudioRecording &&
                       existing.sentDate === m.sentDate
@@ -8336,13 +9051,14 @@ export default function App() {
                             .replace(/\s*\([^)]*\)/g, '')
                             .trim();
 
-                    // 통화 녹음 파일이 PC에 다운로드되어 있지 않은 경우 음영(Shaded) 표시
+                    // 통화/음성 녹음 파일이 PC에 다운로드되어 있지 않은 경우 음영(Shaded) 표시
                     const isCallRecordingMissing =
-                      msg.source === 'call' && !msg.hasAudioRecording;
+                      (msg.source === 'call' || msg.source === 'recording') &&
+                      !msg.hasAudioRecording;
 
-                    // LLM 토큰 부족 또는 미생성 통화 스크립트 여부 (빨간색 테두리 피드백)
+                    // LLM 토큰 부족 또는 미생성 통화/녹음 스크립트 여부 (빨간색 테두리 피드백)
                     const isCallTranscriptPending =
-                      msg.source === 'call' &&
+                      (msg.source === 'call' || msg.source === 'recording') &&
                       Boolean(msg.hasAudioRecording) &&
                       (Boolean(
                         msg.attachmentUuid?.startsWith('pending_transcript:')
@@ -8351,6 +9067,11 @@ export default function App() {
                         (msg.message || '').includes('스크립트 미생성') ||
                         (msg.message || '').includes('원본 보관'));
 
+                    const recordingSourceBadge =
+                      msg.source === 'recording'
+                        ? msg.sender || msg.deviceName || 'SM-S901N'
+                        : '';
+
                     const headerTitle =
                       msg.source === 'kakaotalk'
                         ? `${msg.roomOrSender} · ${msg.sender}`
@@ -8358,7 +9079,16 @@ export default function App() {
                           ? resolvedSenderOrRoom
                           : msg.source === 'call'
                             ? resolvedSenderOrRoom
-                            : msg.roomOrSender || msg.sender;
+                            : msg.source === 'recording'
+                              ? msg.roomOrSender || '음성 녹음'
+                              : msg.source === 'health'
+                                ? `${msg.roomOrSender} (${msg.sender})`
+                                : msg.roomOrSender || msg.sender;
+
+                    const cleanedPreviewMessage = (msg.message || '')
+                      .replace(/^\[ì\s*œëª©ì—†ì\s*Œ\]\s*/g, '')
+                      .replace(/^\[제목없음\]\s*/g, '')
+                      .replace(/<br\s*\/?>/gi, ' ');
 
                     return (
                       <div
@@ -8424,7 +9154,7 @@ export default function App() {
                           isActiveDocItem
                             ? `✏️ 현재 에디터에서 열람/편집 중인 항목 ('${headerTitle}') | 우클릭: 메뉴`
                             : isCallRecordingMissing
-                              ? `🔇 통화 녹음 미다운로드 (음영 표시) — '${headerTitle}' 기록 열기 | 우클릭: 메뉴`
+                              ? `🔇 녹음 미다운로드 (음영 표시) — '${headerTitle}' 기록 열기 | 우클릭: 메뉴`
                               : isCallTranscriptPending
                                 ? `⚠️ LLM 토큰 부족으로 스크립트 미생성 (${geminiStatus?.retryAfterAt ? `${geminiStatus.retryAfterAt} 에 5시간 후 자동 재시도` : '5시간 후 자동 재시도'}) | 클릭하여 열기`
                                 : `좌클릭: 에디터 영역에 '${headerTitle}' 출력 | 우클릭: '${personName}'님과의 검색 팝업`
@@ -8462,9 +9192,33 @@ export default function App() {
                                 ? '🔇 '
                                 : msg.source === 'call'
                                   ? '🎧 '
-                                  : ''}
+                                  : msg.source === 'recording'
+                                    ? '🎙️ '
+                                    : msg.source === 'health'
+                                      ? '🏃 '
+                                      : ''}
                               {headerTitle}
                             </span>
+                            {recordingSourceBadge && (
+                              <span
+                                style={{
+                                  fontSize: '9.5px',
+                                  padding: '1px 5px',
+                                  borderRadius: '999px',
+                                  backgroundColor:
+                                    recordingSourceBadge.includes('워치')
+                                      ? 'rgba(16, 185, 129, 0.22)'
+                                      : 'rgba(59, 130, 246, 0.22)',
+                                  color: recordingSourceBadge.includes('워치')
+                                    ? '#6ee7b7'
+                                    : '#93c5fd',
+                                  fontWeight: 700,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {recordingSourceBadge}
+                              </span>
+                            )}
                             {isActiveDocItem && (
                               <span
                                 style={{
@@ -8510,7 +9264,7 @@ export default function App() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {msg.message}
+                          {cleanedPreviewMessage}
                         </div>
                         {isCallTranscriptPending && (
                           <div
@@ -9151,67 +9905,152 @@ export default function App() {
         </aside>
       </div>
 
-      {/* 4. 하단 상태 표시줄 및 실시간 UUID 스캔 프로그레스 바 */}
-      <footer className="statusbar">
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {statusMessage}
-        </div>
-
-        {scanProgress && scanProgress.totalFiles > 0 && (
-          <div className="scan-progress-container">
-            <div className="scan-progress-track">
-              <div
-                className="scan-progress-base-fill"
-                style={{ width: `${scanProgress.startPercent}%` }}
-              />
-              <div
-                className="scan-progress-active-fill"
-                style={{ width: `${scanProgress.currentPercent}%` }}
-              />
-            </div>
-            <div className="scan-progress-meta">
-              <span style={{ color: '#4ade80', fontWeight: 700 }}>
-                {scanProgress.currentPercent.toFixed(1)}%
-              </span>
-              <span>
-                ({scanProgress.completedFiles}/{scanProgress.totalFiles})
-              </span>
-              {scanProgress.isRunning && (
-                <span style={{ color: '#fbbf24' }}>
-                  남은시간: 약 {scanProgress.etaSeconds.toFixed(1)}초
-                </span>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
-          {trashHistory.length > 0 && (
-            <button
-              className="toolbar-btn"
-              style={{
-                padding: '2px 8px',
-                fontSize: '11px',
-                borderColor: '#f59e0b',
-                color: '#fbbf24',
+      {/* 4. 하단 상태 표시줄 (통화/음성 오디오 활성 시 파일명·메타데이터 없이 최대 길이 재생바 + 아이콘 버튼 표시) */}
+      <footer
+        className="statusbar"
+        style={
+          directCallPlayInfo
+            ? {
+                padding: '3px 10px',
+                backgroundColor: '#1e1b4b',
+                borderTop: '1.5px solid var(--accent-primary)',
+                gap: '8px',
+              }
+            : undefined
+        }
+      >
+        {directCallPlayInfo ? (
+          <>
+            <audio
+              ref={callAudioRef}
+              controls
+              autoPlay={Boolean(directCallPlayInfo.autoPlay)}
+              src={directCallPlayInfo.audioUrl}
+              onTimeUpdate={handleAudioTimeUpdate}
+              onLoadedMetadata={(e) => {
+                if (pendingSeekSecondsRef.current !== null) {
+                  e.currentTarget.currentTime = pendingSeekSecondsRef.current;
+                  pendingSeekSecondsRef.current = null;
+                  e.currentTarget.play().catch(() => {});
+                }
               }}
-              onClick={() => handleRestoreTrashedDocument()}
-              title="휴지통으로 이동한 파일 복구 (Ctrl+Z)"
+              style={{
+                flex: 1,
+                width: '100%',
+                minWidth: 0,
+                height: '28px',
+              }}
+            />
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                flexShrink: 0,
+              }}
             >
-              ↩ 휴지통 되돌리기 ({trashHistory.length})
-            </button>
-          )}
-          <span>자동저장: {autoSaveEnabled ? 'ON' : 'OFF'}</span>
-          <span>포트: 18443</span>
-        </div>
+              <button
+                className="toolbar-btn"
+                style={{
+                  padding: '3px 7px',
+                  fontSize: '13px',
+                  lineHeight: 1,
+                }}
+                onClick={() => showInExplorer(directCallPlayInfo.fullPath)}
+                title="파일 위치 열기"
+              >
+                📂
+              </button>
+              <button
+                className="toolbar-btn"
+                style={{
+                  padding: '3px 7px',
+                  fontSize: '13px',
+                  lineHeight: 1,
+                }}
+                onClick={() => {
+                  if (directCallPlayInfo?.audioUrl?.startsWith('blob:')) {
+                    URL.revokeObjectURL(directCallPlayInfo.audioUrl);
+                  }
+                  setDirectCallPlayInfo(null);
+                  setActiveAudioLineIndex(null);
+                }}
+                title="닫기"
+              >
+                ✕
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {statusMessage}
+            </div>
+
+            {scanProgress && scanProgress.totalFiles > 0 && (
+              <div className="scan-progress-container">
+                <div className="scan-progress-track">
+                  <div
+                    className="scan-progress-base-fill"
+                    style={{ width: `${scanProgress.startPercent}%` }}
+                  />
+                  <div
+                    className="scan-progress-active-fill"
+                    style={{ width: `${scanProgress.currentPercent}%` }}
+                  />
+                </div>
+                <div className="scan-progress-meta">
+                  <span style={{ color: '#4ade80', fontWeight: 700 }}>
+                    {scanProgress.currentPercent.toFixed(1)}%
+                  </span>
+                  <span>
+                    ({scanProgress.completedFiles}/{scanProgress.totalFiles})
+                  </span>
+                  {scanProgress.isRunning && (
+                    <span style={{ color: '#fbbf24' }}>
+                      남은시간: 약 {scanProgress.etaSeconds.toFixed(1)}초
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                flexShrink: 0,
+              }}
+            >
+              {trashHistory.length > 0 && (
+                <button
+                  className="toolbar-btn"
+                  style={{
+                    padding: '2px 8px',
+                    fontSize: '11px',
+                    borderColor: '#f59e0b',
+                    color: '#fbbf24',
+                  }}
+                  onClick={() => handleRestoreTrashedDocument()}
+                  title="휴지통으로 이동한 파일 복구 (Ctrl+Z)"
+                >
+                  ↩ 휴지통 되돌리기 ({trashHistory.length})
+                </button>
+              )}
+              <span>자동저장: {autoSaveEnabled ? 'ON' : 'OFF'}</span>
+              <span>포트: 18443</span>
+            </div>
+          </>
+        )}
       </footer>
 
       {/* 5. 우클릭 컨텍스트 메뉴 (`탐색기에서 보기` 포함) */}
@@ -9303,68 +10142,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 4-0. 통화 직접 듣기 인라인 플로팅 오디오 플레이어 바 */}
-      {directCallPlayInfo && (
-        <div
-          style={{
-            padding: '8px 16px',
-            backgroundColor: '#1e1b4b',
-            borderTop: '1.5px solid var(--accent-primary)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
-            flexWrap: 'wrap',
-            zIndex: 50,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <span style={{ fontWeight: 700, color: '#c7d2fe', fontSize: '13px' }}>
-              🎧 통화 직접 듣기: {directCallPlayInfo.contactDisplay}
-            </span>
-            <span
-              style={{
-                fontSize: '11.5px',
-                fontFamily: 'var(--font-mono)',
-                color: '#94a3b8',
-              }}
-            >
-              ({directCallPlayInfo.fileName})
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, maxWidth: '520px' }}>
-            <audio
-              controls
-              autoPlay
-              src={directCallPlayInfo.audioUrl}
-              style={{ height: '32px', width: '100%' }}
-            />
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <button
-              className="toolbar-btn"
-              style={{ padding: '3px 8px', fontSize: '11.5px' }}
-              onClick={() => showInExplorer(directCallPlayInfo.fullPath)}
-              title="탐색기에서 원본 통화 녹음 파일 위치 열기"
-            >
-              📂 파일 위치
-            </button>
-            <button
-              className="toolbar-btn"
-              style={{ padding: '3px 8px', fontSize: '11.5px' }}
-              onClick={() => {
-                if (directCallPlayInfo?.audioUrl?.startsWith('blob:')) {
-                  URL.revokeObjectURL(directCallPlayInfo.audioUrl);
-                }
-                setDirectCallPlayInfo(null);
-              }}
-            >
-              ✕ 닫기
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* 5-2. 휴대폰 데이터 우클릭 컨텍스트 메뉴 ('통화 직접 듣기' / '스크립트 추출 및 요약' / 인물별 검색) */}
       {mobileContextMenu && (
         <div
@@ -9376,9 +10153,11 @@ export default function App() {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {mobileContextMenu.sourceKey === 'call' &&
+          {(mobileContextMenu.sourceKey === 'call' ||
+            mobileContextMenu.sourceKey === 'recording') &&
             (() => {
               const msgItem = mobileContextMenu.messageItem;
+              const isVoiceRec = mobileContextMenu.sourceKey === 'recording';
               const hasRecording = Boolean(msgItem.hasAudioRecording);
               const isCallAlreadyTranscribed =
                 Boolean(msgItem.attachmentUuid?.startsWith('transcribed:')) &&
@@ -9409,50 +10188,21 @@ export default function App() {
                       if (!hasRecording) return;
                       const targetMsg = mobileContextMenu.messageItem;
                       setMobileContextMenu(null);
-                      try {
-                        const info = await getCallRecordingPlayInfo({
-                          roomOrSender: targetMsg.roomOrSender,
-                          attachmentUuid: targetMsg.attachmentUuid,
-                        });
-                        let playUrl = info.audioUrl;
-                        if (info.audioBase64) {
-                          try {
-                            const binStr = atob(info.audioBase64);
-                            const bytes = new Uint8Array(binStr.length);
-                            for (let i = 0; i < binStr.length; i++) {
-                              bytes[i] = binStr.charCodeAt(i);
-                            }
-                            const blob = new Blob([bytes], {
-                              type: info.mimeType || 'audio/mp4',
-                            });
-                            playUrl = URL.createObjectURL(blob);
-                          } catch (e) {
-                            console.error('Base64 오디오 디코딩 실패, URL 폴백:', e);
-                          }
-                        }
-                        setDirectCallPlayInfo((prev) => {
-                          if (prev?.audioUrl?.startsWith('blob:')) {
-                            URL.revokeObjectURL(prev.audioUrl);
-                          }
-                          return {
-                            audioUrl: playUrl,
-                            fullPath: info.fullPath,
-                            fileName: info.fileName,
-                            contactDisplay: info.contactDisplay,
-                          };
-                        });
-                        setStatusMessage(
-                          `🎧 '${info.contactDisplay}' 통화 녹음(${info.fileName}) 직접 재생을 시작합니다.`
-                        );
-                      } catch (err) {
-                        setStatusMessage(`통화 오디오 재생 오류: ${String(err)}`);
-                      }
+                      await loadCallAudioIntoStatusBar(
+                        targetMsg.roomOrSender,
+                        targetMsg.attachmentUuid,
+                        true
+                      );
                     }}
                   >
                     <span>
                       {hasRecording
-                        ? '🎧 통화 직접 듣기'
-                        : '🔇 통화 직접 듣기 (녹음 미다운로드)'}
+                        ? isVoiceRec
+                          ? '🎧 음성녹음 직접 듣기'
+                          : '🎧 통화 직접 듣기'
+                        : isVoiceRec
+                          ? '🔇 음성녹음 직접 듣기 (녹음 미다운로드)'
+                          : '🔇 통화 직접 듣기 (녹음 미다운로드)'}
                     </span>
                   </button>
                   <button
@@ -9481,7 +10231,9 @@ export default function App() {
                       try {
                         setIsTranscribingSingleCall(true);
                         setStatusMessage(
-                          `🎙️ '${mobileContextMenu.personName}' 통화 녹음의 스크립트 추출 및 요약을 진행 중입니다...`
+                          isVoiceRec
+                            ? `🎙️ '${mobileContextMenu.personName}' 음성녹음(회의록·음성메모 톤) 스크립트 추출 및 요약을 진행 중입니다...`
+                            : `🎙️ '${mobileContextMenu.personName}' 통화 녹음의 스크립트 추출 및 요약을 진행 중입니다...`
                         );
                         const doc = await transcribeSingleCallItem({
                           roomOrSender: targetMsg.roomOrSender,
@@ -9493,7 +10245,7 @@ export default function App() {
                         await refreshTree();
                         applyLoadedDocument(doc);
                         setStatusMessage(
-                          `✅ '${mobileContextMenu.personName}' 통화 스크립트 추출 및 요약이 완료되었습니다!`
+                          `✅ '${mobileContextMenu.personName}' 스크립트 추출 및 요약이 완료되었습니다!`
                         );
                       } catch (err) {
                         const gStat = await getGeminiApiKeyStatus().catch(() => null);
@@ -9506,7 +10258,9 @@ export default function App() {
                     }}
                   >
                     <span>
-                      🎙️ 스크립트 추출 및 요약
+                      {isVoiceRec
+                        ? '🎙️ 스크립트 추출 및 요약 (회의록·음성메모)'
+                        : '🎙️ 스크립트 추출 및 요약'}
                       {!hasRecording
                         ? ' (녹음 미다운로드)'
                         : isCallAlreadyTranscribed

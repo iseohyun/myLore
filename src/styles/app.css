@@ -208,7 +208,7 @@ html, body, #root {
   margin: 5px 0;
 }
 
-/* 다중 문서 탭 바 (현재 열린 문서 하이라이트 표시) */
+/* 다중 문서 탭 바 (현재 열린 문서 하이라이트 표시 & 좌우 부드러운 스크롤 애니메이션) */
 .doc-tabs-bar {
   display: flex;
   align-items: center;
@@ -216,13 +216,21 @@ html, body, #root {
   min-width: 0;
   height: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
   gap: 2px;
   padding-left: 6px;
+  padding-right: 6px;
   border-left: 1px solid var(--border-color);
 }
 
 .doc-tabs-bar::-webkit-scrollbar {
   height: 3px;
+}
+
+.doc-tabs-bar::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
 }
 
 .doc-tab {
@@ -809,6 +817,27 @@ html, body, #root {
 .rendered-md li {
   margin: 4px 0;
   line-height: 1.65;
+}
+
+/* 통화·음성 스크립트 문장 <-> 오디오 양방향 연동 하이라이트/선택 스타일 */
+.rendered-md .md-audio-cue-line {
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.rendered-md .md-audio-cue-line:hover {
+  background-color: rgba(99, 102, 241, 0.12);
+  border-left-color: rgba(99, 102, 241, 0.55);
+}
+
+.rendered-md .md-audio-cue-line.active {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.28) 0%, rgba(56, 189, 248, 0.14) 100%);
+  border-left: 3px solid #38bdf8;
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
 }
 
 /* Raw HTML 요소 스타일링 (<details>, <summary>, <kbd>, <mark>, <u> 등) */

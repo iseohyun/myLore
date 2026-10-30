@@ -517,237 +517,323 @@ pub struct CallPlayInfoPayload {
     pub mime_type: String,
 }
 
+static DB_SCHEMA_INITIALIZED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static LIFELOG_BACKFILLED_ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 fn open_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
-        CREATE TABLE IF NOT EXISTS base_folders (
-            id TEXT PRIMARY KEY,
-            role TEXT NOT NULL,
-            path TEXT NOT NULL,
-            label TEXT NOT NULL,
-            purpose TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1
-        );
-        CREATE TABLE IF NOT EXISTS files (
-            uuid TEXT PRIMARY KEY,
-            full_path TEXT NOT NULL UNIQUE,
-            relative_path TEXT NOT NULL,
-            role TEXT NOT NULL,
-            base_folder_id TEXT NOT NULL,
-            extension TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            title TEXT,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS links (
-            source_uuid TEXT NOT NULL,
-            target_uuid TEXT NOT NULL,
-            excerpt TEXT NOT NULL,
-            PRIMARY KEY (source_uuid, target_uuid, excerpt)
-        );
-        CREATE TABLE IF NOT EXISTS lifelog_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            room_or_sender TEXT NOT NULL,
-            sender TEXT NOT NULL,
-            message TEXT NOT NULL,
-            sent_date TEXT NOT NULL,
-            sent_time TEXT NOT NULL,
-            attachment_uuid TEXT,
-            dedup_key TEXT NOT NULL UNIQUE
-        );
-        CREATE TABLE IF NOT EXISTS finance_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tx_date TEXT NOT NULL,
-            tx_time TEXT NOT NULL,
-            institution TEXT NOT NULL,
-            tx_type TEXT NOT NULL,
-            amount INTEGER NOT NULL,
-            merchant TEXT NOT NULL,
-            category TEXT NOT NULL,
-            memo TEXT NOT NULL,
-            verify_status TEXT NOT NULL,
-            dedup_key TEXT NOT NULL UNIQUE
-        );
-        CREATE TABLE IF NOT EXISTS media_inbox (
-            uuid TEXT PRIMARY KEY,
-            file_name TEXT NOT NULL,
-            full_path TEXT NOT NULL,
-            taken_date TEXT NOT NULL,
-            taken_time TEXT NOT NULL,
-            file_size INTEGER NOT NULL,
-            content_hash TEXT NOT NULL,
-            status TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS mobile_sync_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS paired_devices (
-            device_id TEXT PRIMARY KEY,
-            device_name TEXT NOT NULL,
-            model TEXT NOT NULL,
-            paired_at TEXT NOT NULL,
-            last_seen_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS synced_file_hashes (
-            file_hash TEXT PRIMARY KEY,
-            file_name TEXT NOT NULL,
-            synced_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS lifelog_call_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone_number TEXT NOT NULL,
-            contact_name TEXT NOT NULL,
-            call_type TEXT NOT NULL,
-            duration_sec INTEGER NOT NULL,
-            call_date TEXT NOT NULL,
-            call_time TEXT NOT NULL,
-            timestamp_ms INTEGER NOT NULL,
-            dedup_key TEXT NOT NULL UNIQUE
-        );
         ",
     )
     .map_err(|e| e.to_string())?;
 
-    // 다중 기기 출처 및 기기별 독립 동기화 타임스탬프 컬럼 마이그레이션
-    let _ = conn.execute(
-        "ALTER TABLE lifelog_messages ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE lifelog_messages ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE lifelog_call_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE lifelog_call_logs ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE paired_devices ADD COLUMN last_noti_ts INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE paired_devices ADD COLUMN last_sms_ts INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE paired_devices ADD COLUMN last_call_ts INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE paired_devices ADD COLUMN last_contact_ts INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE paired_devices ADD COLUMN last_usage_ts INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-
-    // 기본 페어링 토큰 및 허용 Wi-Fi SSID (iseohyun, seohyun5G) 초기화
-    let has_token: Option<String> = conn
-        .query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
-            [],
-            |r| r.get(0),
+    if DB_SCHEMA_INITIALIZED.get().is_none() {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS base_folders (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                path TEXT NOT NULL,
+                label TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS files (
+                uuid TEXT PRIMARY KEY,
+                full_path TEXT NOT NULL UNIQUE,
+                relative_path TEXT NOT NULL,
+                role TEXT NOT NULL,
+                base_folder_id TEXT NOT NULL,
+                extension TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                title TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS links (
+                source_uuid TEXT NOT NULL,
+                target_uuid TEXT NOT NULL,
+                excerpt TEXT NOT NULL,
+                PRIMARY KEY (source_uuid, target_uuid, excerpt)
+            );
+            CREATE TABLE IF NOT EXISTS lifelog_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                room_or_sender TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                message TEXT NOT NULL,
+                sent_date TEXT NOT NULL,
+                sent_time TEXT NOT NULL,
+                attachment_uuid TEXT,
+                dedup_key TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS finance_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tx_date TEXT NOT NULL,
+                tx_time TEXT NOT NULL,
+                institution TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                merchant TEXT NOT NULL,
+                category TEXT NOT NULL,
+                memo TEXT NOT NULL,
+                verify_status TEXT NOT NULL,
+                dedup_key TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE IF NOT EXISTS media_inbox (
+                uuid TEXT PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                full_path TEXT NOT NULL,
+                taken_date TEXT NOT NULL,
+                taken_time TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS mobile_sync_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paired_devices (
+                device_id TEXT PRIMARY KEY,
+                device_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                paired_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS synced_file_hashes (
+                file_hash TEXT PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                synced_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS lifelog_call_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number TEXT NOT NULL,
+                contact_name TEXT NOT NULL,
+                call_type TEXT NOT NULL,
+                duration_sec INTEGER NOT NULL,
+                call_date TEXT NOT NULL,
+                call_time TEXT NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                dedup_key TEXT NOT NULL UNIQUE
+            );
+            ",
         )
-        .optional()
-        .unwrap_or(None);
-    if has_token.is_none() {
-        let raw_uuid = Uuid::new_v4().to_string().replace('-', "");
-        let token = format!("mylore_sec_{}", raw_uuid);
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO mobile_sync_meta (key, value) VALUES ('pairing_token', ?1)",
-            params![token],
-        );
-    }
+        .map_err(|e| e.to_string())?;
 
-    let has_ssids: Option<String> = conn
-        .query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .unwrap_or(None);
-    if has_ssids.is_none() {
-        let default_ssids = serde_json::json!(["iseohyun", "seohyun5G"]).to_string();
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO mobile_sync_meta (key, value) VALUES ('allowed_ssids', ?1)",
-            params![default_ssids],
-        );
-    }
+        // 다중 기기 출처 및 서비스별 독립 동기화 타임스탬프 컬럼 마이그레이션
+        for sql in [
+            "ALTER TABLE lifelog_messages ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lifelog_messages ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lifelog_call_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE lifelog_call_logs ADD COLUMN device_name TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE paired_devices ADD COLUMN last_kakao_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_noti_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_sms_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_call_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_recording_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_health_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_contact_ts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paired_devices ADD COLUMN last_usage_ts INTEGER NOT NULL DEFAULT 0",
+        ] {
+            let _ = conn.execute(sql, []);
+        }
 
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM base_folders", [], |r| r.get(0))
-        .unwrap_or(0);
-    if count == 0 {
-        let defaults = vec![
-            (
-                "base-data-1",
-                "data",
-                r"C:\Users\iseoh\OneDrive\iseohyunDocs",
-                "iseohyunDocs (데이터/아카이브)",
-                "과거 문서, 위키, 부동산/재정, 미디어 원본 아카이브 및 분류 대기 문서",
-            ),
-            (
-                "base-diary-1",
-                "diary",
-                r"C:\Users\iseoh\OneDrive\Diary",
-                "OneDrive Diary (일기)",
-                "매일의 주관적 작업/일상 기록 및 구글 캘린더 1:1 양방향 동기화 폴더",
-            ),
-            (
-                "base-projects-1",
-                "projects",
-                r"C:\Users\iseoh\OneDrive\Projects",
-                "OneDrive Projects (프로젝트)",
-                "폴더별 main.md 기반 개발·아티클·영상 제작 프로젝트 관리 폴더",
-            ),
-        ];
-        for (id, role, path, label, purpose) in defaults {
+        // 기본 페어링 토큰 및 허용 Wi-Fi SSID (iseohyun, seohyun5G) 초기화
+        let has_token: Option<String> = conn
+            .query_row(
+                "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        if has_token.is_none() {
+            let raw_uuid = Uuid::new_v4().to_string().replace('-', "");
+            let token = format!("mylore_sec_{}", raw_uuid);
             let _ = conn.execute(
-                "INSERT INTO base_folders (id, role, path, label, purpose, enabled) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
-                params![id, role, path, label, purpose],
+                "INSERT OR IGNORE INTO mobile_sync_meta (key, value) VALUES ('pairing_token', ?1)",
+                params![token],
             );
         }
-    }
 
-    let _ = ensure_projects_mylore_templates(&conn);
+        let has_ssids: Option<String> = conn
+            .query_row(
+                "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        if has_ssids.is_none() {
+            let default_ssids = serde_json::json!(["iseohyun", "seohyun5G"]).to_string();
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO mobile_sync_meta (key, value) VALUES ('allowed_ssids', ?1)",
+                params![default_ssids],
+            );
+        }
 
-    // 기존 마이그레이션 완료된 카카오톡 백업 파일 해시 3종 시드 등록 (중복 재전송 방지)
-    let seeded_hashes = [
-        (
-            "70fff10a7a7ea94f690ba6ddfb3da67f157616534a9eb1c175ddedc64278971e",
-            "박재홍, 이소영, Jun 4",
-        ),
-        (
-            "c25ab6f5bda7ea7865d071398887f25793d6ca8b389de366ef13bd46cee8e5de",
-            "임현정",
-        ),
-        (
-            "a0b4ca7f25b8d715da5219bf7b3d252b7173a22a6341bf3d3f737e0114e99803",
-            "정서현",
-        ),
-    ];
-    for (fh, rname) in seeded_hashes {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at) VALUES (?1, ?2, '2026-10-30 07:15:00')",
-            params![fh, rname],
-        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM base_folders", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count == 0 {
+            let defaults = vec![
+                (
+                    "base-data-1",
+                    "data",
+                    r"C:\Users\iseoh\OneDrive\iseohyunDocs",
+                    "iseohyunDocs (데이터/아카이브)",
+                    "과거 문서, 위키, 부동산/재정, 미디어 원본 아카이브 및 분류 대기 문서",
+                ),
+                (
+                    "base-diary-1",
+                    "diary",
+                    r"C:\Users\iseoh\OneDrive\Diary",
+                    "OneDrive Diary (일기)",
+                    "매일의 주관적 작업/일상 기록 및 구글 캘린더 1:1 양방향 동기화 폴더",
+                ),
+                (
+                    "base-projects-1",
+                    "projects",
+                    r"C:\Users\iseoh\OneDrive\Projects",
+                    "OneDrive Projects (프로젝트)",
+                    "폴더별 main.md 기반 개발·아티클·영상 제작 프로젝트 관리 폴더",
+                ),
+            ];
+            for (id, role, path, label, purpose) in defaults {
+                let _ = conn.execute(
+                    "INSERT INTO base_folders (id, role, path, label, purpose, enabled) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+                    params![id, role, path, label, purpose],
+                );
+            }
+        }
+
+        let _ = ensure_projects_mylore_templates(&conn);
+
+        // 기존 마이그레이션 완료된 카카오톡 백업 파일 해시 3종 시드 등록 (중복 재전송 방지)
+        let seeded_hashes = [
+            (
+                "70fff10a7a7ea94f690ba6ddfb3da67f157616534a9eb1c175ddedc64278971e",
+                "박재홍, 이소영, Jun 4",
+            ),
+            (
+                "c25ab6f5bda7ea7865d071398887f25793d6ca8b389de366ef13bd46cee8e5de",
+                "임현정",
+            ),
+            (
+                "a0b4ca7f25b8d715da5219bf7b3d252b7173a22a6341bf3d3f737e0114e99803",
+                "정서현",
+            ),
+        ];
+        for (fh, rname) in seeded_hashes {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at) VALUES (?1, ?2, '2026-10-30 07:15:00')",
+                params![fh, rname],
+            );
+        }
+
+        migrate_raw_kakao_chat_mds(&conn);
+        let _ = DB_SCHEMA_INITIALIZED.set(true);
     }
 
     Ok(conn)
+}
+
+/// `mobile/kakao/` 내에 폴더명(`KakaoTalk_Chats_...`)으로 잘못 생성된 `.md` 파일이 있을 경우,
+/// 대화 참여자 목록을 추출하여 실제 대화방 이름(`{참여자}.md`)으로 병합·정리하고 메타데이터를 보존합니다.
+fn migrate_raw_kakao_chat_mds(conn: &Connection) {
+    let kakao_dir = get_archive_mobile_dir(conn, "kakao");
+    let entries = match fs::read_dir(&kakao_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let sender_re = Regex::new(r"^- \*\*\[([^\]]+)\]\s*([^\*]+)\*\*:\s*(.*)$").unwrap();
+    let date_re = Regex::new(r"^##\s*📅\s*(\d{4}-\d{2}-\d{2})").unwrap();
+
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() || p.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !stem.starts_with("KakaoTalk_Chats_") {
+            continue;
+        }
+        let raw = match fs::read_to_string(&p) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let mut participants: Vec<String> = Vec::new();
+        for line in raw.lines() {
+            if let Some(cap) = sender_re.captures(line.trim()) {
+                let s = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                if !s.is_empty() && s != "정서현" && !participants.iter().any(|x| x == s) {
+                    participants.push(s.to_string());
+                }
+            }
+        }
+        let resolved_room = if participants.is_empty() {
+            "정서현".to_string()
+        } else if participants.len() <= 4 {
+            participants.join(", ")
+        } else {
+            format!(
+                "{} 외 {}명",
+                participants[..4].join(", "),
+                participants.len() - 4
+            )
+        };
+
+        let mut current_date = "2026-10-30".to_string();
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if let Some(dc) = date_re.captures(trimmed) {
+                if let Some(m) = dc.get(1) {
+                    current_date = m.as_str().to_string();
+                }
+                continue;
+            }
+            if let Some(sc) = sender_re.captures(trimmed) {
+                let time_str = sc.get(1).map(|m| m.as_str()).unwrap_or("");
+                let sender = sc.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                let body = sc.get(3).map(|m| m.as_str()).unwrap_or("");
+                let md_line = format!("- **[{}] {}**: {}", time_str, sender, body);
+                append_line_to_mobile_md(
+                    conn,
+                    "kakao",
+                    &resolved_room,
+                    &format!("[카카오톡 대화내역] {}", resolved_room),
+                    "[\"카카오톡\", \"카톡\", \"단톡방\", \"대화내역\", \"채팅이력\", \"KakaoTalk\"]",
+                    &current_date,
+                    &md_line,
+                );
+            }
+        }
+
+        let _ = conn.execute(
+            "UPDATE OR IGNORE lifelog_messages SET room_or_sender = ?1 WHERE source = 'kakaotalk' AND room_or_sender = ?2",
+            params![resolved_room, stem],
+        );
+        let _ = conn.execute(
+            "DELETE FROM lifelog_messages WHERE source = 'kakaotalk' AND room_or_sender = ?1",
+            params![stem],
+        );
+        let _ = conn.execute(
+            "DELETE FROM files WHERE full_path = ?1",
+            params![p.to_string_lossy().to_string()],
+        );
+        let _ = fs::remove_file(&p);
+    }
 }
 
 /// 경로 내에 `.myLore`, OneDrive 임시 동기화 폴더, 또는 Git/빌드 캐시 폴더가 포함되어 있는지 확인합니다.
@@ -1551,24 +1637,38 @@ fn build_document_payload(conn: &Connection, full_path: &Path) -> Result<Documen
 }
 
 #[tauri::command]
-fn read_document(state: State<AppState>, full_path: String) -> Result<DocumentPayload, String> {
-    let _guard = state.lock.lock().map_err(|e| e.to_string())?;
-    let conn = open_db(&state.db_path)?;
-    build_document_payload(&conn, Path::new(&full_path))
+async fn read_document(
+    state: State<'_, AppState>,
+    full_path: String,
+) -> Result<DocumentPayload, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&db_path)?;
+        build_document_payload(&conn, Path::new(&full_path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn read_document_by_uuid(state: State<AppState>, uuid: String) -> Result<DocumentPayload, String> {
-    let _guard = state.lock.lock().map_err(|e| e.to_string())?;
-    let conn = open_db(&state.db_path)?;
-    let full_path: String = conn
-        .query_row(
-            "SELECT full_path FROM files WHERE uuid = ?1",
-            params![uuid],
-            |r| r.get(0),
-        )
-        .map_err(|_| format!("UUID({})에 해당하는 문서를 찾을 수 없습니다.", uuid))?;
-    build_document_payload(&conn, Path::new(&full_path))
+async fn read_document_by_uuid(
+    state: State<'_, AppState>,
+    uuid: String,
+) -> Result<DocumentPayload, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&db_path)?;
+        let full_path: String = conn
+            .query_row(
+                "SELECT full_path FROM files WHERE uuid = ?1",
+                params![uuid],
+                |r| r.get(0),
+            )
+            .map_err(|_| format!("UUID({})에 해당하는 문서를 찾을 수 없습니다.", uuid))?;
+        build_document_payload(&conn, Path::new(&full_path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2417,10 +2517,12 @@ fn normalize_phone_digits(raw: &str) -> String {
 }
 
 fn load_mobile_contacts_map(conn: &Connection) -> HashMap<String, String> {
+    static RE_CONTACT_LINE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE_CONTACT_LINE
+        .get_or_init(|| Regex::new(r"^-\s*\*\*([^*]+)\*\*\s*\|\s*전화:\s*`([^`]*)`").unwrap());
     let mut map = HashMap::new();
     let contacts_md = get_archive_mobile_dir(conn, "contacts").join("연락처_주소록.md");
     if let Ok(content) = fs::read_to_string(&contacts_md) {
-        let re = Regex::new(r"^-\s*\*\*([^*]+)\*\*\s*\|\s*전화:\s*`([^`]*)`").unwrap();
         for line in content.lines() {
             let trimmed = line.trim();
             if let Some(cap) = re.captures(trimmed) {
@@ -2513,14 +2615,304 @@ fn strip_multipart_prefix_if_present(raw: &[u8]) -> (Vec<u8>, bool) {
     (raw.to_vec(), false)
 }
 
-/// 통화 녹음 파일명(예: `통화 녹음 #덕산아내중계_241017_180627` 또는 `통화 녹음 01055090374_240802_174646`)에서
-/// (표시용 상대방 이름, 통화 일자 YYYY-MM-DD, 통화 시각 HH:MM:SS)을 추출합니다.
+/// MMS 제목 인코딩 깨짐(`[ì œëª©ì—†ì Œ]` = `"제목없음"`의 UTF-8 바이트가 ISO-8859-1로 읽힌 문자열) 제거,
+/// RCS(채팅+) Open Rich Card JSON 텍스트 추출, 그리고 멀티라인 줄바꿈의 `<br/>` 변환을 수행합니다.
+fn clean_mms_and_multiline_body(raw: &str) -> String {
+    let mut text = raw.trim().to_string();
+    if text.is_empty() {
+        return String::new();
+    }
+    // 1. 깨진 `[제목없음]` (`[ì œëª©ì—†ì Œ]`) 또는 정상 `[제목없음]` 접두사 제거
+    for prefix in [
+        "[ì œëª©ì—†ì Œ]",
+        "[ì\u{a0}œëª©ì—†ì\u{8c}Œ]",
+        "[제목없음]",
+    ] {
+        if text.starts_with(prefix) {
+            text = text[prefix.len()..].trim_start().to_string();
+        }
+    }
+    if text.starts_with('[') {
+        if let Some(end_idx) = text.find(']') {
+            if end_idx > 1 && end_idx < 60 {
+                let sub_part = &text[1..end_idx];
+                if sub_part.contains('ì') || sub_part.contains('ë') || sub_part.contains('ê') {
+                    let latin1_bytes: Vec<u8> = sub_part.chars().map(|c| c as u8).collect();
+                    if let Ok(recovered) = String::from_utf8(latin1_bytes) {
+                        if recovered.trim() == "제목없음" {
+                            text = text[end_idx + 1..].trim_start().to_string();
+                        } else {
+                            text = format!("[{}] {}", recovered.trim(), text[end_idx + 1..].trim_start());
+                        }
+                    } else if sub_part.contains("œëª©") {
+                        text = text[end_idx + 1..].trim_start().to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. RCS Open Rich Card JSON (`{"layout":...}`) 본문에서 TextView.text 추출
+    let trimmed = text.trim();
+    if trimmed.starts_with("{\"layout\":") || trimmed.starts_with("{\"card\":") {
+        if let Ok(jv) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            let mut extracted = Vec::new();
+            fn collect_rcs_texts(node: &serde_json::Value, out: &mut Vec<String>) {
+                match node {
+                    serde_json::Value::Object(map) => {
+                        if map.get("widget").and_then(|v| v.as_str()) == Some("TextView") {
+                            if let Some(t) = map.get("text").and_then(|v| v.as_str()) {
+                                let clean_t = t.trim();
+                                if !clean_t.is_empty() {
+                                    out.push(clean_t.to_string());
+                                }
+                            }
+                        }
+                        for (k, v) in map {
+                            if k != "text" {
+                                collect_rcs_texts(v, out);
+                            }
+                        }
+                    }
+                    serde_json::Value::Array(arr) => {
+                        for item in arr {
+                            collect_rcs_texts(item, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect_rcs_texts(&jv, &mut extracted);
+            if !extracted.is_empty() {
+                text = extracted.join("\n");
+            }
+        }
+    }
+
+    // 3. 멀티라인 개행을 `<br/>`로 변환하여 마크다운 리스트 한 줄 구조를 유지
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines_out: Vec<String> = Vec::new();
+    for line in normalized.split('\n') {
+        let l = line.trim();
+        if !l.is_empty() || (lines_out.last().map(|s| !s.is_empty()).unwrap_or(false)) {
+            lines_out.push(l.to_string());
+        }
+    }
+    while lines_out.last().map(|s| s.is_empty()).unwrap_or(false) {
+        lines_out.pop();
+    }
+    lines_out.join("<br/>")
+}
+
+/// 녹음 파일명/폴더 힌트를 통해 일반 통화녹음(`false`)인지 독백·회의 음성녹음(`true`, 출처 기기명/워치)인지 판별합니다.
+fn is_voice_memo_or_watch_recording(
+    file_name: &str,
+    folder_hint: &str,
+    default_device_name: &str,
+) -> (bool, String) {
+    let fname = file_name.trim();
+    let f_lower = fname.to_lowercase();
+    let h_lower = folder_hint.to_lowercase();
+
+    // 갤럭시 워치 음성메모 (`음성 001_W_20250404_140623.m4a` 또는 `/Sounds/Watch`)
+    if fname.contains("_W_") || h_lower.contains("watch") || fname.contains("워치") {
+        return (true, "갤럭시 워치".to_string());
+    }
+
+    // 통화 녹음 명시적 패턴 제외
+    if fname.starts_with("통화")
+        || f_lower.starts_with("call")
+        || h_lower.contains("tphone")
+        || h_lower.contains("/call")
+    {
+        return (false, String::new());
+    }
+
+    // 삼성 음성녹음기 (`음성 260503_212528.m4a`, `음성메모`, `회의`, `Voice Recorder`)
+    if fname.starts_with("음성")
+        || fname.starts_with("회의")
+        || fname.starts_with("녹음")
+        || f_lower.starts_with("voice")
+        || h_lower.contains("voice recorder")
+        || h_lower.contains("recordings")
+    {
+        let dev = if default_device_name.trim().is_empty()
+            || default_device_name == "모바일"
+            || default_device_name == "모바일 기기"
+        {
+            "SM-S901N".to_string()
+        } else {
+            default_device_name.trim().to_string()
+        };
+        return (true, dev);
+    }
+
+    (false, String::new())
+}
+
+/// 독백/회의 음성녹음 파일명(`음성 260503_212528` 또는 `음성 001_W_20250404_140623`)에서
+/// (표시용 제목, 녹음 출처[기기명/갤럭시 워치], 녹음 일자 YYYY-MM-DD, 녹음 시각 HH:MM:SS)을 추출합니다.
+fn parse_voice_recording_filename_meta(
+    file_stem: &str,
+    default_device_name: &str,
+) -> (String, String, String, String) {
+    static RE_WATCH: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_VOICE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let trimmed = file_stem.trim();
+    let is_watch = trimmed.contains("_W_") || trimmed.contains("워치");
+    let rec_source = if is_watch {
+        "갤럭시 워치".to_string()
+    } else if !default_device_name.trim().is_empty()
+        && default_device_name != "모바일"
+        && default_device_name != "모바일 통화녹음"
+    {
+        default_device_name.trim().to_string()
+    } else {
+        "SM-S901N".to_string()
+    };
+
+    let re_watch = RE_WATCH
+        .get_or_init(|| Regex::new(r"_W_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})").unwrap());
+    if let Some(cap) = re_watch.captures(trimmed) {
+        let d_str = format!("{}-{}-{}", &cap[1], &cap[2], &cap[3]);
+        let t_str = format!("{}:{}:{}", &cap[4], &cap[5], &cap[6]);
+        let disp = format!("[워치] {}", trimmed);
+        return (disp, rec_source, d_str, t_str);
+    }
+
+    let re_voice =
+        RE_VOICE.get_or_init(|| Regex::new(r"(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$").unwrap());
+    if let Some(cap) = re_voice.captures(trimmed) {
+        let d_str = format!("20{}-{}-{}", &cap[1], &cap[2], &cap[3]);
+        let t_str = format!("{}:{}:{}", &cap[4], &cap[5], &cap[6]);
+        let disp = format!("[{}] {}", rec_source, trimmed);
+        return (disp, rec_source, d_str, t_str);
+    }
+
+    let now = chrono::Local::now();
+    (
+        format!("[{}] {}", rec_source, trimmed),
+        rec_source,
+        now.format("%Y-%m-%d").to_string(),
+        now.format("%H:%M:%S").to_string(),
+    )
+}
+
+/// `이름_전화번호_날짜` 또는 `통화 녹음_이름_전화번호_날짜` 형태의 문자열에서
+/// 전화번호와 날짜 접미사를 모두 제거하고 순수 `이름`(연락처 매칭 포함)만 추출합니다.
+fn extract_clean_contact_name(
+    raw_target: &str,
+    contacts_map: &HashMap<String, String>,
+) -> String {
+    static RE_PAREN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_DT1: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_DT2: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_DT3: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_DT4: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let mut s = raw_target
+        .trim()
+        .trim_start_matches("통화 녹음 ")
+        .trim_start_matches("통화 녹음_")
+        .trim_start_matches("통화녹음 ")
+        .trim_start_matches("통화녹음_")
+        .trim_start_matches("Call_")
+        .trim_start_matches("call_")
+        .trim()
+        .to_string();
+
+    let re_paren = RE_PAREN.get_or_init(|| Regex::new(r"\s*\([0-9+\-\s]{7,}\)\s*$").unwrap());
+    // 괄호 안 전화번호 제거: `홍길동 (010-1234-5678)` -> `홍길동`
+    let stripped = re_paren.replace(&s, "").trim().to_string();
+    if !stripped.is_empty() {
+        s = stripped;
+    }
+
+    // 뒤쪽 날짜/시각 패턴 제거 (`_20261023122434`, `_20261023_122434`, `_261023_122434`)
+    for re_dt in [
+        RE_DT1.get_or_init(|| Regex::new(r"_(\d{8})_(\d{6})$").unwrap()),
+        RE_DT2.get_or_init(|| Regex::new(r"_(\d{6})_(\d{6})$").unwrap()),
+        RE_DT3.get_or_init(|| Regex::new(r"_(\d{14})$").unwrap()),
+        RE_DT4.get_or_init(|| Regex::new(r"_(\d{8,14})$").unwrap()),
+    ] {
+        s = re_dt.replace(&s, "").trim().to_string();
+    }
+
+    // `이름_전화번호` 또는 `이름_전화번호_기타` 분리
+    if s.contains('_') {
+        let parts: Vec<&str> = s.split('_').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        if !parts.is_empty() {
+            let first = parts[0];
+            let first_digits = normalize_phone_digits(first);
+            let is_first_phone = !first_digits.is_empty()
+                && first.chars().all(|c| c.is_ascii_digit() || c == '+' || c == '-');
+            if !is_first_phone {
+                // 첫 파트가 이름인 경우 (예: `#거제해양윤주권차장님_01066067048`) -> 이름만 반환
+                if let Some(found) = contacts_map.get(first) {
+                    return found.clone();
+                }
+                return first.to_string();
+            } else {
+                // 첫 파트가 전화번호인 경우 연락처 맵 조회
+                if let Some(found) = contacts_map.get(first) {
+                    return found.clone();
+                }
+                if first_digits.len() >= 7 {
+                    if let Some(found) = contacts_map.get(&first_digits) {
+                        return found.clone();
+                    }
+                }
+                return first.to_string();
+            }
+        }
+    }
+
+    let resolved = resolve_contact_display(&s, contacts_map);
+    let clean_res = re_paren.replace(&resolved, "").trim().to_string();
+    if !clean_res.is_empty() {
+        return clean_res;
+    }
+    resolved
+}
+
+/// 통화 녹음 파일명(예: `통화 녹음 #덕산아내중계_241017_180627`, `구인호_01038213356_20261029165901`, `이름_01012345678_20261023_122434`)에서
+/// (표시용 상대방 이름[이름만], 통화 일자 YYYY-MM-DD, 통화 시각 HH:MM:SS)을 추출합니다.
 fn parse_call_audio_filename_meta(
     file_stem: &str,
     contacts_map: &HashMap<String, String>,
 ) -> (String, String, String) {
-    let re = Regex::new(r"^(.*)_(\d{6})_(\d{6})$").unwrap();
-    if let Some(cap) = re.captures(file_stem.trim()) {
+    static RE_TPHONE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_YMD8: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static RE_SAMSUNG: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let trimmed = file_stem.trim();
+
+    // 1. T전화 녹음 포맷: `{이름}_{전화번호}_{YYYYMMDDHHMMSS}` (14자리 일시)
+    let re_tphone = RE_TPHONE
+        .get_or_init(|| Regex::new(r"^(.*)_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$").unwrap());
+    if let Some(cap) = re_tphone.captures(trimmed) {
+        let raw_prefix = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+        let date_str = format!("{}-{}-{}", &cap[2], &cap[3], &cap[4]);
+        let time_str = format!("{}:{}:{}", &cap[5], &cap[6], &cap[7]);
+        let clean_name = extract_clean_contact_name(raw_prefix, contacts_map);
+        return (clean_name, date_str, time_str);
+    }
+
+    // 2. 8자리 날짜 + 6자리 시각 포맷: `{이름}_{전화번호}_{YYYYMMDD}_{HHMMSS}`
+    let re_ymd8 = RE_YMD8
+        .get_or_init(|| Regex::new(r"^(.*)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$").unwrap());
+    if let Some(cap) = re_ymd8.captures(trimmed) {
+        let raw_prefix = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+        let date_str = format!("{}-{}-{}", &cap[2], &cap[3], &cap[4]);
+        let time_str = format!("{}:{}:{}", &cap[5], &cap[6], &cap[7]);
+        let clean_name = extract_clean_contact_name(raw_prefix, contacts_map);
+        return (clean_name, date_str, time_str);
+    }
+
+    // 3. 삼성 기본 통화녹음 포맷: `통화 녹음 {상대방}_{YYMMDD}_{HHMMSS}`
+    let re = RE_SAMSUNG.get_or_init(|| Regex::new(r"^(.*)_(\d{6})_(\d{6})$").unwrap());
+    if let Some(cap) = re.captures(trimmed) {
         let raw_prefix = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
         let ymd = cap.get(2).map(|m| m.as_str()).unwrap_or("261030");
         let hms = cap.get(3).map(|m| m.as_str()).unwrap_or("000000");
@@ -2536,23 +2928,120 @@ fn parse_call_audio_filename_meta(
             chrono::Local::now().format("%H:%M:%S").to_string()
         };
 
-        let target_raw = raw_prefix
-            .trim_start_matches("통화 녹음 ")
-            .trim_start_matches("통화 녹음_")
-            .trim_start_matches("통화녹음 ")
-            .trim_start_matches("통화녹음_")
-            .trim_start_matches("Call_")
-            .trim();
-        let resolved = resolve_contact_display(target_raw, contacts_map);
-        return (resolved, date_str, time_str);
+        let clean_name = extract_clean_contact_name(raw_prefix, contacts_map);
+        return (clean_name, date_str, time_str);
     }
 
     let now = chrono::Local::now();
     (
-        resolve_contact_display(file_stem, contacts_map),
+        extract_clean_contact_name(trimmed, contacts_map),
         now.format("%Y-%m-%d").to_string(),
         now.format("%H:%M:%S").to_string(),
     )
+}
+
+/// 스크립트 본문(`## 📜 스크립트` 하위)의 각 문장에 대해:
+/// 1) 화자 이름에 `이름_전화번호_날짜` 또는 `이름_전화번호`가 포함되어 있으면 순수 `이름`(`clean_name`)만 남기고,
+/// 2) 모든 문장 시작에 `[00:00:00]`(`HH:MM:SS`) 오프셋 시각이 표시되도록 정규화합니다.
+fn normalize_script_lines_with_timestamps_and_clean_name(
+    script_body: &str,
+    clean_name: &str,
+    raw_stem: &str,
+) -> String {
+    let re_hms = Regex::new(r"\[(\d{1,2}):(\d{2}):(\d{2})\]").unwrap();
+    let re_ms = Regex::new(r"\[(\d{1,2}):(\d{2})\]").unwrap();
+    let re_speaker_dirty = Regex::new(r"(\*\*\[?)([^\]*:]+_[0-9]{6,}[_0-9]*)(\]?\*\*)").unwrap();
+
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut est_sec: u64 = 0;
+
+    for raw_line in script_body.lines() {
+        let mut line = raw_line.to_string();
+        if !raw_stem.is_empty() && !clean_name.is_empty() && raw_stem != clean_name {
+            line = line.replace(raw_stem, clean_name);
+        }
+        if !clean_name.is_empty() {
+            line = re_speaker_dirty
+                .replace_all(&line, |caps: &regex::Captures| {
+                    format!("{}{}{}", &caps[1], clean_name, &caps[3])
+                })
+                .to_string();
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('>') || trimmed.starts_with('#') {
+            out_lines.push(line);
+            continue;
+        }
+
+        // 이미 [HH:MM:SS] 포맷이 있는 경우 2자리 패딩 보장 및 est_sec 동기화
+        if let Some(cap) = re_hms.captures(&line) {
+            let h: u64 = cap[1].parse().unwrap_or(0);
+            let m: u64 = cap[2].parse().unwrap_or(0);
+            let s: u64 = cap[3].parse().unwrap_or(0);
+            let formatted = format!("[{:02}:{:02}:{:02}]", h, m, s);
+            let full_match = cap.get(0).map(|m| m.as_str()).unwrap_or("");
+            if full_match != formatted {
+                line = line.replacen(full_match, &formatted, 1);
+            }
+            est_sec = h * 3600 + m * 60 + s + 3;
+            out_lines.push(line);
+            continue;
+        }
+
+        // [MM:SS] 포맷이 있는 경우 [00:MM:SS]로 변환
+        if let Some(cap) = re_ms.captures(&line) {
+            let m_val: u64 = cap[1].parse().unwrap_or(0);
+            let s_val: u64 = cap[2].parse().unwrap_or(0);
+            let total = m_val * 60 + s_val;
+            let h = total / 3600;
+            let m = (total % 3600) / 60;
+            let s = total % 60;
+            let formatted = format!("[{:02}:{:02}:{:02}]", h, m, s);
+            let full_match = cap.get(0).map(|m| m.as_str()).unwrap_or("");
+            line = line.replacen(full_match, &formatted, 1);
+            est_sec = total + 3;
+            out_lines.push(line);
+            continue;
+        }
+
+        // 불릿 라인(`- ...` 또는 `* ...`)인데 타임스탬프가 없는 경우 [00:00:00] 오프셋 부여
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            let h = est_sec / 3600;
+            let m = (est_sec % 3600) / 60;
+            let s = est_sec % 60;
+            let ts_tag = format!("[{:02}:{:02}:{:02}]", h, m, s);
+
+            let rest = &trimmed[2..].trim_start();
+            let updated_line = if let Some(after_bold) = rest.strip_prefix("**[") {
+                if let Some(close_idx) = after_bold.find("]**") {
+                    let spk = after_bold[..close_idx].trim();
+                    let clean_spk = if spk.contains('_') && !clean_name.is_empty() {
+                        clean_name
+                    } else {
+                        spk
+                    };
+                    let after_spk = &after_bold[close_idx + 3..];
+                    format!("- **{} {}**{}", ts_tag, clean_spk, after_spk)
+                } else {
+                    format!("- **{}** {}", ts_tag, rest)
+                }
+            } else if let Some(after_bold) = rest.strip_prefix("**") {
+                format!("- **{} {}", ts_tag, after_bold)
+            } else {
+                format!("- **{}** {}", ts_tag, rest)
+            };
+
+            let char_count = rest.chars().count() as u64;
+            let step_sec = (char_count / 5).clamp(2, 12);
+            est_sec += step_sec;
+            out_lines.push(updated_line);
+        } else {
+            out_lines.push(line);
+        }
+    }
+
+    out_lines.join("\n")
 }
 
 /// LLM(Gemini)이 생성한 통화 분석 텍스트를 1) 요약부 와 2) 스크립트 2개 섹션으로 분리합니다.
@@ -2652,7 +3141,12 @@ fn write_call_recording_markdown(
 
     let (status_str, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
         let (sum_s, scr_s) = split_summary_and_transcript(tr);
-        ("completed", sum_s, scr_s)
+        let norm_scr = normalize_script_lines_with_timestamps_and_clean_name(
+            &scr_s,
+            contact_display,
+            &raw_stem,
+        );
+        ("completed", sum_s, norm_scr)
     } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
         (
             "pending_quota",
@@ -2699,14 +3193,14 @@ fn write_call_recording_markdown(
          ## 📜 스크립트\n\n\
          {}\n",
         doc_uuid,
-        safe_stem.replace('"', "\\\""),
+        contact_display.replace('"', "\\\""),
         audio_file_name.replace('"', "\\\""),
         contact_display.replace('"', "\\\""),
         recorded_date,
         recorded_time,
         status_str,
         now_str,
-        safe_stem,
+        contact_display,
         contact_display,
         recorded_date,
         recorded_time,
@@ -2717,6 +3211,300 @@ fn write_call_recording_markdown(
 
     let _ = fs::write(&md_path, md_content.as_bytes());
     md_path
+}
+
+/// 독백녹음·회의녹음(`mobile/recordings/{audio_file_stem}.md`) 마크다운 생성/갱신
+/// 녹음 출처(`recording_source`: 기기명 예 `SM-S901N` 또는 `갤럭시 워치`)를 구분하여 저장하며,
+/// 음성메모·회의록 톤의 요약부(`## 💡 요약`)와 스크립트(`## 📜 스크립트`) 2부분으로 작성합니다.
+fn write_voice_recording_markdown(
+    conn: &Connection,
+    audio_file_name: &str,
+    recording_source: &str,
+    recorded_date: &str,
+    recorded_time: &str,
+    transcript_opt: Option<&str>,
+    quota_error_info: Option<(&str, &str, &str)>,
+) -> PathBuf {
+    let rec_dir = get_archive_mobile_dir(conn, "recordings");
+    let raw_stem = Path::new(audio_file_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| audio_file_name.to_string());
+    let safe_stem = sanitize_filename_stem(&raw_stem);
+    let md_path = rec_dir.join(format!("{}.md", safe_stem));
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let existing_uuid = if md_path.exists() {
+        fs::read_to_string(&md_path)
+            .ok()
+            .and_then(|c| {
+                let (_, _, fm) = parse_markdown_yaml(&c);
+                fm.get("uuid").cloned()
+            })
+            .filter(|u| !u.is_empty())
+    } else {
+        None
+    };
+    let doc_uuid = existing_uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let (status_str, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
+        let (sum_s, scr_s) = split_summary_and_transcript(tr);
+        let norm_scr = normalize_script_lines_with_timestamps_and_clean_name(
+            &scr_s,
+            recording_source,
+            &raw_stem,
+        );
+        ("completed", sum_s, norm_scr)
+    } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
+        (
+            "pending_quota",
+            format!(
+                "> ⚠️ **LLM 토큰 부족/한도 초과로 인해 아직 음성메모·회의 요약이 생성되지 않았습니다.**\n\
+                 > - **토큰 고갈 감지 시점**: `{}`\n\
+                 > - **5시간 후 자동 재시도 예정 시점**: **`{}`**\n\
+                 > - **상세 사유**: {}",
+                ex_at, retry_at, err_m
+            ),
+            format!(
+                "> ⏳ **5시간 후(`{}`)에 자동으로 LLM 음성녹음 스크립트 변환을 재시도합니다.**",
+                retry_at
+            ),
+        )
+    } else {
+        (
+            "pending_quota",
+            "> ⏳ **음성메모/회의록 핵심 요약 및 Action Items 추출 대기 중입니다.** (우클릭 메뉴에서 '스크립트 추출 및 요약'을 실행하거나 자동 추출을 기다려 주세요.)".to_string(),
+            "> ⏳ **음성메모/회의 전체 스크립트 생성 대기 중입니다.**".to_string(),
+        )
+    };
+
+    let icon = if recording_source.contains("워치") {
+        "⌚"
+    } else {
+        "🎙️"
+    };
+
+    let md_content = format!(
+        "---\n\
+         uuid: \"{}\"\n\
+         title: \"{}\"\n\
+         category: \"mobile/recordings\"\n\
+         audio_file: \"audio/{}\"\n\
+         recording_source: \"{}\"\n\
+         recorded_date: \"{}\"\n\
+         recorded_time: \"{}\"\n\
+         transcript_status: \"{}\"\n\
+         device_aliases: [\"핸드폰\", \"휴대폰\", \"갤럭시\", \"워치\", \"갤럭시워치\", \"음성메모\"]\n\
+         source_aliases: [\"녹음\", \"음성녹음\", \"음성메모\", \"회의녹음\", \"독백녹음\"]\n\
+         last_synced: \"{}\"\n\
+         ---\n\n\
+         # {} [{}] {}\n\n\
+         > **녹음 출처**: `{}` | **녹음 일시**: {} {} | **원본 녹음파일**: `audio/{}`\n\n\
+         ## 💡 요약\n\n\
+         {}\n\n\
+         ---\n\n\
+         ## 📜 스크립트\n\n\
+         {}\n",
+        doc_uuid,
+        safe_stem.replace('"', "\\\""),
+        audio_file_name.replace('"', "\\\""),
+        recording_source.replace('"', "\\\""),
+        recorded_date,
+        recorded_time,
+        status_str,
+        now_str,
+        icon,
+        recording_source,
+        safe_stem,
+        recording_source,
+        recorded_date,
+        recorded_time,
+        audio_file_name,
+        summary_body,
+        script_body
+    );
+
+    let _ = fs::write(&md_path, md_content.as_bytes());
+    md_path
+}
+
+/// 단일 통화녹음 또는 음성녹음 항목만 즉시 `lifelog_messages`에 $O(1)$로 반영합니다 (전체 폴더 풀스캔 방지).
+fn upsert_single_recording_into_lifelog_db(
+    conn: &Connection,
+    is_voice_memo: bool,
+    file_stem: &str,
+    display_or_source: &str,
+    rec_date: &str,
+    rec_time: &str,
+    transcript_opt: Option<&str>,
+    dev_id: &str,
+    dev_name: &str,
+) {
+    let safe_stem = sanitize_filename_stem(file_stem);
+    let is_completed = transcript_opt
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let mut summary_preview = String::new();
+    if let Some(tr) = transcript_opt {
+        let (sum_s, _) = split_summary_and_transcript(tr);
+        for line in sum_s.lines() {
+            let tl = line.trim();
+            if !tl.is_empty()
+                && !tl.starts_with('#')
+                && !tl.starts_with('>')
+                && !tl.starts_with("---")
+            {
+                summary_preview = tl.to_string();
+                break;
+            }
+        }
+    }
+
+    let attach_tag = if is_completed {
+        format!("transcribed:{}", safe_stem)
+    } else {
+        format!("pending_transcript:{}", safe_stem)
+    };
+
+    if is_voice_memo {
+        let dedup_key = format!("voice_rec|{}", safe_stem);
+        let source_badge = if display_or_source.contains("워치") {
+            "⌚ 워치"
+        } else {
+            display_or_source
+        };
+        let msg_text = if is_completed {
+            if summary_preview.is_empty() {
+                format!("🎙️ [{} · 회의/음성메모 요약 완료] {}", source_badge, safe_stem)
+            } else {
+                format!("🎙️ [{}] {}", source_badge, summary_preview)
+            }
+        } else {
+            let retry_ms = get_meta_i64(conn, "gemini_quota_retry_after_ms");
+            if retry_ms > chrono::Local::now().timestamp_millis() {
+                let (_, retry_t) = epoch_ms_to_local_date_time(retry_ms);
+                format!(
+                    "⚠️ [LLM 토큰 부족 · {} 자동 재시도] [{}] {}",
+                    &retry_t[..std::cmp::min(5, retry_t.len())],
+                    source_badge,
+                    safe_stem
+                )
+            } else {
+                format!(
+                    "🎙️ [{}] {} (스크립트 미생성 · 우클릭하여 회의/음성메모 요약 추출)",
+                    source_badge, safe_stem
+                )
+            }
+        };
+        let eff_dev_id = if dev_id.is_empty() {
+            "dev_c6ffadd525"
+        } else {
+            dev_id
+        };
+        let eff_dev_name = if dev_name.is_empty() {
+            display_or_source
+        } else {
+            dev_name
+        };
+        let _ = conn.execute(
+            "INSERT INTO lifelog_messages
+             (source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, dedup_key, device_id, device_name)
+             VALUES ('recording', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(dedup_key) DO UPDATE SET
+                room_or_sender = excluded.room_or_sender,
+                sender = excluded.sender,
+                message = excluded.message,
+                sent_date = excluded.sent_date,
+                sent_time = excluded.sent_time,
+                attachment_uuid = excluded.attachment_uuid,
+                device_name = excluded.device_name",
+            params![
+                safe_stem,
+                display_or_source,
+                msg_text,
+                rec_date,
+                rec_time,
+                attach_tag,
+                dedup_key,
+                eff_dev_id,
+                eff_dev_name
+            ],
+        );
+    } else {
+        let dedup_key = format!("call_rec|{}", safe_stem);
+        let msg_text = if is_completed {
+            if summary_preview.is_empty() {
+                format!(
+                    "🎙️ [통화 스크립트 완료] {} ({})",
+                    display_or_source, safe_stem
+                )
+            } else {
+                format!("🎙️ {}", summary_preview)
+            }
+        } else {
+            let retry_ms = get_meta_i64(conn, "gemini_quota_retry_after_ms");
+            if retry_ms > chrono::Local::now().timestamp_millis() {
+                let (_, retry_t) = epoch_ms_to_local_date_time(retry_ms);
+                format!(
+                    "⚠️ [LLM 토큰 부족 · {} 자동 재시도] {} ({})",
+                    &retry_t[..std::cmp::min(5, retry_t.len())],
+                    display_or_source,
+                    safe_stem
+                )
+            } else {
+                format!(
+                    "⚠️ [스크립트 미생성 · 자동 변환 대기] {} ({})",
+                    display_or_source, safe_stem
+                )
+            }
+        };
+        let eff_dev_name = if dev_name.is_empty() {
+            "모바일 통화녹음"
+        } else {
+            dev_name
+        };
+        let _ = conn.execute(
+            "INSERT INTO lifelog_messages
+             (source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, dedup_key, device_id, device_name)
+             VALUES ('call', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(dedup_key) DO UPDATE SET
+                room_or_sender = excluded.room_or_sender,
+                sender = excluded.sender,
+                message = excluded.message,
+                sent_date = excluded.sent_date,
+                sent_time = excluded.sent_time,
+                attachment_uuid = excluded.attachment_uuid",
+            params![
+                safe_stem,
+                display_or_source,
+                msg_text,
+                rec_date,
+                rec_time,
+                attach_tag,
+                dedup_key,
+                dev_id,
+                eff_dev_name
+            ],
+        );
+    }
+}
+
+/// 오디오 파일 앞부분 16바이트만 확인하여 Multipart 헤더(`--`)로 시작할 때에만 전체 파일을 읽어 복구합니다 (대용량 오디오 불필요 I/O 제거).
+fn repair_multipart_audio_file_if_needed(p: &Path) {
+    use std::io::Read;
+    if let Ok(mut f) = fs::File::open(p) {
+        let mut head = [0u8; 16];
+        let n = f.read(&mut head).unwrap_or(0);
+        if n >= 2 && head.starts_with(b"--") {
+            drop(f);
+            if let Ok(raw_bytes) = fs::read(p) {
+                let (clean_bytes, repaired) = strip_multipart_prefix_if_present(&raw_bytes);
+                if repaired {
+                    let _ = fs::write(p, &clean_bytes);
+                }
+            }
+        }
+    }
 }
 
 fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
@@ -2743,9 +3531,14 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
 
     // 2. `mobile/calls/audio/` 내 모든 통화 녹음 파일 스캔:
     //    - 잘못 붙은 Multipart 헤더가 있으면 순수 오디오로 자동 복구
+    //    - 만약 독백/회의/워치 녹음 파일이 `calls/audio`에 섞여 있다면 `recordings/audio`로 자동 분류 이동
     //    - 통화파일명과 동일한 `mobile/calls/{통화파일명}.md` (요약부 + 스크립트 2부분) 보장
     //    - `lifelog_messages` 에 통화 녹음 상태(완료 vs 미생성/토큰부족) 동기화
     let audio_dir = calls_dir.join("audio");
+    let rec_dir = get_archive_mobile_dir(conn, "recordings");
+    let rec_audio_dir = rec_dir.join("audio");
+    let _ = fs::create_dir_all(&rec_audio_dir);
+
     if let Ok(entries) = fs::read_dir(&audio_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
@@ -2772,11 +3565,17 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                 continue;
             }
 
-            if let Ok(raw_bytes) = fs::read(&p) {
-                let (clean_bytes, repaired) = strip_multipart_prefix_if_present(&raw_bytes);
-                if repaired {
-                    let _ = fs::write(&p, &clean_bytes);
+            repair_multipart_audio_file_if_needed(&p);
+
+            // 독백/회의/워치 음성녹음이면 `mobile/recordings/audio/`로 이동
+            let (is_voice_memo, _) = is_voice_memo_or_watch_recording(&file_name, "", "SM-S901N");
+            if is_voice_memo {
+                let dest = rec_audio_dir.join(&file_name);
+                if !dest.exists() {
+                    let _ = fs::copy(&p, &dest);
                 }
+                let _ = fs::remove_file(&p);
+                continue;
             }
 
             let (contact_display, rec_date, rec_time) =
@@ -2791,6 +3590,21 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                     let (fm, body) = parse_frontmatter_and_body_simple(&md_raw);
                     if fm.get("transcript_status").map(|s| s.as_str()) == Some("completed") {
                         is_completed = true;
+                        // 기존 스크립트에 `[00:00:00]` 타임스탬프가 없거나 `이름_전화번호_날짜`가 남아있으면 자동 정제 업그레이드
+                        let needs_upgrade = (file_stem != contact_display && body.contains(&file_stem))
+                            || fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str())
+                            || !body.contains("[00:");
+                        if needs_upgrade {
+                            write_call_recording_markdown(
+                                conn,
+                                &file_name,
+                                &contact_display,
+                                &rec_date,
+                                &rec_time,
+                                Some(&body),
+                                None,
+                            );
+                        }
                         for line in body.lines() {
                             let tl = line.trim();
                             if !tl.is_empty()
@@ -2802,6 +3616,16 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                                 break;
                             }
                         }
+                    } else if fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str()) {
+                        write_call_recording_markdown(
+                            conn,
+                            &file_name,
+                            &contact_display,
+                            &rec_date,
+                            &rec_time,
+                            None,
+                            None,
+                        );
                     }
                 }
             } else {
@@ -2865,6 +3689,137 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                     rec_time,
                     attach_tag,
                     dedup_key
+                ],
+            );
+        }
+    }
+
+    // 2-B. `mobile/recordings/audio/` 내 독백녹음·회의녹음·워치 음성메모 스캔 및 `source = 'recording'` 동기화
+    let _ = conn.execute(
+        "DELETE FROM lifelog_messages WHERE source = 'recording' AND dedup_key NOT LIKE 'voice_rec|%'",
+        [],
+    );
+    if let Ok(entries) = fs::read_dir(&rec_audio_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let ext = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
+                continue;
+            }
+            let file_name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let file_stem = p
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if file_stem.is_empty() {
+                continue;
+            }
+
+            repair_multipart_audio_file_if_needed(&p);
+
+            let (_disp_title, rec_source, rec_date, rec_time) =
+                parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
+            let safe_stem = sanitize_filename_stem(&file_stem);
+            let md_path = rec_dir.join(format!("{}.md", safe_stem));
+
+            let mut is_completed = false;
+            let mut summary_preview = String::new();
+            if md_path.exists() {
+                if let Ok(md_raw) = fs::read_to_string(&md_path) {
+                    let (fm, body) = parse_frontmatter_and_body_simple(&md_raw);
+                    if fm.get("transcript_status").map(|s| s.as_str()) == Some("completed") {
+                        is_completed = true;
+                        for line in body.lines() {
+                            let tl = line.trim();
+                            if !tl.is_empty()
+                                && !tl.starts_with('#')
+                                && !tl.starts_with('>')
+                                && !tl.starts_with("---")
+                            {
+                                summary_preview = tl.to_string();
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                write_voice_recording_markdown(
+                    conn,
+                    &file_name,
+                    &rec_source,
+                    &rec_date,
+                    &rec_time,
+                    None,
+                    None,
+                );
+            }
+
+            let dedup_key = format!("voice_rec|{}", safe_stem);
+            let attach_tag = if is_completed {
+                format!("transcribed:{}", safe_stem)
+            } else {
+                format!("pending_transcript:{}", safe_stem)
+            };
+            let source_badge = if rec_source.contains("워치") {
+                "⌚ 워치"
+            } else {
+                &rec_source
+            };
+            let msg_text = if is_completed {
+                if summary_preview.is_empty() {
+                    format!("🎙️ [{} · 회의/음성메모 요약 완료] {}", source_badge, safe_stem)
+                } else {
+                    format!("🎙️ [{}] {}", source_badge, summary_preview)
+                }
+            } else {
+                let retry_ms = get_meta_i64(conn, "gemini_quota_retry_after_ms");
+                if retry_ms > chrono::Local::now().timestamp_millis() {
+                    let (_, retry_t) = epoch_ms_to_local_date_time(retry_ms);
+                    format!(
+                        "⚠️ [LLM 토큰 부족 · {} 자동 재시도] [{}] {}",
+                        &retry_t[..std::cmp::min(5, retry_t.len())],
+                        source_badge,
+                        safe_stem
+                    )
+                } else {
+                    format!(
+                        "🎙️ [{}] {} (스크립트 미생성 · 우클릭하여 회의/음성메모 요약 추출)",
+                        source_badge, safe_stem
+                    )
+                }
+            };
+
+            let _ = conn.execute(
+                "INSERT INTO lifelog_messages
+                 (source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, dedup_key, device_id, device_name)
+                 VALUES ('recording', ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'dev_c6ffadd525', ?8)
+                 ON CONFLICT(dedup_key) DO UPDATE SET
+                    room_or_sender = excluded.room_or_sender,
+                    sender = excluded.sender,
+                    message = excluded.message,
+                    sent_date = excluded.sent_date,
+                    sent_time = excluded.sent_time,
+                    attachment_uuid = excluded.attachment_uuid,
+                    device_name = excluded.device_name",
+                params![
+                    safe_stem,
+                    rec_source,
+                    msg_text,
+                    rec_date,
+                    rec_time,
+                    attach_tag,
+                    dedup_key,
+                    rec_source
                 ],
             );
         }
@@ -2995,7 +3950,7 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                     stime,
                     dir_tag,
                     sender_lbl,
-                    msg.replace('\n', " ")
+                    clean_mms_and_multiline_body(&msg)
                 );
                 append_line_to_mobile_md(
                     conn,
@@ -3005,6 +3960,27 @@ fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                     "[\"문자\", \"문자내역\", \"메시지\", \"SMS\", \"MMS\"]",
                     &sdate,
                     &md_line,
+                );
+            }
+        }
+    }
+
+    // 4-B. 기존 DB 내 깨진 MMS 제목(`[ì œëª©ì—†ì Œ]`) 또는 RCS JSON 문자열 자동 정화
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, message FROM lifelog_messages
+         WHERE source = 'sms' AND (message LIKE '[ì%' OR message LIKE '[제목없음]%' OR message LIKE '{\"layout\":%' OR message LIKE '%\n%')",
+    ) {
+        let dirty_rows: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .ok()
+            .map(|it| it.filter_map(|x| x.ok()).collect())
+            .unwrap_or_default();
+        for (row_id, raw_msg) in dirty_rows {
+            let cleaned = clean_mms_and_multiline_body(&raw_msg);
+            if cleaned != raw_msg {
+                let _ = conn.execute(
+                    "UPDATE lifelog_messages SET message = ?1 WHERE id = ?2",
+                    params![cleaned, row_id],
                 );
             }
         }
@@ -3093,6 +4069,18 @@ fn enrich_kakao_markdown_with_media(conn: &Connection, md_path: &Path) {
             let cand = dir.join(clean);
             if cand.exists() && cand.is_file() {
                 return Some(cand);
+            }
+        }
+        // `mobile/kakao/{폴더명}/` 하위에 원본 폴더 구조 그대로 적재된 이미지·동영상 탐색
+        if let Ok(entries) = fs::read_dir(&kakao_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let cand = p.join(clean);
+                    if cand.exists() && cand.is_file() {
+                        return Some(cand);
+                    }
+                }
             }
         }
         None
@@ -3353,13 +4341,18 @@ async fn open_lifelog_item_document(
                             cur_date = sdate.clone();
                             content.push_str(&format!("\n## 📅 {}\n", cur_date));
                         }
-                        let is_sent = sender == "나 (문자발신)" || sender.contains("발신");
+                        let is_sent = sender == "나 (문자발신)"
+                            || sender.contains("발신")
+                            || msg.trim_start().starts_with("[발신]");
                         let dir_tag = if is_sent { "📤 발신" } else { "📥 수신" };
                         let sender_lbl = if is_sent {
                             "나 (문자발신)".to_string()
                         } else {
                             display_name.clone()
                         };
+                        let clean_msg = clean_mms_and_multiline_body(
+                            msg.trim_start().trim_start_matches("[발신]").trim_start(),
+                        );
                         let time_hms = if stime.len() == 5 {
                             format!("{}:00", stime)
                         } else {
@@ -3367,10 +4360,7 @@ async fn open_lifelog_item_document(
                         };
                         content.push_str(&format!(
                             "- **[{}] [{}] {}**: {}\n",
-                            time_hms,
-                            dir_tag,
-                            sender_lbl,
-                            msg.replace('\n', " ")
+                            time_hms, dir_tag, sender_lbl, clean_msg
                         ));
                     }
                     let _ = fs::write(&md_path, content.as_bytes());
@@ -3410,6 +4400,62 @@ async fn open_lifelog_item_document(
                 }
                 md_path
             }
+        } else if src == "recording" {
+            let rec_dir = get_archive_mobile_dir(&conn, "recordings");
+            if let Some((_, file_name, file_stem, rec_md_path, _)) =
+                find_call_audio_and_md(&conn, &room_or_sender, attachment_uuid.as_deref())
+            {
+                if !rec_md_path.exists() {
+                    let (_, rec_source, r_date, r_time) =
+                        parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
+                    write_voice_recording_markdown(
+                        &conn, &file_name, &rec_source, &r_date, &r_time, None, None,
+                    );
+                }
+                rec_md_path
+            } else {
+                let clean_room = room_or_sender
+                    .trim()
+                    .trim_start_matches("[워치]")
+                    .trim_start_matches("[SM-S901N]")
+                    .trim();
+                let target_stem = sanitize_filename_stem(clean_room);
+                let md_path = rec_dir.join(format!("{}.md", target_stem));
+                if !md_path.exists() {
+                    let (_, rec_source, r_date, r_time) =
+                        parse_voice_recording_filename_meta(&target_stem, "SM-S901N");
+                    write_voice_recording_markdown(
+                        &conn,
+                        &format!("{}.m4a", target_stem),
+                        &rec_source,
+                        &r_date,
+                        &r_time,
+                        None,
+                        None,
+                    );
+                }
+                md_path
+            }
+        } else if src == "health" {
+            let health_dir = get_archive_mobile_dir(&conn, "health");
+            let ym = sent_date
+                .as_deref()
+                .filter(|s| s.len() >= 7)
+                .map(|s| &s[..7])
+                .unwrap_or_else(|| {
+                    if room_or_sender.len() >= 7 && room_or_sender.contains('-') {
+                        &room_or_sender[..7]
+                    } else {
+                        "2026-10"
+                    }
+                });
+            let stem = if room_or_sender.ends_with("_운동기록") {
+                room_or_sender.clone()
+            } else {
+                format!("{}_운동기록", ym)
+            };
+            let md_path = health_dir.join(format!("{}.md", sanitize_filename_stem(&stem)));
+            md_path
         } else {
             let noti_dir = get_archive_mobile_dir(&conn, "notifications");
             let ym = sent_date
@@ -3440,7 +4486,10 @@ async fn get_all_lifelog_messages(
     let per_source_limit = (limit.unwrap_or(4000) / 2).max(1200) as i64;
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&db_path)?;
-        backfill_mobile_md_into_lifelog_db(&conn);
+        if LIFELOG_BACKFILLED_ONCE.get().is_none() {
+            backfill_mobile_md_into_lifelog_db(&conn);
+            let _ = LIFELOG_BACKFILLED_ONCE.set(true);
+        }
 
         let mut stmt = conn
             .prepare(
@@ -3469,6 +4518,18 @@ async fn get_all_lifelog_messages(
                          FROM lifelog_messages WHERE source = 'call'
                          ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
                      )
+                     UNION ALL
+                     SELECT * FROM (
+                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
+                         FROM lifelog_messages WHERE source = 'recording'
+                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
+                     )
+                     UNION ALL
+                     SELECT * FROM (
+                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
+                         FROM lifelog_messages WHERE source = 'health'
+                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
+                     )
                  )
                  ORDER BY sent_date DESC, sent_time DESC, id DESC",
             )
@@ -3493,16 +4554,146 @@ async fn get_all_lifelog_messages(
             .filter_map(|r| r.ok())
             .collect();
 
+        // 통화/녹음 오디오 파일 디렉터리를 단 1회만 스캔하여 인메모리 인덱스를 구축함으로써
+        // 수천 건 조회 시에도 디스크 반복 I/O 및 정규식 재컴파일이 전혀 발생하지 않도록 최적화
+        let contacts_map = load_mobile_contacts_map(&conn);
+        let calls_audio_dir = get_archive_mobile_dir(&conn, "calls").join("audio");
+        let rec_audio_dir = get_archive_mobile_dir(&conn, "recordings").join("audio");
+
+        struct CachedAudioFile {
+            file_name: String,
+            safe_stem: String,
+            c_disp: String,
+            c_key: String,
+            stem_digits: String,
+            r_d: String,
+            sort_key: String,
+        }
+
+        let mut stem_to_filename: HashMap<String, String> = HashMap::new();
+        let mut cached_audios: Vec<CachedAudioFile> = Vec::new();
+
+        for a_dir in [&rec_audio_dir, &calls_audio_dir] {
+            if let Ok(entries) = fs::read_dir(a_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
+                        continue;
+                    }
+                    let file_name = p
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let stem = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if stem.is_empty() {
+                        continue;
+                    }
+                    let safe_stem = sanitize_filename_stem(&stem);
+                    stem_to_filename
+                        .entry(safe_stem.clone())
+                        .or_insert_with(|| file_name.clone());
+                    stem_to_filename
+                        .entry(stem.clone())
+                        .or_insert_with(|| file_name.clone());
+
+                    let (c_disp, r_d, r_t) = parse_call_audio_filename_meta(&stem, &contacts_map);
+                    let c_key = normalize_call_contact_key(&c_disp);
+                    let stem_digits = normalize_phone_digits(&stem);
+                    let sort_key = format!("{}_{}_{}", r_d, r_t, stem);
+                    cached_audios.push(CachedAudioFile {
+                        file_name,
+                        safe_stem,
+                        c_disp,
+                        c_key,
+                        stem_digits,
+                        r_d,
+                        sort_key,
+                    });
+                }
+            }
+        }
+        cached_audios.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+
         for row in rows.iter_mut() {
-            if row.source == "call" {
-                let matched = find_call_audio_and_md_ext(
-                    &conn,
-                    &row.room_or_sender,
-                    row.attachment_uuid.as_deref(),
-                    Some(&row.sent_date),
-                    false,
-                );
-                if let Some((_, fname, _, _, _)) = matched {
+            if row.source == "call" || row.source == "recording" {
+                let explicit_stem = row
+                    .attachment_uuid
+                    .as_deref()
+                    .and_then(|a| {
+                        a.strip_prefix("transcribed:")
+                            .or_else(|| a.strip_prefix("pending_transcript:"))
+                    })
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+
+                let clean_room = row
+                    .room_or_sender
+                    .trim()
+                    .trim_start_matches("[워치]")
+                    .trim_start_matches("[SM-S901N]")
+                    .trim();
+
+                let mut matched_fname: Option<String> = None;
+
+                if let Some(ref ex) = explicit_stem {
+                    if let Some(f) = stem_to_filename
+                        .get(ex)
+                        .or_else(|| stem_to_filename.get(&sanitize_filename_stem(ex)))
+                    {
+                        matched_fname = Some(f.clone());
+                    }
+                }
+                if matched_fname.is_none() {
+                    let s1 = sanitize_filename_stem(clean_room);
+                    let s2 = sanitize_filename_stem(&row.room_or_sender);
+                    if let Some(f) = stem_to_filename.get(&s1).or_else(|| stem_to_filename.get(&s2))
+                    {
+                        matched_fname = Some(f.clone());
+                    }
+                }
+
+                if matched_fname.is_none() {
+                    let target_norm = normalize_phone_digits(clean_room);
+                    let target_disp = resolve_contact_display(clean_room, &contacts_map);
+                    let target_key_a = normalize_call_contact_key(clean_room);
+                    let target_key_b = normalize_call_contact_key(&target_disp);
+                    let allow_any_date = row.source == "recording";
+                    let mut any_date_fallback: Option<String> = None;
+
+                    for ca in &cached_audios {
+                        let is_contact_match = ca.c_disp == target_disp
+                            || ca.c_disp == clean_room
+                            || (!ca.c_key.is_empty()
+                                && (ca.c_key == target_key_a || ca.c_key == target_key_b))
+                            || (!target_norm.is_empty()
+                                && target_norm.len() >= 8
+                                && ca.stem_digits.contains(&target_norm));
+                        if is_contact_match {
+                            if ca.r_d == row.sent_date {
+                                matched_fname = Some(ca.file_name.clone());
+                                break;
+                            } else if allow_any_date && any_date_fallback.is_none() {
+                                any_date_fallback = Some(ca.file_name.clone());
+                            }
+                        }
+                    }
+                    if matched_fname.is_none() {
+                        matched_fname = any_date_fallback;
+                    }
+                }
+
+                if let Some(fname) = matched_fname {
                     row.has_audio_recording = true;
                     if row.attachment_uuid.as_deref().unwrap_or("").trim().is_empty() {
                         row.attachment_uuid = Some(fname);
@@ -4421,6 +5612,351 @@ fn send_mobile_udp_wake_broadcast() -> Result<String, String> {
     Ok("UDP 255.255.255.255:18444 로 MYLORE_PC_ONLINE 브로드캐스트 송출 완료".to_string())
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MobileSyncSegment {
+    kind: String, // "skip" (파란색: 이미 보유하여 스킵) | "download" (녹색: 신규 다운로드)
+    width_pct: f64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MobileSyncStepSummary {
+    key: String,
+    label: String,
+    status: String, // "pending" | "running" | "done"
+    percent: u32,
+    total_count: usize,
+    skipped_count: usize,
+    downloaded_count: usize,
+    segments: Vec<MobileSyncSegment>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MobileSyncProgressPayload {
+    is_running: bool,
+    is_completed: bool,
+    current_step_index: usize,
+    total_steps: usize,
+    current_key: String,
+    current_label: String,
+    current_percent: u32,
+    #[serde(default)]
+    queued_jobs: usize,
+    steps: Vec<MobileSyncStepSummary>,
+}
+
+static LIVE_SYNC_PROGRESS: std::sync::OnceLock<Mutex<MobileSyncProgressPayload>> =
+    std::sync::OnceLock::new();
+static SYNC_QUEUE_DEPTH: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static IS_WORKER_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static LAST_PROGRESS_EMIT_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+static INITIAL_SYNC_CHECKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static LAST_APP_USAGE_DIGEST: std::sync::OnceLock<Mutex<(String, i64)>> =
+    std::sync::OnceLock::new();
+
+fn rebuild_step_segments(st: &mut MobileSyncStepSummary) {
+    st.segments.clear();
+    let pct = st.percent.clamp(0, 100);
+    if pct == 0 {
+        return;
+    }
+    let tot_processed = st.skipped_count + st.downloaded_count;
+    if tot_processed == 0 {
+        st.segments.push(MobileSyncSegment {
+            kind: "skip".to_string(),
+            width_pct: pct as f64,
+        });
+    } else {
+        let skip_w = (pct as f64) * (st.skipped_count as f64 / tot_processed as f64);
+        let dl_w = (pct as f64) - skip_w;
+        if skip_w > 0.05 {
+            st.segments.push(MobileSyncSegment {
+                kind: "skip".to_string(),
+                width_pct: skip_w,
+            });
+        }
+        if dl_w > 0.05 {
+            st.segments.push(MobileSyncSegment {
+                kind: "download".to_string(),
+                width_pct: dl_w,
+            });
+        }
+    }
+}
+
+fn default_live_sync_progress() -> MobileSyncProgressPayload {
+    let step_defs = [
+        ("kakaotalk", "카카오톡 받아오는 중..."),
+        ("notification", "알림목록 받아오는 중..."),
+        ("sms", "문자 목록 받아오는 중..."),
+        ("call", "통화 목록 받아오는 중..."),
+        ("recording", "녹음 목록 받아오는 중..."),
+        ("health", "헬스 데이터 받아오는 중..."),
+    ];
+    let steps = step_defs
+        .iter()
+        .map(|(k, lbl)| MobileSyncStepSummary {
+            key: k.to_string(),
+            label: lbl.to_string(),
+            status: "pending".to_string(),
+            percent: 0,
+            total_count: 0,
+            skipped_count: 0,
+            downloaded_count: 0,
+            segments: Vec::new(),
+        })
+        .collect();
+    MobileSyncProgressPayload {
+        is_running: false,
+        is_completed: false,
+        current_step_index: 0,
+        total_steps: step_defs.len(),
+        current_key: "kakaotalk".to_string(),
+        current_label: "카카오톡 받아오는 중...".to_string(),
+        current_percent: 0,
+        queued_jobs: 0,
+        steps,
+    }
+}
+
+/// 메인 프로그램이 DB나 디스크 I/O 없이 순수 인메모리 진행 상태만 가볍게 모니터링할 수 있는 Tauri 커맨드
+#[tauri::command]
+fn get_mobile_sync_progress_state() -> MobileSyncProgressPayload {
+    let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
+    if let Ok(mut guard) = mutex.lock() {
+        let q = SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+        let active = IS_WORKER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+        guard.queued_jobs = q;
+        guard.is_running = active || q > 0;
+        if guard.is_running {
+            guard.is_completed = false;
+        }
+        return guard.clone();
+    }
+    default_live_sync_progress()
+}
+
+/// 백그라운드 스레드가 각 단계(카톡 -> 알림 -> 문자 -> 통화 -> 녹음 -> 헬스)를 다운로드·적재할 때
+/// 이전 단계들을 자동으로 100%(done) 완료 처리하고 현재 단계의 백분위(%)와 구간 색상(파란색=스킵, 녹색=신규다운로드)을 갱신합니다.
+fn emit_live_service_sync_progress(
+    app: &AppHandle,
+    service_key: &str,
+    current_idx: usize,
+    total_cnt: usize,
+    skipped_add: usize,
+    downloaded_add: usize,
+    custom_label: Option<&str>,
+) -> u32 {
+    let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
+    let mut guard = match mutex.lock() {
+        Ok(g) => g,
+        Err(_) => return 100,
+    };
+
+    let prev_key = guard.current_key.clone();
+    let step_pos = guard
+        .steps
+        .iter()
+        .position(|s| s.key == service_key)
+        .unwrap_or(0);
+
+    // 현재 단계(step_pos) 이전의 단계들 중 아직 완료되지 않은 단계가 있다면 자동으로 100%(done, 파란색 스킵 반영) 처리
+    for prev_i in 0..step_pos {
+        let prev_st = &mut guard.steps[prev_i];
+        if prev_st.status != "done" || prev_st.percent < 100 {
+            prev_st.percent = 100;
+            prev_st.status = "done".to_string();
+            prev_st.total_count = prev_st
+                .total_count
+                .max(prev_st.skipped_count + prev_st.downloaded_count);
+            rebuild_step_segments(prev_st);
+        }
+    }
+
+    let pct = if total_cnt == 0 {
+        100u32
+    } else if current_idx == 0 {
+        0u32
+    } else {
+        (((current_idx as f64 / total_cnt as f64) * 100.0).round() as u32).clamp(0, 100)
+    };
+
+    {
+        let st = &mut guard.steps[step_pos];
+        if current_idx == 0 {
+            st.total_count = total_cnt.max(st.skipped_count + st.downloaded_count);
+        } else {
+            st.skipped_count += skipped_add;
+            st.downloaded_count += downloaded_add;
+            st.total_count = total_cnt.max(st.skipped_count + st.downloaded_count);
+        }
+        st.percent = pct;
+        st.status = if pct >= 100 {
+            "done".to_string()
+        } else {
+            "running".to_string()
+        };
+        rebuild_step_segments(st);
+    }
+
+    let q_depth = SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+    let active = IS_WORKER_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+    guard.queued_jobs = q_depth;
+    guard.is_running = true;
+    guard.is_completed = false;
+    guard.current_step_index = step_pos;
+    guard.current_key = service_key.to_string();
+    guard.current_label = custom_label
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| guard.steps[step_pos].label.clone());
+    guard.current_percent = pct;
+
+    let payload_clone = guard.clone();
+    drop(guard);
+
+    let now_ms = chrono::Local::now().timestamp_millis();
+    let last_ms = LAST_PROGRESS_EMIT_MS.load(std::sync::atomic::Ordering::Relaxed);
+    let force_emit =
+        current_idx == 0 || (q_depth == 0 && !active && pct >= 100) || prev_key != service_key;
+    if force_emit || (now_ms - last_ms) >= 180 {
+        LAST_PROGRESS_EMIT_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+        let _ = app.emit("mobile-sync-progress", &payload_clone);
+    }
+    pct
+}
+
+/// 백그라운드 워커 스레드에서 DB의 실제 카테고리별 보유 건수(기보유=파란색 스킵, 당일/신규=녹색 다운로드)를 읽어와
+/// 아직 완료되지 않은 모든 단계(카톡 -> 알림 -> 문자 -> 통화 -> 녹음 -> 헬스)를 0% -> 100%까지 순차적으로 점검·완료합니다.
+fn complete_all_remaining_sync_steps(app: &AppHandle, db_path: &Path, reset_all_first: bool) {
+    let step_keys = [
+        "kakaotalk",
+        "notification",
+        "sms",
+        "call",
+        "recording",
+        "health",
+    ];
+    let mut db_counts: Vec<(usize, usize)> = vec![(0, 0); step_keys.len()];
+    if let Ok(conn) = open_db(db_path) {
+        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+        for (idx, key) in step_keys.iter().enumerate() {
+            let total: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1",
+                    params![*key],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let recent: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1 AND sent_date >= ?2",
+                    params![*key, today_str],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let tot_u = total.max(0) as usize;
+            let dl_u = (recent.max(0) as usize).min(tot_u);
+            let skip_u = tot_u.saturating_sub(dl_u);
+            db_counts[idx] = (skip_u, dl_u);
+        }
+    }
+
+    let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
+    if let Ok(mut guard) = mutex.lock() {
+        guard.is_running = true;
+        guard.is_completed = false;
+        for (idx, st) in guard.steps.iter_mut().enumerate() {
+            let (db_sk, db_dl) = db_counts[idx];
+            if reset_all_first {
+                st.status = "pending".to_string();
+                st.percent = 0;
+                st.skipped_count = db_sk;
+                st.downloaded_count = db_dl;
+                st.total_count = db_sk + db_dl;
+                st.segments.clear();
+            } else if st.skipped_count + st.downloaded_count == 0 {
+                st.skipped_count = db_sk;
+                st.downloaded_count = db_dl;
+                st.total_count = db_sk + db_dl;
+            } else {
+                st.skipped_count = st.skipped_count.max(db_sk);
+                st.total_count = st.skipped_count + st.downloaded_count;
+            }
+        }
+    }
+
+    for step_idx in 0..step_keys.len() {
+        // 만약 도중에 새로운 실시간 동기화 작업이 큐에 들어왔다면 즉시 양보하여 실제 패킷부터 처리
+        if SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed) > 0 && !reset_all_first {
+            return;
+        }
+        let already_done = {
+            if let Ok(guard) = mutex.lock() {
+                guard.steps[step_idx].status == "done" && guard.steps[step_idx].percent >= 100
+            } else {
+                false
+            }
+        };
+        if already_done {
+            continue;
+        }
+
+        for pct in [25u32, 50, 75, 100] {
+            if SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed) > 0 && !reset_all_first {
+                return;
+            }
+            if let Ok(mut guard) = mutex.lock() {
+                let q = SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+                guard.queued_jobs = q;
+                guard.is_running = true;
+                guard.is_completed = false;
+                guard.current_step_index = step_idx;
+                guard.current_key = guard.steps[step_idx].key.clone();
+                guard.current_label = guard.steps[step_idx].label.clone();
+                guard.current_percent = pct;
+
+                let st = &mut guard.steps[step_idx];
+                st.percent = pct;
+                st.status = if pct >= 100 {
+                    "done".to_string()
+                } else {
+                    "running".to_string()
+                };
+                rebuild_step_segments(st);
+                let _ = app.emit("mobile-sync-progress", &*guard);
+            }
+            thread::sleep(std::time::Duration::from_millis(55));
+        }
+    }
+
+    IS_WORKER_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut guard) = mutex.lock() {
+        guard.queued_jobs = SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed);
+        guard.is_running = false;
+        guard.is_completed = true;
+        guard.current_step_index = guard.total_steps.saturating_sub(1);
+        guard.current_key = "done".to_string();
+        guard.current_label = "모든 라이프로그 항목 동기화 확인 완료 (100%)".to_string();
+        guard.current_percent = 100;
+        let _ = app.emit("mobile-sync-progress", &*guard);
+    }
+}
+
+#[tauri::command]
+fn trigger_sequential_mobile_sync(_app: AppHandle, _state: State<AppState>) -> Result<String, String> {
+    let _ = broadcast_udp_pc_online();
+    enqueue_sync_worker_job(SyncWorkerJob::StartSyncInspection {
+        reset_watermarks: false,
+    });
+    Ok("백그라운드 동기화 스레드에 순차 동기화 점검 신호 전달 완료".to_string())
+}
+
 fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePairingPayload, String> {
     let pc_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "MYLORE-DESKTOP".to_string());
     let ips = detect_local_ipv4_addresses();
@@ -4541,9 +6077,12 @@ async fn trigger_full_mobile_resync(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&db_path)?;
         for key in [
+            "last_kakao_ts",
             "last_noti_ts",
             "last_sms_ts",
             "last_call_ts",
+            "last_recording_ts",
+            "last_health_ts",
             "last_contact_ts",
             "last_usage_ts",
         ] {
@@ -4559,10 +6098,14 @@ async fn trigger_full_mobile_resync(
             [],
         );
         let _ = conn.execute(
-            "UPDATE paired_devices SET last_noti_ts = 0, last_sms_ts = 0, last_call_ts = 0, last_contact_ts = 0, last_usage_ts = 0",
+            "UPDATE paired_devices SET last_kakao_ts = 0, last_noti_ts = 0, last_sms_ts = 0, last_call_ts = 0, last_recording_ts = 0, last_health_ts = 0, last_contact_ts = 0, last_usage_ts = 0",
             [],
         );
         let _ = conn.execute("DELETE FROM synced_file_hashes", []);
+        reset_in_memory_sync_caches();
+        enqueue_sync_worker_job(SyncWorkerJob::StartSyncInspection {
+            reset_watermarks: true,
+        });
 
         if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
             let _ = sock.set_broadcast(true);
@@ -4621,6 +6164,11 @@ async fn update_mobile_pairing_config(
                 params![new_token],
             )
             .map_err(|e| e.to_string())?;
+            if let Some(lock) = CACHED_PAIRING_TOKEN.get() {
+                if let Ok(mut guard) = lock.lock() {
+                    *guard = new_token;
+                }
+            }
         }
 
         build_mobile_pairing_payload(&conn)
@@ -5052,14 +6600,69 @@ fn transcribe_call_audio_with_gemini(
 
     let b64_audio = base64_encode(audio_bytes);
     let prompt = format!(
-        "다음 스마트폰 통화 녹음 음성을 듣고 한국어로 정확하게 분석하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 작성해 주세요 (통화 상대방: {}):\n\n\
+        "다음 스마트폰 통화 녹음 음성을 듣고 한국어로 정확하게 분석하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 작성해 주세요 (통화 상대방 이름: {} — 전화번호나 날짜 없이 순수 이름만 표시):\n\n\
          ## 💡 요약\n\
          - (통화 목적, 주요 합의 사항, 일정/장소/금액 등 핵심 내용을 1~3줄 불릿 포인트로 명확히 요약)\n\n\
          ## 📜 스크립트\n\
-         - **[나]**: (실제 발화 내용)\n\
-         - **[{}]**: (실제 발화 내용)\n\
-         (실제 발화 내용을 시간 순서대로 빠짐없이 화자 분리 대화록 형태로 작성)",
-        contact_label, contact_label
+         - **[00:00:00] 나**: (실제 발화 내용)\n\
+         - **[00:00:04] {}**: (실제 발화 내용)\n\
+         (반드시 모든 문장마다 해당 문장이 시작되는 오디오 재생 오프셋 시각을 `[00:00:00]` 즉 `[HH:MM:SS]` 8자리 포맷으로 표시하고, 대화 상대방 이름은 전화번호나 날짜 없이 `{}` 이름만 표시하여 시간 순서대로 빠짐없이 작성)",
+        contact_label, contact_label, contact_label
+    );
+
+    let req_json = serde_json::json!({
+        "contents": [{
+            "parts": [
+                { "text": prompt },
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": b64_audio
+                    }
+                }
+            ]
+        }]
+    });
+
+    call_gemini_generate_content(api_key, &req_json)
+}
+
+/// 독백녹음(음성메모) 또는 회의녹음 음성을 분석하여 **음성메모·회의록 톤**으로 요약 및 스크립트를 생성합니다.
+fn transcribe_voice_recording_with_gemini(
+    api_key: &str,
+    audio_bytes: &[u8],
+    file_name: &str,
+    recording_source: &str,
+) -> Result<String, String> {
+    if audio_bytes.is_empty() {
+        return Err("오디오 바이트가 비어 있습니다.".to_string());
+    }
+    let lower = file_name.to_lowercase();
+    let mime_type = if lower.ends_with(".mp3") {
+        "audio/mp3"
+    } else if lower.ends_with(".amr") {
+        "audio/amr"
+    } else if lower.ends_with(".wav") {
+        "audio/wav"
+    } else if lower.ends_with(".ogg") {
+        "audio/ogg"
+    } else if lower.ends_with(".aac") {
+        "audio/aac"
+    } else {
+        "audio/mp4"
+    };
+
+    let b64_audio = base64_encode(audio_bytes);
+    let prompt = format!(
+        "다음 음성녹음 파일(출처: {}, 파일명: {})은 사용자의 독백 음성메모 또는 대면 회의 녹음입니다.\n\
+         음성메모·회의록 전문 톤(Voice Memo & Meeting Minutes Tone)을 적극 활용하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 한국어로 작성해 주세요:\n\n\
+         ## 💡 요약\n\
+         - **핵심 주제/안건**: (독백 메모의 핵심 아이디어 또는 회의 주요 안건 요약)\n\
+         - **주요 내용 및 결정 사항**: (논의된 핵심 포인트, 아이디어, 결론 등을 개조식 불릿으로 정리)\n\
+         - **Action Items (향후 할 일 / 일정)**: (후속 조치, 체크리스트, 일정 등이 있다면 명확히 정리)\n\n\
+         ## 📜 스크립트\n\
+         - **[00:00:00] 발화**: (문장마다 해당 문장이 시작되는 오디오 재생 오프셋 시각을 반드시 `[00:00:00]` 즉 `[HH:MM:SS]` 포맷으로 표시하여 시간 순서대로 빠짐없이 기록)",
+        recording_source, file_name
     );
 
     let req_json = serde_json::json!({
@@ -5149,7 +6752,7 @@ fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection>) -> Gemin
             .unwrap_or_default();
         pending_cnt = conn
             .query_row(
-                "SELECT COUNT(*) FROM lifelog_messages WHERE source = 'call' AND attachment_uuid LIKE 'pending_transcript:%'",
+                "SELECT COUNT(*) FROM lifelog_messages WHERE source IN ('call', 'recording') AND attachment_uuid LIKE 'pending_transcript:%'",
                 [],
                 |r| r.get::<_, i64>(0),
             )
@@ -5174,18 +6777,40 @@ fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection>) -> Gemin
     }
 }
 
-/// 미완료 통화 녹음(`mobile/calls/audio/*`)들을 **가장 최근 통화음성부터(역순 정렬)** 순회하며 LLM 스크립트(`.md`)를 생성합니다.
+/// 미완료 통화 녹음(`mobile/calls/audio/*`) 및 독백·회의 음성녹음(`mobile/recordings/audio/*`)들을
+/// **가장 최근 녹음음성부터(역순 정렬)** 순회하며 LLM 스크립트(`.md`)를 생성합니다.
 /// 토큰 부족/한도 초과 발생 시 마지막 실패 시각을 기억하고 5시간 후 재시도 타이머를 설정합니다.
+static IS_TRANSCRIPTION_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn process_pending_call_transcriptions(
     db_path: &Path,
     app_handle_opt: Option<&AppHandle>,
     force_now: bool,
 ) -> (usize, usize, String) {
+    if IS_TRANSCRIPTION_RUNNING
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return (0, 0, "이미 백그라운드 스크립트 추출 작업이 실행 중입니다.".to_string());
+    }
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+        fn drop(&mut self) {
+            IS_TRANSCRIPTION_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _reset = ResetGuard;
+
     let conn = match open_db(db_path) {
         Ok(c) => c,
         Err(e) => return (0, 0, e),
     };
-    backfill_mobile_md_into_lifelog_db(&conn);
 
     if !force_now && !is_auto_call_transcription_enabled(&conn) {
         return (
@@ -5214,6 +6839,8 @@ fn process_pending_call_transcriptions(
     let contacts_map = load_mobile_contacts_map(&conn);
     let calls_dir = get_archive_mobile_dir(&conn, "calls");
     let audio_dir = calls_dir.join("audio");
+    let rec_dir = get_archive_mobile_dir(&conn, "recordings");
+    let rec_audio_dir = rec_dir.join("audio");
     let mut completed_now = 0usize;
     let mut failed_now = 0usize;
     let mut last_status_msg = String::new();
@@ -5227,70 +6854,82 @@ fn process_pending_call_transcriptions(
         rec_date: String,
         rec_time: String,
         modified_secs: u64,
+        is_voice_memo: bool,
     }
 
     let mut pending_items: Vec<PendingCallAudioItem> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&audio_dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if !p.is_file() {
-                continue;
-            }
-            let ext = p
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
-                continue;
-            }
-            let file_name = p
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let file_stem = p
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if file_stem.is_empty() {
-                continue;
-            }
+    for (scan_audio_dir, scan_md_dir, is_voice_memo) in [
+        (&audio_dir, &calls_dir, false),
+        (&rec_audio_dir, &rec_dir, true),
+    ] {
+        if let Ok(entries) = fs::read_dir(scan_audio_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let ext = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
+                    continue;
+                }
+                let file_name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let file_stem = p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if file_stem.is_empty() {
+                    continue;
+                }
 
-            let safe_stem = sanitize_filename_stem(&file_stem);
-            let md_path = calls_dir.join(format!("{}.md", safe_stem));
-            if md_path.exists() {
-                if let Ok(md_raw) = fs::read_to_string(&md_path) {
-                    let (fm, _) = parse_frontmatter_and_body_simple(&md_raw);
-                    if fm.get("transcript_status").map(|s| s.as_str()) == Some("completed") {
-                        continue;
+                let safe_stem = sanitize_filename_stem(&file_stem);
+                let md_path = scan_md_dir.join(format!("{}.md", safe_stem));
+                if md_path.exists() {
+                    if let Ok(md_raw) = fs::read_to_string(&md_path) {
+                        let (fm, _) = parse_frontmatter_and_body_simple(&md_raw);
+                        if fm.get("transcript_status").map(|s| s.as_str()) == Some("completed") {
+                            continue;
+                        }
                     }
                 }
+
+                let (contact_display, rec_date, rec_time) = if is_voice_memo {
+                    let (_, rec_src, r_d, r_t) =
+                        parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
+                    (rec_src, r_d, r_t)
+                } else {
+                    parse_call_audio_filename_meta(&file_stem, &contacts_map)
+                };
+                let modified_secs = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                pending_items.push(PendingCallAudioItem {
+                    path: p,
+                    file_name,
+                    file_stem,
+                    safe_stem,
+                    contact_display,
+                    rec_date,
+                    rec_time,
+                    modified_secs,
+                    is_voice_memo,
+                });
             }
-
-            let (contact_display, rec_date, rec_time) =
-                parse_call_audio_filename_meta(&file_stem, &contacts_map);
-            let modified_secs = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-
-            pending_items.push(PendingCallAudioItem {
-                path: p,
-                file_name,
-                file_stem,
-                safe_stem,
-                contact_display,
-                rec_date,
-                rec_time,
-                modified_secs,
-            });
         }
     }
 
-    // 가장 최근 통화음성부터 우선 처리하도록 내림차순 정렬 (rec_date DESC, rec_time DESC, modified_secs DESC, file_stem DESC)
+    // 가장 최근 녹음음성부터 우선 처리하도록 내림차순 정렬 (rec_date DESC, rec_time DESC, modified_secs DESC, file_stem DESC)
     pending_items.sort_by(|a, b| {
         b.rec_date
             .cmp(&a.rec_date)
@@ -5309,36 +6948,93 @@ fn process_pending_call_transcriptions(
             let _ = fs::write(&item.path, &clean_bytes);
         }
 
-        match transcribe_call_audio_with_gemini(
-            &api_key,
-            &clean_bytes,
-            &item.file_name,
-            &item.contact_display,
-        ) {
+        let res = if item.is_voice_memo {
+            transcribe_voice_recording_with_gemini(
+                &api_key,
+                &clean_bytes,
+                &item.file_name,
+                &item.contact_display,
+            )
+        } else {
+            transcribe_call_audio_with_gemini(
+                &api_key,
+                &clean_bytes,
+                &item.file_name,
+                &item.contact_display,
+            )
+        };
+
+        match res {
             Ok(transcript) => {
-                write_call_recording_markdown(
+                if item.is_voice_memo {
+                    write_voice_recording_markdown(
+                        &conn,
+                        &item.file_name,
+                        &item.contact_display,
+                        &item.rec_date,
+                        &item.rec_time,
+                        Some(&transcript),
+                        None,
+                    );
+                } else {
+                    write_call_recording_markdown(
+                        &conn,
+                        &item.file_name,
+                        &item.contact_display,
+                        &item.rec_date,
+                        &item.rec_time,
+                        Some(&transcript),
+                        None,
+                    );
+                }
+                clear_gemini_quota_exhaustion(&conn);
+                upsert_single_recording_into_lifelog_db(
                     &conn,
-                    &item.file_name,
+                    item.is_voice_memo,
+                    &item.file_stem,
                     &item.contact_display,
                     &item.rec_date,
                     &item.rec_time,
                     Some(&transcript),
-                    None,
+                    "",
+                    "",
                 );
-                clear_gemini_quota_exhaustion(&conn);
                 completed_now += 1;
                 last_status_msg = format!("{} 스크립트 생성 완료", item.safe_stem);
             }
             Err(err_msg) => {
                 let (ex_str, rt_str) = record_gemini_quota_exhaustion(&conn, &err_msg);
-                write_call_recording_markdown(
+                if item.is_voice_memo {
+                    write_voice_recording_markdown(
+                        &conn,
+                        &item.file_name,
+                        &item.contact_display,
+                        &item.rec_date,
+                        &item.rec_time,
+                        None,
+                        Some((&ex_str, &rt_str, &err_msg)),
+                    );
+                } else {
+                    write_call_recording_markdown(
+                        &conn,
+                        &item.file_name,
+                        &item.contact_display,
+                        &item.rec_date,
+                        &item.rec_time,
+                        None,
+                        Some((&ex_str, &rt_str, &err_msg)),
+                    );
+                }
+                upsert_single_recording_into_lifelog_db(
                     &conn,
-                    &item.file_name,
+                    item.is_voice_memo,
+                    &item.file_stem,
                     &item.contact_display,
                     &item.rec_date,
                     &item.rec_time,
                     None,
-                    Some((&ex_str, &rt_str, &err_msg)),
+                    "",
+                    "",
                 );
                 failed_now += 1;
                 last_status_msg = format!(
@@ -5350,8 +7046,6 @@ fn process_pending_call_transcriptions(
             }
         }
     }
-
-    backfill_mobile_md_into_lifelog_db(&conn);
 
     if (completed_now > 0 || failed_now > 0) && app_handle_opt.is_some() {
         if let Some(app) = app_handle_opt {
@@ -5458,7 +7152,7 @@ fn normalize_call_contact_key(raw: &str) -> String {
     s.trim().trim_start_matches('#').trim().to_lowercase()
 }
 
-/// 통화 항목(`room_or_sender`, `attachment_uuid`)으로부터 `mobile/calls/audio/` 내 실제 오디오 파일과 `.md` 문서를 찾습니다.
+/// 통화(`mobile/calls/audio/`) 또는 음성녹음(`mobile/recordings/audio/`) 항목으로부터 실제 오디오 파일과 `.md` 문서를 찾습니다.
 fn find_call_audio_and_md(
     conn: &Connection,
     room_or_sender: &str,
@@ -5475,7 +7169,9 @@ fn find_call_audio_and_md_ext(
     allow_any_date_fallback: bool,
 ) -> Option<(PathBuf, String, String, PathBuf, bool)> {
     let calls_dir = get_archive_mobile_dir(conn, "calls");
-    let audio_dir = calls_dir.join("audio");
+    let calls_audio_dir = calls_dir.join("audio");
+    let rec_dir = get_archive_mobile_dir(conn, "recordings");
+    let rec_audio_dir = rec_dir.join("audio");
 
     let explicit_stem = attachment_uuid
         .and_then(|a| {
@@ -5485,13 +7181,26 @@ fn find_call_audio_and_md_ext(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let clean_room = room_or_sender
+        .trim()
+        .trim_start_matches("[워치]")
+        .trim_start_matches("[SM-S901N]")
+        .trim();
+
     let mut matched_audio_path: Option<PathBuf> = None;
+    let mut matched_parent_dir: PathBuf = calls_dir.clone();
 
     if let Some(ref stem) = explicit_stem {
-        for ext in ["m4a", "amr", "mp3", "wav", "ogg", "aac"] {
-            let cand = audio_dir.join(format!("{}.{}", stem, ext));
-            if cand.exists() && cand.is_file() {
-                matched_audio_path = Some(cand);
+        for (a_dir, p_dir) in [(&calls_audio_dir, &calls_dir), (&rec_audio_dir, &rec_dir)] {
+            for ext in ["m4a", "amr", "mp3", "wav", "ogg", "aac"] {
+                let cand = a_dir.join(format!("{}.{}", stem, ext));
+                if cand.exists() && cand.is_file() {
+                    matched_audio_path = Some(cand);
+                    matched_parent_dir = p_dir.clone();
+                    break;
+                }
+            }
+            if matched_audio_path.is_some() {
                 break;
             }
         }
@@ -5499,70 +7208,81 @@ fn find_call_audio_and_md_ext(
 
     if matched_audio_path.is_none() {
         let contacts_map = load_mobile_contacts_map(conn);
-        let target_norm = normalize_phone_digits(room_or_sender);
-        let target_disp = resolve_contact_display(room_or_sender, &contacts_map);
-        let target_key_a = normalize_call_contact_key(room_or_sender);
+        let target_norm = normalize_phone_digits(clean_room);
+        let target_disp = resolve_contact_display(clean_room, &contacts_map);
+        let target_key_a = normalize_call_contact_key(clean_room);
         let target_key_b = normalize_call_contact_key(&target_disp);
 
-        if let Ok(entries) = fs::read_dir(&audio_dir) {
-            let mut same_date_candidates: Vec<(String, PathBuf)> = Vec::new();
-            let mut any_date_candidates: Vec<(String, PathBuf)> = Vec::new();
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if !p.is_file() {
-                    continue;
-                }
-                let ext = p
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
-                    continue;
-                }
-                let stem = p
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let safe_stem = sanitize_filename_stem(&stem);
-                if let Some(ref ex) = explicit_stem {
-                    if safe_stem == sanitize_filename_stem(ex) {
-                        matched_audio_path = Some(p);
-                        break;
+        for (a_dir, p_dir) in [(&rec_audio_dir, &rec_dir), (&calls_audio_dir, &calls_dir)] {
+            if let Ok(entries) = fs::read_dir(a_dir) {
+                let mut same_date_candidates: Vec<(String, PathBuf)> = Vec::new();
+                let mut any_date_candidates: Vec<(String, PathBuf)> = Vec::new();
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if !p.is_file() {
+                        continue;
                     }
-                }
-                if safe_stem == sanitize_filename_stem(room_or_sender) {
-                    matched_audio_path = Some(p);
-                    break;
-                }
-                let (c_disp, r_d, r_t) = parse_call_audio_filename_meta(&stem, &contacts_map);
-                let c_key = normalize_call_contact_key(&c_disp);
-                let stem_digits = normalize_phone_digits(&stem);
-                let is_contact_match = c_disp == target_disp
-                    || c_disp == room_or_sender
-                    || (!c_key.is_empty() && (c_key == target_key_a || c_key == target_key_b))
-                    || (!target_norm.is_empty()
-                        && target_norm.len() >= 8
-                        && stem_digits.contains(&target_norm));
-
-                if is_contact_match {
-                    let sort_key = format!("{}_{}_{}", r_d, r_t, stem);
-                    if let Some(exp_d) = expected_date {
-                        if r_d == exp_d {
-                            same_date_candidates.push((sort_key.clone(), p.clone()));
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
+                        continue;
+                    }
+                    let stem = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let safe_stem = sanitize_filename_stem(&stem);
+                    if let Some(ref ex) = explicit_stem {
+                        if safe_stem == sanitize_filename_stem(ex) {
+                            matched_audio_path = Some(p);
+                            matched_parent_dir = p_dir.clone();
+                            break;
                         }
                     }
-                    any_date_candidates.push((sort_key, p));
+                    if safe_stem == sanitize_filename_stem(clean_room)
+                        || safe_stem == sanitize_filename_stem(room_or_sender)
+                    {
+                        matched_audio_path = Some(p);
+                        matched_parent_dir = p_dir.clone();
+                        break;
+                    }
+                    let (c_disp, r_d, r_t) = parse_call_audio_filename_meta(&stem, &contacts_map);
+                    let c_key = normalize_call_contact_key(&c_disp);
+                    let stem_digits = normalize_phone_digits(&stem);
+                    let is_contact_match = c_disp == target_disp
+                        || c_disp == clean_room
+                        || (!c_key.is_empty() && (c_key == target_key_a || c_key == target_key_b))
+                        || (!target_norm.is_empty()
+                            && target_norm.len() >= 8
+                            && stem_digits.contains(&target_norm));
+
+                    if is_contact_match {
+                        let sort_key = format!("{}_{}_{}", r_d, r_t, stem);
+                        if let Some(exp_d) = expected_date {
+                            if r_d == exp_d {
+                                same_date_candidates.push((sort_key.clone(), p.clone()));
+                            }
+                        }
+                        any_date_candidates.push((sort_key, p));
+                    }
+                }
+                if matched_audio_path.is_none() {
+                    if !same_date_candidates.is_empty() {
+                        same_date_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+                        matched_audio_path = same_date_candidates.into_iter().next().map(|(_, p)| p);
+                        matched_parent_dir = p_dir.clone();
+                    } else if allow_any_date_fallback && !any_date_candidates.is_empty() {
+                        any_date_candidates.sort_by(|a, b| b.0.cmp(&a.0));
+                        matched_audio_path = any_date_candidates.into_iter().next().map(|(_, p)| p);
+                        matched_parent_dir = p_dir.clone();
+                    }
                 }
             }
-            if matched_audio_path.is_none() {
-                if !same_date_candidates.is_empty() {
-                    same_date_candidates.sort_by(|a, b| b.0.cmp(&a.0));
-                    matched_audio_path = same_date_candidates.into_iter().next().map(|(_, p)| p);
-                } else if allow_any_date_fallback && !any_date_candidates.is_empty() {
-                    any_date_candidates.sort_by(|a, b| b.0.cmp(&a.0));
-                    matched_audio_path = any_date_candidates.into_iter().next().map(|(_, p)| p);
-                }
+            if matched_audio_path.is_some() {
+                break;
             }
         }
     }
@@ -5577,7 +7297,7 @@ fn find_call_audio_and_md_ext(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let safe_stem = sanitize_filename_stem(&file_stem);
-    let md_path = calls_dir.join(format!("{}.md", safe_stem));
+    let md_path = matched_parent_dir.join(format!("{}.md", safe_stem));
     let mut has_transcript = false;
     if md_path.exists() {
         if let Ok(md_raw) = fs::read_to_string(&md_path) {
@@ -5602,7 +7322,7 @@ async fn get_call_recording_play_info(
         let conn = open_db(&db_path)?;
         let (audio_path, file_name, file_stem, _, has_transcript) =
             find_call_audio_and_md(&conn, &room_or_sender, attachment_uuid.as_deref())
-                .ok_or_else(|| "해당 통화의 원본 녹음 오디오 파일이 다운로드되어 있지 않습니다.".to_string())?;
+                .ok_or_else(|| "해당 항목의 원본 녹음 오디오 파일이 다운로드되어 있지 않습니다.".to_string())?;
 
         let raw_bytes =
             fs::read(&audio_path).map_err(|e| format!("오디오 파일 읽기 오류: {}", e))?;
@@ -5629,8 +7349,18 @@ async fn get_call_recording_play_info(
         };
         let audio_base64 = base64_encode(&clean_b);
 
-        let contacts_map = load_mobile_contacts_map(&conn);
-        let (contact_display, _, _) = parse_call_audio_filename_meta(&file_stem, &contacts_map);
+        let is_voice_rec = audio_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .contains("/recordings/");
+        let contact_display = if is_voice_rec {
+            let (disp, _, _, _) = parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
+            disp
+        } else {
+            let contacts_map = load_mobile_contacts_map(&conn);
+            let (c_disp, _, _) = parse_call_audio_filename_meta(&file_stem, &contacts_map);
+            c_disp
+        };
 
         let encoded_fn: String = file_name
             .bytes()
@@ -5642,9 +7372,14 @@ async fn get_call_recording_play_info(
                 }
             })
             .collect();
+        let sub_folder = if is_voice_rec {
+            "recordings/audio"
+        } else {
+            "calls/audio"
+        };
         let audio_url = format!(
-            "http://127.0.0.1:18443/api/v1/local-media?sub=calls/audio&file={}",
-            encoded_fn
+            "http://127.0.0.1:18443/api/v1/local-media?sub={}&file={}",
+            sub_folder, encoded_fn
         );
 
         Ok(CallPlayInfoPayload {
@@ -5681,7 +7416,7 @@ async fn transcribe_single_call_item(
 
         let (audio_path, file_name, file_stem, _, _) =
             find_call_audio_and_md(&conn, &room_or_sender, attachment_uuid.as_deref())
-                .ok_or_else(|| "해당 통화의 녹음 파일을 찾을 수 없습니다.".to_string())?;
+                .ok_or_else(|| "해당 항목의 녹음 파일을 찾을 수 없습니다.".to_string())?;
 
         let raw_bytes =
             fs::read(&audio_path).map_err(|e| format!("오디오 파일 읽기 오류: {}", e))?;
@@ -5690,53 +7425,148 @@ async fn transcribe_single_call_item(
             let _ = fs::write(&audio_path, &clean_bytes);
         }
 
-        let contacts_map = load_mobile_contacts_map(&conn);
-        let (contact_display, rec_date, rec_time) =
-            parse_call_audio_filename_meta(&file_stem, &contacts_map);
+        let is_voice_rec = audio_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .contains("/recordings/");
 
-        match transcribe_call_audio_with_gemini(
-            &api_key,
-            &clean_bytes,
-            &file_name,
-            &contact_display,
-        ) {
-            Ok(transcript) => {
-                let md_path = write_call_recording_markdown(
-                    &conn,
-                    &file_name,
-                    &contact_display,
-                    &rec_date,
-                    &rec_time,
-                    Some(&transcript),
-                    None,
-                );
-                clear_gemini_quota_exhaustion(&conn);
-                backfill_mobile_md_into_lifelog_db(&conn);
-                let _ = app.emit(
-                    "mobile-sync-event",
-                    serde_json::json!({
-                        "type": "call_transcript_completed",
-                        "message": format!("✅ '{}' 통화 스크립트 추출 및 요약 완료!", contact_display)
-                    }),
-                );
-                build_document_payload(&conn, &md_path)
+        if is_voice_rec {
+            let (_disp, rec_source, rec_date, rec_time) =
+                parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
+            match transcribe_voice_recording_with_gemini(
+                &api_key,
+                &clean_bytes,
+                &file_name,
+                &rec_source,
+            ) {
+                Ok(transcript) => {
+                    let md_path = write_voice_recording_markdown(
+                        &conn,
+                        &file_name,
+                        &rec_source,
+                        &rec_date,
+                        &rec_time,
+                        Some(&transcript),
+                        None,
+                    );
+                    clear_gemini_quota_exhaustion(&conn);
+                    upsert_single_recording_into_lifelog_db(
+                        &conn,
+                        true,
+                        &file_stem,
+                        &rec_source,
+                        &rec_date,
+                        &rec_time,
+                        Some(&transcript),
+                        "",
+                        "",
+                    );
+                    let _ = app.emit(
+                        "mobile-sync-event",
+                        serde_json::json!({
+                            "type": "call_transcript_completed",
+                            "message": format!("✅ '[{}] {}' 음성메모·회의 스크립트 추출 및 요약 완료!", rec_source, file_stem)
+                        }),
+                    );
+                    build_document_payload(&conn, &md_path)
+                }
+                Err(err_msg) => {
+                    let (ex_str, rt_str) = record_gemini_quota_exhaustion(&conn, &err_msg);
+                    let _ = write_voice_recording_markdown(
+                        &conn,
+                        &file_name,
+                        &rec_source,
+                        &rec_date,
+                        &rec_time,
+                        None,
+                        Some((&ex_str, &rt_str, &err_msg)),
+                    );
+                    upsert_single_recording_into_lifelog_db(
+                        &conn,
+                        true,
+                        &file_stem,
+                        &rec_source,
+                        &rec_date,
+                        &rec_time,
+                        None,
+                        "",
+                        "",
+                    );
+                    Err(format!(
+                        "토큰 부족/API 오류 (마지막 실패 시각: {} · 5시간 후 {} 자동 재시도): {}",
+                        ex_str, rt_str, err_msg
+                    ))
+                }
             }
-            Err(err_msg) => {
-                let (ex_str, rt_str) = record_gemini_quota_exhaustion(&conn, &err_msg);
-                let _ = write_call_recording_markdown(
-                    &conn,
-                    &file_name,
-                    &contact_display,
-                    &rec_date,
-                    &rec_time,
-                    None,
-                    Some((&ex_str, &rt_str, &err_msg)),
-                );
-                backfill_mobile_md_into_lifelog_db(&conn);
-                Err(format!(
-                    "토큰 부족/API 오류 (마지막 실패 시각: {} · 5시간 후 {} 자동 재시도): {}",
-                    ex_str, rt_str, err_msg
-                ))
+        } else {
+            let contacts_map = load_mobile_contacts_map(&conn);
+            let (contact_display, rec_date, rec_time) =
+                parse_call_audio_filename_meta(&file_stem, &contacts_map);
+
+            match transcribe_call_audio_with_gemini(
+                &api_key,
+                &clean_bytes,
+                &file_name,
+                &contact_display,
+            ) {
+                Ok(transcript) => {
+                    let md_path = write_call_recording_markdown(
+                        &conn,
+                        &file_name,
+                        &contact_display,
+                        &rec_date,
+                        &rec_time,
+                        Some(&transcript),
+                        None,
+                    );
+                    clear_gemini_quota_exhaustion(&conn);
+                    upsert_single_recording_into_lifelog_db(
+                        &conn,
+                        false,
+                        &file_stem,
+                        &contact_display,
+                        &rec_date,
+                        &rec_time,
+                        Some(&transcript),
+                        "",
+                        "",
+                    );
+                    let _ = app.emit(
+                        "mobile-sync-event",
+                        serde_json::json!({
+                            "type": "call_transcript_completed",
+                            "message": format!("✅ '{}' 통화 스크립트 추출 및 요약 완료!", contact_display)
+                        }),
+                    );
+                    build_document_payload(&conn, &md_path)
+                }
+                Err(err_msg) => {
+                    let (ex_str, rt_str) = record_gemini_quota_exhaustion(&conn, &err_msg);
+                    let _ = write_call_recording_markdown(
+                        &conn,
+                        &file_name,
+                        &contact_display,
+                        &rec_date,
+                        &rec_time,
+                        None,
+                        Some((&ex_str, &rt_str, &err_msg)),
+                    );
+                    upsert_single_recording_into_lifelog_db(
+                        &conn,
+                        false,
+                        &file_stem,
+                        &contact_display,
+                        &rec_date,
+                        &rec_time,
+                        None,
+                        "",
+                        "",
+                    );
+                    Err(format!(
+                        "토큰 부족/API 오류 (마지막 실패 시각: {} · 5시간 후 {} 자동 재시도): {}",
+                        ex_str, rt_str, err_msg
+                    ))
+                }
             }
         }
     })
@@ -5841,7 +7671,7 @@ async fn transcribe_local_audio_file(
         let contact_label = if contact_name.trim().is_empty() {
             parsed_contact
         } else {
-            resolve_contact_display(contact_name.trim(), &contacts_map)
+            extract_clean_contact_name(contact_name.trim(), &contacts_map)
         };
 
         let calls_dir = get_archive_mobile_dir(&conn, "calls");
@@ -5865,7 +7695,17 @@ async fn transcribe_local_audio_file(
                     None,
                 );
                 clear_gemini_quota_exhaustion(&conn);
-                backfill_mobile_md_into_lifelog_db(&conn);
+                upsert_single_recording_into_lifelog_db(
+                    &conn,
+                    false,
+                    &file_stem,
+                    &contact_label,
+                    &rec_date,
+                    &rec_time,
+                    Some(&transcript),
+                    "",
+                    "",
+                );
                 Ok(transcript)
             }
             Err(err_msg) => {
@@ -5879,7 +7719,17 @@ async fn transcribe_local_audio_file(
                     None,
                     Some((&ex_str, &rt_str, &err_msg)),
                 );
-                backfill_mobile_md_into_lifelog_db(&conn);
+                upsert_single_recording_into_lifelog_db(
+                    &conn,
+                    false,
+                    &file_stem,
+                    &contact_label,
+                    &rec_date,
+                    &rec_time,
+                    None,
+                    "",
+                    "",
+                );
                 Err(format!(
                     "{} (토큰 부족/오류 기록 완료 · 5시간 후인 {} 에 자동 재시도 예약)",
                     err_msg, rt_str
@@ -5968,26 +7818,56 @@ fn resolve_request_device(
     (dev_id, dev_name)
 }
 
+static LAST_SEEN_DB_UPDATE_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+static CACHED_PAIRING_TOKEN: std::sync::OnceLock<Mutex<String>> =
+    std::sync::OnceLock::new();
+
 fn check_request_token(request: &tiny_http::Request, conn: &Connection) -> bool {
-    let expected: String = conn
-        .query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_default();
+    let expected: String = {
+        let lock = CACHED_PAIRING_TOKEN.get_or_init(|| Mutex::new(String::new()));
+        let mut guard = lock.lock().unwrap();
+        if guard.is_empty() {
+            let db_tok: String = conn
+                .query_row(
+                    "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            *guard = db_tok.clone();
+            db_tok
+        } else {
+            guard.clone()
+        }
+    };
     if expected.is_empty() {
         return true;
     }
     for h in request.headers() {
+        let mut candidate_opt: Option<&str> = None;
         if h.field.equiv("X-MyLore-Token") {
-            let provided = h.value.as_str().trim();
+            candidate_opt = Some(h.value.as_str().trim());
+        } else if h.field.equiv("Authorization") {
+            let v = h.value.as_str().trim();
+            if let Some(stripped) = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")) {
+                candidate_opt = Some(stripped.trim());
+            } else {
+                candidate_opt = Some(v);
+            }
+        }
+        if let Some(provided) = candidate_opt {
             if provided == expected {
-                let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = conn.execute(
-                    "UPDATE paired_devices SET last_seen_at = ?1",
-                    params![now_str],
-                );
+                let now_ms = chrono::Local::now().timestamp_millis();
+                let last_ms = LAST_SEEN_DB_UPDATE_MS.load(std::sync::atomic::Ordering::Relaxed);
+                if (now_ms - last_ms) >= 60_000 {
+                    LAST_SEEN_DB_UPDATE_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let _ = conn.execute(
+                        "UPDATE paired_devices SET last_seen_at = ?1",
+                        params![now_str],
+                    );
+                }
                 return true;
             } else {
                 return false;
@@ -5998,16 +7878,31 @@ fn check_request_token(request: &tiny_http::Request, conn: &Connection) -> bool 
     true
 }
 
+static CACHED_DATA_BASE_PATH: std::sync::OnceLock<Mutex<String>> =
+    std::sync::OnceLock::new();
+
 fn get_archive_mobile_dir(conn: &Connection, sub: &str) -> PathBuf {
-    let data_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+    let data_base: String = {
+        let lock = CACHED_DATA_BASE_PATH.get_or_init(|| Mutex::new(String::new()));
+        let mut guard = lock.lock().unwrap();
+        if guard.is_empty() {
+            let db_p = conn
+                .query_row(
+                    "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+            *guard = db_p.clone();
+            db_p
+        } else {
+            guard.clone()
+        }
+    };
     let dir = Path::new(&data_base).join("mobile").join(sub);
-    let _ = fs::create_dir_all(&dir);
+    if !dir.exists() {
+        let _ = fs::create_dir_all(&dir);
+    }
     dir
 }
 
@@ -6024,16 +7919,18 @@ fn sanitize_filename_stem(raw: &str) -> String {
     }
 }
 
-/// `mobile/{sub}/{file_stem}.md` 파일에 날짜 섹션(`## 📅 YYYY-MM-DD`)별로 중복 없이 스크립트 라인을 추가(Append)합니다.
-fn append_line_to_mobile_md(
+/// `mobile/{sub}/{file_stem}.md` 파일에 여러 `(date_str, entry_line)` 항목을 단 1회 파일 읽기·쓰기(Batch I/O)로 병합합니다.
+fn append_lines_to_mobile_md_batch(
     conn: &Connection,
     sub: &str,
     file_stem: &str,
     doc_title: &str,
     source_aliases: &str,
-    date_str: &str,
-    entry_line: &str,
+    entries: &[(String, String)],
 ) {
+    if entries.is_empty() {
+        return;
+    }
     let dir = get_archive_mobile_dir(conn, sub);
     let safe_stem = sanitize_filename_stem(file_stem);
     let md_path = dir.join(format!("{}.md", safe_stem));
@@ -6049,31 +7946,51 @@ fn append_line_to_mobile_md(
         )
     };
 
-    // 이미 동일한 라인이 본문에 존재하면 중복 추가 방지
-    if content.contains(entry_line) {
-        return;
+    let mut modified = false;
+    for (date_str, entry_line) in entries {
+        if content.contains(entry_line.as_str()) {
+            continue;
+        }
+        let date_header = format!("## 📅 {}", date_str);
+        if !content.contains(&date_header) {
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&format!("\n{}\n{}\n", date_header, entry_line));
+        } else {
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push_str(&format!("{}\n", entry_line));
+        }
+        modified = true;
     }
 
-    let date_header = format!("## 📅 {}", date_str);
-    if !content.contains(&date_header) {
-        if !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&format!("\n{}\n{}\n", date_header, entry_line));
-    } else {
-        if !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&format!("{}\n", entry_line));
+    if modified {
+        let _ = fs::write(&md_path, content.as_bytes());
     }
-
-    let _ = fs::write(&md_path, content.as_bytes());
 }
 
-/// `multipart/form-data` 바디에서 `file_hash`, `folder_name`, 그리고 순수 `KakaoTalkChats.txt` 본문을 분리 추출합니다.
-fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, String) {
+/// `mobile/{sub}/{file_stem}.md` 파일에 날짜 섹션(`## 📅 YYYY-MM-DD`)별로 중복 없이 스크립트 라인을 추가(Append)합니다.
+fn append_line_to_mobile_md(
+    conn: &Connection,
+    sub: &str,
+    file_stem: &str,
+    doc_title: &str,
+    source_aliases: &str,
+    date_str: &str,
+    entry_line: &str,
+) {
+    let single = [(date_str.to_string(), entry_line.to_string())];
+    append_lines_to_mobile_md_batch(conn, sub, file_stem, doc_title, source_aliases, &single);
+}
+
+/// `multipart/form-data` 바디에서 `file_hash`, `folder_name`, `folder_index`, `total_folders`, 그리고 순수 `KakaoTalkChats.txt` 본문을 분리 추출합니다.
+fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, String, usize, usize) {
     let mut folder_name = String::new();
     let mut file_hash = String::new();
+    let mut folder_index = 1usize;
+    let mut total_folders = 1usize;
     let mut clean_content = body_str.to_string();
 
     if let Ok(re_fh) = Regex::new(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#) {
@@ -6087,6 +8004,20 @@ fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, String) {
         if let Some(cap) = re_fn.captures(body_str) {
             if let Some(m) = cap.get(1) {
                 folder_name = m.as_str().trim().to_string();
+            }
+        }
+    }
+    if let Ok(re_fi) = Regex::new(r#"name="folder_index"[\s\S]*?\r?\n\r?\n(\d+)"#) {
+        if let Some(cap) = re_fi.captures(body_str) {
+            if let Some(m) = cap.get(1) {
+                folder_index = m.as_str().trim().parse::<usize>().unwrap_or(1).max(1);
+            }
+        }
+    }
+    if let Ok(re_tf) = Regex::new(r#"name="total_folders"[\s\S]*?\r?\n\r?\n(\d+)"#) {
+        if let Some(cap) = re_tf.captures(body_str) {
+            if let Some(m) = cap.get(1) {
+                total_folders = m.as_str().trim().parse::<usize>().unwrap_or(1).max(1);
             }
         }
     }
@@ -6109,7 +8040,1637 @@ fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, String) {
         }
     }
 
-    (folder_name, file_hash, clean_content)
+    (folder_name, file_hash, clean_content, folder_index, total_folders)
+}
+
+/// 카카오톡 대화 `.md` 문서 상단 프론트매터에 원본 적재 폴더(`raw_folder`), 참여자, 중복/신규 건수, `last_kakao_ts` 메타데이터를 갱신합니다.
+fn upsert_kakao_metadata_in_md(
+    conn: &Connection,
+    room_name: &str,
+    raw_folder_name: &str,
+    participants: &[String],
+    overlapping_count: usize,
+    messages_added: usize,
+    last_kakao_ts: i64,
+) {
+    let kakao_dir = get_archive_mobile_dir(conn, "kakao");
+    let safe_stem = sanitize_filename_stem(room_name);
+    let md_path = kakao_dir.join(format!("{}.md", safe_stem));
+    if !md_path.exists() {
+        return;
+    }
+    let Ok(raw_md) = fs::read_to_string(&md_path) else {
+        return;
+    };
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut media_count = 0usize;
+    if !raw_folder_name.is_empty() {
+        let folder_path = kakao_dir.join(sanitize_filename_stem(raw_folder_name));
+        if let Ok(entries) = fs::read_dir(&folder_path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let fname = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    if fname != "kakaotalkchats.txt" && !fname.ends_with(".md") {
+                        media_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let part_json = serde_json::to_string(participants).unwrap_or_else(|_| "[]".to_string());
+    let raw_folder_rel = if raw_folder_name.is_empty() {
+        "mobile/kakao".to_string()
+    } else {
+        format!("mobile/kakao/{}", sanitize_filename_stem(raw_folder_name))
+    };
+
+    if raw_md.starts_with("---\n") || raw_md.starts_with("---\r\n") {
+        let sep = if raw_md.starts_with("---\r\n") { "\r\n" } else { "\n" };
+        if let Some(end_idx) = raw_md[4..].find(&format!("{}---", sep)) {
+            let fm_end = 4 + end_idx;
+            let fm_block = &raw_md[4..fm_end];
+            let body_rest = &raw_md[fm_end + 4..];
+            let mut kept_lines: Vec<String> = Vec::new();
+            for line in fm_block.lines() {
+                let t = line.trim();
+                if t.starts_with("last_synced:")
+                    || t.starts_with("raw_folder:")
+                    || t.starts_with("participants:")
+                    || t.starts_with("overlapping_messages:")
+                    || t.starts_with("newly_added_messages:")
+                    || t.starts_with("media_files_in_folder:")
+                    || t.starts_with("last_kakao_ts:")
+                {
+                    continue;
+                }
+                kept_lines.push(line.to_string());
+            }
+            kept_lines.push(format!("raw_folder: \"{}\"", raw_folder_rel));
+            kept_lines.push(format!("participants: {}", part_json));
+            kept_lines.push(format!("overlapping_messages: {}", overlapping_count));
+            kept_lines.push(format!("newly_added_messages: {}", messages_added));
+            kept_lines.push(format!("media_files_in_folder: {}", media_count));
+            kept_lines.push(format!("last_kakao_ts: {}", last_kakao_ts));
+            kept_lines.push(format!("last_synced: \"{}\"", now_str));
+            let updated = format!("---\n{}\n---{}", kept_lines.join("\n"), body_rest);
+            let _ = fs::write(&md_path, updated.as_bytes());
+        }
+    }
+}
+
+static MEM_LAST_KAKAO_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_SMS_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_CALL_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_NOTI_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_RECORDING_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_HEALTH_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_CONTACT_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static MEM_LAST_USAGE_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static PENDING_SYNCED_HASHES: std::sync::OnceLock<Mutex<HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn update_atomic_max_i64(atom: &std::sync::atomic::AtomicI64, val: i64) {
+    if val <= 0 {
+        return;
+    }
+    let _ = atom.fetch_max(val, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn reset_in_memory_sync_caches() {
+    for a in [
+        &MEM_LAST_KAKAO_TS,
+        &MEM_LAST_SMS_TS,
+        &MEM_LAST_CALL_TS,
+        &MEM_LAST_NOTI_TS,
+        &MEM_LAST_RECORDING_TS,
+        &MEM_LAST_HEALTH_TS,
+        &MEM_LAST_CONTACT_TS,
+        &MEM_LAST_USAGE_TS,
+    ] {
+        a.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+    if let Some(lock) = PENDING_SYNCED_HASHES.get() {
+        if let Ok(mut g) = lock.lock() {
+            g.clear();
+        }
+    }
+}
+
+fn mark_hash_synced_in_memory(h: &str) {
+    if h.is_empty() {
+        return;
+    }
+    let lock = PENDING_SYNCED_HASHES.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut g) = lock.lock() {
+        g.insert(h.to_string());
+    }
+}
+
+fn is_hash_synced_in_memory(h: &str) -> bool {
+    let lock = PENDING_SYNCED_HASHES.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(g) = lock.lock() {
+        return g.contains(h);
+    }
+    false
+}
+
+fn check_request_token_fast(request: &tiny_http::Request, db_path: &Path) -> bool {
+    let expected: String = {
+        let lock = CACHED_PAIRING_TOKEN.get_or_init(|| Mutex::new(String::new()));
+        let mut guard = lock.lock().unwrap();
+        if guard.is_empty() {
+            let db_tok = open_db(db_path)
+                .ok()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                })
+                .unwrap_or_default();
+            *guard = db_tok.clone();
+            db_tok
+        } else {
+            guard.clone()
+        }
+    };
+    if expected.is_empty() {
+        return true;
+    }
+    for h in request.headers() {
+        let mut candidate_opt: Option<&str> = None;
+        if h.field.equiv("X-MyLore-Token") {
+            candidate_opt = Some(h.value.as_str().trim());
+        } else if h.field.equiv("Authorization") {
+            let v = h.value.as_str().trim();
+            if let Some(stripped) = v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")) {
+                candidate_opt = Some(stripped.trim());
+            } else {
+                candidate_opt = Some(v);
+            }
+        }
+        if let Some(provided) = candidate_opt {
+            return provided == expected;
+        }
+    }
+    true
+}
+
+fn extract_request_device_headers(
+    request: &tiny_http::Request,
+    json_val: Option<&serde_json::Value>,
+) -> (String, String) {
+    let mut dev_id = String::new();
+    let mut dev_name = String::new();
+    for h in request.headers() {
+        if h.field.equiv("X-MyLore-Device-Id") {
+            dev_id = h.value.as_str().trim().to_string();
+        } else if h.field.equiv("X-MyLore-Device-Name") {
+            dev_name = h.value.as_str().trim().to_string();
+        }
+    }
+    if let Some(jv) = json_val {
+        if dev_id.is_empty() {
+            if let Some(id_s) = jv.get("device_id").and_then(|v| v.as_str()) {
+                dev_id = id_s.trim().to_string();
+            }
+        }
+        if dev_name.is_empty() {
+            if let Some(nm_s) = jv.get("device_name").and_then(|v| v.as_str()) {
+                dev_name = nm_s.trim().to_string();
+            }
+        }
+    }
+    if dev_id.is_empty() {
+        let raw_url = request.url();
+        if let Some(q_idx) = raw_url.find("device_id=") {
+            let sub = &raw_url[q_idx + "device_id=".len()..];
+            dev_id = sub.split('&').next().unwrap_or("").trim().to_string();
+        }
+    }
+    (dev_id, dev_name)
+}
+
+enum SyncWorkerJob {
+    StartSyncInspection {
+        reset_watermarks: bool,
+    },
+    BatchInit {
+        service: String,
+        total_count: usize,
+    },
+    Notifications {
+        dev_id: String,
+        dev_name: String,
+        items: Vec<(String, String, String, i64)>, // (pkg, title, text, ts)
+        current_index: usize,
+        total_count: usize,
+    },
+    Sms {
+        dev_id: String,
+        dev_name: String,
+        items: Vec<(String, String, String, i64)>, // (address, clean_body, sms_type, ts)
+    },
+    CallLogs {
+        dev_id: String,
+        dev_name: String,
+        items: Vec<(String, String, String, i64, i64)>, // (number, name, call_type, duration_sec, ts)
+    },
+    KakaoChat {
+        dev_id: String,
+        room_name: String,
+        raw_folder_name: String,
+        raw_text: String,
+        file_hash: String,
+        folder_index: usize,
+        total_folders: usize,
+        now_ms: i64,
+    },
+    Contacts {
+        dev_id: String,
+        items: Vec<(String, Vec<String>, String, String, i64)>, // (name, phones, org, memo, ts)
+    },
+    AppUsage {
+        dev_id: String,
+        items: Vec<(String, String, String, i64, i64, i64)>, // (date, pkg, app_name, fg_ms, launch_count, last_used)
+    },
+    CallRecording {
+        dev_id: String,
+        dev_name: String,
+        file_hash: String,
+        file_name: String,
+        contact_label: String,
+        transcript_text: String,
+        audio_bytes: Vec<u8>,
+        now_ms: i64,
+    },
+    Media {
+        file_name: String,
+        source_type: String,
+        folder_name: String,
+        file_bytes: Vec<u8>,
+        taken_date: String,
+        taken_time: String,
+        media_uuid: String,
+        content_hash: String,
+    },
+    SamsungHealth {
+        dev_id: String,
+        dev_name: String,
+        raw_bytes: Vec<u8>,
+        now_ms: i64,
+    },
+}
+
+impl SyncWorkerJob {
+    /// 6대 라이프로그 수집 진행률(카톡·알림·문자·통화·녹음·헬스)에 반영되는 포그라운드 동기화 작업인지 여부
+    /// - 5초마다 백그라운드로 수신되는 `AppUsage`, `Contacts`는 진행률 바나 워커 배지를 깜빡이게 하지 않습니다.
+    fn is_foreground_sync_job(&self) -> bool {
+        !matches!(
+            self,
+            SyncWorkerJob::Contacts { .. } | SyncWorkerJob::AppUsage { .. }
+        )
+    }
+}
+
+static SYNC_WORKER_TX: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<SyncWorkerJob>>> =
+    std::sync::OnceLock::new();
+
+fn enqueue_sync_worker_job(job: SyncWorkerJob) {
+    if let Some(tx_mutex) = SYNC_WORKER_TX.get() {
+        if let Ok(tx) = tx_mutex.lock() {
+            let is_fg = job.is_foreground_sync_job();
+            if is_fg {
+                SYNC_QUEUE_DEPTH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                IS_WORKER_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if tx.send(job).is_err() && is_fg {
+                SYNC_QUEUE_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// 삼성 헬스 & 갤럭시 워치 GPS 운동 데이터를 파싱하여 `mobile/health/{YYYY-MM}_운동기록.md` 및 `mobile/health/gpx/{YYYYMMDD_HHMMSS}_{종목}.gpx`로 변환 적재합니다.
+fn process_samsung_health_sync_payload(
+    conn: &Connection,
+    dev_id: &str,
+    dev_name: &str,
+    raw_bytes: &[u8],
+    now_ms: i64,
+) -> (usize, usize, i64) {
+    let health_dir = get_archive_mobile_dir(conn, "health");
+    let gpx_dir = health_dir.join("gpx");
+    let _ = fs::create_dir_all(&gpx_dir);
+
+    let (clean_bytes, _) = strip_multipart_prefix_if_present(raw_bytes);
+    let body_str = String::from_utf8_lossy(&clean_bytes).to_string();
+    let trimmed = body_str.trim();
+
+    let mut added_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut max_ts = now_ms;
+    let mut md_batches: HashMap<String, Vec<(String, String)>> = HashMap::new();
+
+    // GPX XML 빌더 헬퍼 (`location_data.json` 포맷: `[{"latitude": 35.1, "longitude": 128.6, "altitude": 12.3, "start_time": 1730...}, ...]`)
+    let write_gpx_from_points = |points: &[serde_json::Value],
+                                 exercise_name: &str,
+                                 ts_ms: i64|
+     -> Option<String> {
+        let mut trkpts = String::new();
+        let mut valid_pts = 0usize;
+        for pt in points {
+            let lat = pt
+                .get("latitude")
+                .or_else(|| pt.get("lat"))
+                .and_then(|v| v.as_f64());
+            let lon = pt
+                .get("longitude")
+                .or_else(|| pt.get("lon"))
+                .or_else(|| pt.get("lng"))
+                .and_then(|v| v.as_f64());
+            if let (Some(la), Some(lo)) = (lat, lon) {
+                let ele = pt
+                    .get("altitude")
+                    .or_else(|| pt.get("alt"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let pt_ts = pt
+                    .get("start_time")
+                    .or_else(|| pt.get("timestamp"))
+                    .or_else(|| pt.get("ts"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(ts_ms);
+                let (d_s, t_s) = epoch_ms_to_local_date_time(pt_ts);
+                trkpts.push_str(&format!(
+                    "      <trkpt lat=\"{:.6}\" lon=\"{:.6}\"><ele>{:.1}</ele><time>{}T{}Z</time></trkpt>\n",
+                    la, lo, ele, d_s, t_s
+                ));
+                valid_pts += 1;
+            }
+        }
+        if valid_pts == 0 {
+            return None;
+        }
+        let (d_str, t_str) = epoch_ms_to_local_date_time(ts_ms);
+        let stamp = format!("{}_{}", d_str.replace('-', ""), t_str.replace(':', ""));
+        let safe_ex = sanitize_filename_stem(exercise_name);
+        let gpx_filename = format!("{}_{}.gpx", stamp, safe_ex);
+        let gpx_path = gpx_dir.join(&gpx_filename);
+        let gpx_xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <gpx version=\"1.1\" creator=\"myLore Samsung Health Sync\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n\
+               <metadata><name>{} ({})</name></metadata>\n\
+               <trk>\n\
+                 <name>{}</name>\n\
+                 <trkseg>\n\
+             {}\
+                 </trkseg>\n\
+               </trk>\n\
+             </gpx>\n",
+            exercise_name, d_str, exercise_name, trkpts
+        );
+        let _ = fs::write(&gpx_path, gpx_xml.as_bytes());
+        Some(gpx_filename)
+    };
+
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(jv) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(arr) = jv.as_array() {
+                // `location_data.json` 배열 자체가 업로드된 경우
+                if let Some(gpx_fn) = write_gpx_from_points(arr, "워치운동", now_ms) {
+                    let (s_date, s_time) = epoch_ms_to_local_date_time(now_ms);
+                    let ym = if s_date.len() >= 7 { &s_date[..7] } else { "2026-10" }.to_string();
+                    let msg = format!("🏃 [워치 GPS 경로] `{}` ({}개 좌표 기록)", gpx_fn, arr.len());
+                    let md_line = format!("- **[{}] {}** — `gpx/{}`", s_time, msg, gpx_fn);
+                    md_batches
+                        .entry(ym)
+                        .or_default()
+                        .push((s_date.clone(), md_line));
+                    let dedup_key = blake3::hash(format!("health_gpx|{}", gpx_fn).as_bytes())
+                        .to_hex()
+                        .to_string();
+                    let affected = conn
+                        .execute(
+                            "INSERT OR IGNORE INTO lifelog_messages
+                             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
+                             VALUES ('health', '삼성 헬스 · 워치 GPS', '워치운동', ?1, ?2, ?3, ?4, ?5, ?6)",
+                            params![msg, s_date, s_time, dedup_key, dev_id, dev_name],
+                        )
+                        .unwrap_or(0);
+                    if affected > 0 {
+                        added_count += 1;
+                    } else {
+                        skipped_count += 1;
+                    }
+                }
+            } else {
+                let empty_arr = Vec::new();
+                let items = jv
+                    .get("items")
+                    .or_else(|| jv.get("exercises"))
+                    .and_then(|v| v.as_array())
+                    .unwrap_or(&empty_arr);
+                for item in items {
+                    let ex_type = item
+                        .get("exercise_type")
+                        .or_else(|| item.get("type"))
+                        .or_else(|| item.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("운동");
+                    let duration_sec = item
+                        .get("duration_sec")
+                        .or_else(|| item.get("duration"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let calorie = item
+                        .get("calorie")
+                        .or_else(|| item.get("calories"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let mean_hr = item
+                        .get("mean_heart_rate")
+                        .or_else(|| item.get("heart_rate"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let distance_m = item
+                        .get("distance")
+                        .or_else(|| item.get("distance_m"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let steps = item.get("steps").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let ts = item
+                        .get("ts")
+                        .or_else(|| item.get("start_time"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(now_ms);
+                    if ts > max_ts {
+                        max_ts = ts;
+                    }
+                    let (s_date, s_time) = epoch_ms_to_local_date_time(ts);
+                    let ym = if s_date.len() >= 7 { &s_date[..7] } else { "2026-10" }.to_string();
+
+                    let mut gpx_note = String::new();
+                    if let Some(loc_arr) = item
+                        .get("location_data")
+                        .or_else(|| item.get("points"))
+                        .and_then(|v| v.as_array())
+                    {
+                        if let Some(gpx_fn) = write_gpx_from_points(loc_arr, ex_type, ts) {
+                            gpx_note = format!(" · GPX: `gpx/{}`", gpx_fn);
+                        }
+                    }
+
+                    let mins = duration_sec / 60;
+                    let secs = duration_sec % 60;
+                    let summary = if steps > 0 && duration_sec == 0 {
+                        format!(
+                            "🏃 [걸음수 통계] {}보 · {:.0} kcal · {:.2} km",
+                            steps,
+                            calorie,
+                            distance_m / 1000.0
+                        )
+                    } else {
+                        format!(
+                            "🏃 [{}] {}분 {}초 · {:.0} kcal · 평균심박 {} bpm · {:.2} km{}",
+                            ex_type,
+                            mins,
+                            secs,
+                            calorie,
+                            mean_hr,
+                            distance_m / 1000.0,
+                            gpx_note
+                        )
+                    };
+                    let md_line = format!("- **[{}] {}**", s_time, summary);
+                    md_batches
+                        .entry(ym)
+                        .or_default()
+                        .push((s_date.clone(), md_line));
+
+                    let dedup_raw = format!("health|{}|{}|{}|{}", ex_type, s_date, s_time, summary);
+                    let dedup_key = blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+                    let affected = conn
+                        .execute(
+                            "INSERT OR IGNORE INTO lifelog_messages
+                             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
+                             VALUES ('health', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                            params![
+                                format!("삼성 헬스 ({})", ex_type),
+                                ex_type,
+                                summary,
+                                s_date,
+                                s_time,
+                                dedup_key,
+                                dev_id,
+                                dev_name
+                            ],
+                        )
+                        .unwrap_or(0);
+                    if affected > 0 {
+                        added_count += 1;
+                    } else {
+                        skipped_count += 1;
+                    }
+                }
+            }
+        }
+    } else if !trimmed.is_empty() {
+        // CSV 텍스트 업로드 지원
+        let (s_date, s_time) = epoch_ms_to_local_date_time(now_ms);
+        let ym = if s_date.len() >= 7 { &s_date[..7] } else { "2026-10" }.to_string();
+        for line in trimmed.lines().skip(1).take(200) {
+            let l = line.trim();
+            if l.is_empty() || l.starts_with("com.samsung.") {
+                continue;
+            }
+            let summary = format!("🏃 [삼성 헬스 CSV] {}", l.chars().take(140).collect::<String>());
+            let md_line = format!("- **[{}] {}**", s_time, summary);
+            md_batches
+                .entry(ym.clone())
+                .or_default()
+                .push((s_date.clone(), md_line));
+            let dedup_key = blake3::hash(format!("health_csv|{}", l).as_bytes())
+                .to_hex()
+                .to_string();
+            let affected = conn
+                .execute(
+                    "INSERT OR IGNORE INTO lifelog_messages
+                     (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
+                     VALUES ('health', '삼성 헬스 기록', '삼성 헬스', ?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![summary, s_date, s_time, dedup_key, dev_id, dev_name],
+                )
+                .unwrap_or(0);
+            if affected > 0 {
+                added_count += 1;
+            } else {
+                skipped_count += 1;
+            }
+        }
+    }
+
+    for (ym, lines) in md_batches {
+        append_lines_to_mobile_md_batch(
+            conn,
+            "health",
+            &format!("{}_운동기록", ym),
+            &format!("[삼성 헬스 & 워치 운동기록] {}", ym),
+            "[\"헬스\", \"삼성헬스\", \"운동\", \"운동기록\", \"워치\", \"심박수\", \"걸음수\", \"GPX\"]",
+            &lines,
+        );
+    }
+
+    set_meta_i64_max(conn, "last_health_ts", max_ts);
+    if !dev_id.is_empty() {
+        let _ = conn.execute(
+            "UPDATE paired_devices SET last_health_ts = MAX(COALESCE(last_health_ts, 0), ?1) WHERE device_id = ?2",
+            params![max_ts, dev_id],
+        );
+    }
+    (added_count, skipped_count, max_ts)
+}
+
+/// 메인 프로그램(UI/IPC/DB)과 완전히 분리된 전용 백그라운드 동기화 워커 스레드
+/// - 모든 HTTP 동기화 패킷의 디스크 `.md` 병합 및 SQLite 적재를 큐(Channel)로 받아 단일 트랜잭션(`BEGIN IMMEDIATE ... COMMIT`)과 파일별 1회 배치 쓰기로 처리합니다.
+/// - 연속 수신 중에는 `mobile-sync-event`를 발생시키지 않고 진행률(`LIVE_SYNC_PROGRESS`)만 갱신하며, 큐가 모두 비워진 후에만 단 1회 완료 이벤트를 발생시킵니다.
+fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: PathBuf) {
+    let (tx, rx) = std::sync::mpsc::channel::<SyncWorkerJob>();
+    let _ = SYNC_WORKER_TX.set(Mutex::new(tx));
+
+    let _ = thread::Builder::new()
+        .name("mylore-mobile-sync-worker".to_string())
+        .spawn(move || {
+            let android_msg_re = Regex::new(
+                r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$",
+            )
+            .unwrap();
+            let date_re = Regex::new(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일").unwrap();
+            let pc_msg_re = Regex::new(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$").unwrap();
+
+            // 서버 기동 시 DB에 저장된 워터마크를 인메모리 캐시에 로드하고 초기 6단계 동기화 점검 수행
+            if let Ok(conn) = open_db(&db_path) {
+                update_atomic_max_i64(&MEM_LAST_KAKAO_TS, get_meta_i64(&conn, "last_kakao_ts"));
+                update_atomic_max_i64(&MEM_LAST_NOTI_TS, get_meta_i64(&conn, "last_noti_ts"));
+                update_atomic_max_i64(&MEM_LAST_SMS_TS, get_meta_i64(&conn, "last_sms_ts"));
+                update_atomic_max_i64(&MEM_LAST_CALL_TS, get_meta_i64(&conn, "last_call_ts"));
+                update_atomic_max_i64(
+                    &MEM_LAST_RECORDING_TS,
+                    get_meta_i64(&conn, "last_recording_ts"),
+                );
+                update_atomic_max_i64(&MEM_LAST_HEALTH_TS, get_meta_i64(&conn, "last_health_ts"));
+                update_atomic_max_i64(&MEM_LAST_CONTACT_TS, get_meta_i64(&conn, "last_contact_ts"));
+                update_atomic_max_i64(&MEM_LAST_USAGE_TS, get_meta_i64(&conn, "last_usage_ts"));
+            }
+            let _ = broadcast_udp_pc_online();
+            complete_all_remaining_sync_steps(&app_handle, &db_path, true);
+
+            let mut next_first_job: Option<SyncWorkerJob> = None;
+            let mut cycle_had_foreground_job = false;
+            let mut waiting_for_initial_phone_burst = false;
+
+            loop {
+                let first_job = match next_first_job.take() {
+                    Some(j) => j,
+                    None => match rx.recv() {
+                        Ok(j) => j,
+                        Err(_) => break,
+                    },
+                };
+
+                let mut batch: Vec<SyncWorkerJob> = Vec::with_capacity(64);
+                batch.push(first_job);
+                while batch.len() < 128 {
+                    match rx.try_recv() {
+                        Ok(j) => batch.push(j),
+                        Err(_) => break,
+                    }
+                }
+
+                if batch.iter().any(|j| j.is_foreground_sync_job()) {
+                    cycle_had_foreground_job = true;
+                    IS_WORKER_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                if let Ok(conn) = open_db(&db_path) {
+                    let _ = conn.execute_batch("BEGIN IMMEDIATE;");
+
+                    // (sub, file_stem, doc_title, source_aliases) -> Vec<(date_str, md_line)>
+                    let mut md_coalesced: HashMap<
+                        (String, String, String, String),
+                        Vec<(String, String)>,
+                    > = HashMap::new();
+                    let mut need_transcript_trigger = false;
+
+                    for job in batch {
+                        let is_fg = job.is_foreground_sync_job();
+                        match job {
+                            SyncWorkerJob::StartSyncInspection { reset_watermarks } => {
+                                waiting_for_initial_phone_burst = true;
+                                let mutex = LIVE_SYNC_PROGRESS
+                                    .get_or_init(|| Mutex::new(default_live_sync_progress()));
+                                if let Ok(mut guard) = mutex.lock() {
+                                    *guard = default_live_sync_progress();
+                                    guard.is_running = true;
+                                    guard.is_completed = false;
+                                    guard.queued_jobs = SYNC_QUEUE_DEPTH
+                                        .load(std::sync::atomic::Ordering::Relaxed);
+                                    guard.current_label = if reset_watermarks {
+                                        "카카오톡 받아오는 중... (전체 데이터 재요청 송출)"
+                                            .to_string()
+                                    } else {
+                                        "카카오톡 받아오는 중... (모바일 동기화 점검)".to_string()
+                                    };
+                                    if let Some(first_step) = guard.steps.first_mut() {
+                                        first_step.status = "running".to_string();
+                                    }
+                                    let _ = app_handle.emit("mobile-sync-progress", &*guard);
+                                }
+                                let _ = broadcast_udp_pc_online();
+                            }
+                            SyncWorkerJob::BatchInit {
+                                service,
+                                total_count,
+                            } => {
+                                waiting_for_initial_phone_burst = false;
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    &service,
+                                    0,
+                                    total_count.max(1),
+                                    0,
+                                    0,
+                                    Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
+                                );
+                            }
+                            SyncWorkerJob::Notifications {
+                                dev_id,
+                                dev_name,
+                                items,
+                                current_index,
+                                total_count,
+                            } => {
+                                let mut downloaded = 0usize;
+                                let mut skipped = 0usize;
+                                let mut max_ts = 0i64;
+                                for (pkg, title, text, ts) in items {
+                                    if ts > max_ts {
+                                        max_ts = ts;
+                                    }
+                                    let (sent_date, sent_time) = epoch_ms_to_local_date_time(ts);
+                                    let dedup_raw = format!(
+                                        "noti|{}|{}|{}|{}|{}",
+                                        pkg, sent_date, sent_time, title, text
+                                    );
+                                    let dedup_key =
+                                        blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+                                    let affected = conn
+                                        .execute(
+                                            "INSERT OR IGNORE INTO lifelog_messages
+                                             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
+                                             VALUES ('notification', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                            params![
+                                                pkg, title, text, sent_date, sent_time, dedup_key,
+                                                dev_id, dev_name
+                                            ],
+                                        )
+                                        .unwrap_or(0);
+                                    if affected > 0 {
+                                        downloaded += 1;
+                                    } else {
+                                        skipped += 1;
+                                    }
+                                    let ym = if sent_date.len() >= 7 {
+                                        &sent_date[..7]
+                                    } else {
+                                        "2026-10"
+                                    };
+                                    let md_line = format!(
+                                        "- **[{}] [{}] {}**: {}",
+                                        sent_time,
+                                        pkg,
+                                        title.replace('\n', " "),
+                                        text.replace('\n', " ")
+                                    );
+                                    md_coalesced
+                                        .entry((
+                                            "notifications".to_string(),
+                                            format!("{}_알람내역", ym),
+                                            format!("[모바일 알람/알림 내역] {}", ym),
+                                            "[\"알람\", \"알림\", \"알람내역\", \"푸시알림\", \"상단바알림\"]"
+                                                .to_string(),
+                                        ))
+                                        .or_default()
+                                        .push((sent_date.clone(), md_line));
+
+                                    let _ = try_insert_finance_from_mobile_text(
+                                        &conn,
+                                        &pkg,
+                                        &title,
+                                        &text,
+                                        &sent_date,
+                                        &sent_time,
+                                        "모바일 실시간 푸시 알림 적재",
+                                    );
+                                }
+                                if max_ts > 0 {
+                                    set_meta_i64_max(&conn, "last_noti_ts", max_ts);
+                                    if !dev_id.is_empty() {
+                                        let _ = conn.execute(
+                                            "UPDATE paired_devices SET last_noti_ts = MAX(COALESCE(last_noti_ts, 0), ?1) WHERE device_id = ?2",
+                                            params![max_ts, dev_id],
+                                        );
+                                    }
+                                }
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    "notification",
+                                    current_index,
+                                    total_count,
+                                    skipped,
+                                    downloaded,
+                                    Some(&format!(
+                                        "알림 {}/{}건 처리 중 ({}%)",
+                                        current_index,
+                                        total_count,
+                                        ((current_index as f64 / total_count.max(1) as f64) * 100.0)
+                                            .round() as usize
+                                    )),
+                                );
+                            }
+                            SyncWorkerJob::Sms {
+                                dev_id,
+                                dev_name,
+                                items,
+                            } => {
+                                let total_len = items.len().max(1);
+                                let mut downloaded = 0usize;
+                                let mut skipped = 0usize;
+                                let mut max_ts = 0i64;
+                                for (address, body, sms_type, ts) in items {
+                                    if ts > max_ts {
+                                        max_ts = ts;
+                                    }
+                                    let (sent_date, sent_time) = epoch_ms_to_local_date_time(ts);
+                                    let sender_label = if sms_type == "sent" {
+                                        "나 (문자발신)"
+                                    } else {
+                                        address.as_str()
+                                    };
+                                    let dedup_raw = format!(
+                                        "sms|{}|{}|{}|{}|{}",
+                                        address, sent_date, sent_time, sms_type, body
+                                    );
+                                    let dedup_key =
+                                        blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+                                    let affected = conn
+                                        .execute(
+                                            "INSERT OR IGNORE INTO lifelog_messages
+                                             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
+                                             VALUES ('sms', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                            params![
+                                                address,
+                                                sender_label,
+                                                body,
+                                                sent_date,
+                                                sent_time,
+                                                dedup_key,
+                                                dev_id,
+                                                dev_name
+                                            ],
+                                        )
+                                        .unwrap_or(0);
+                                    if affected > 0 {
+                                        downloaded += 1;
+                                    } else {
+                                        skipped += 1;
+                                    }
+                                    let dir_tag = if sms_type == "sent" {
+                                        "📤 발신"
+                                    } else {
+                                        "📥 수신"
+                                    };
+                                    let md_line = format!(
+                                        "- **[{}] [{}] {}**: {}",
+                                        sent_time, dir_tag, sender_label, body
+                                    );
+                                    md_coalesced
+                                        .entry((
+                                            "sms".to_string(),
+                                            address.clone(),
+                                            format!("[문자(SMS) 내역] {}", address),
+                                            "[\"문자\", \"문자내역\", \"메시지\", \"SMS\", \"MMS\"]"
+                                                .to_string(),
+                                        ))
+                                        .or_default()
+                                        .push((sent_date.clone(), md_line));
+
+                                    if sms_type != "sent" {
+                                        let _ = try_insert_finance_from_mobile_text(
+                                            &conn,
+                                            &address,
+                                            &address,
+                                            &body,
+                                            &sent_date,
+                                            &sent_time,
+                                            "모바일 SMS 문자 자동 적재",
+                                        );
+                                    }
+                                }
+                                if max_ts > 0 {
+                                    set_meta_i64_max(&conn, "last_sms_ts", max_ts);
+                                    if !dev_id.is_empty() {
+                                        let _ = conn.execute(
+                                            "UPDATE paired_devices SET last_sms_ts = MAX(COALESCE(last_sms_ts, 0), ?1) WHERE device_id = ?2",
+                                            params![max_ts, dev_id],
+                                        );
+                                    }
+                                }
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    "sms",
+                                    total_len,
+                                    total_len,
+                                    skipped,
+                                    downloaded,
+                                    None,
+                                );
+                            }
+                            SyncWorkerJob::CallLogs {
+                                dev_id,
+                                dev_name: _,
+                                items,
+                            } => {
+                                let total_len = items.len().max(1);
+                                let mut inserted = 0usize;
+                                let mut skipped = 0usize;
+                                let mut max_ts = 0i64;
+                                for (number, name, call_type, duration_sec, ts) in items {
+                                    if ts > max_ts {
+                                        max_ts = ts;
+                                    }
+                                    let (call_date, call_time) = epoch_ms_to_local_date_time(ts);
+                                    let dedup_raw = format!(
+                                        "call|{}|{}|{}|{}|{}",
+                                        number, call_date, call_time, call_type, duration_sec
+                                    );
+                                    let dedup_key =
+                                        blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+                                    let affected = conn
+                                        .execute(
+                                            "INSERT OR IGNORE INTO lifelog_call_logs
+                                             (phone_number, contact_name, call_type, duration_sec, call_date, call_time, timestamp_ms, dedup_key)
+                                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                            params![
+                                                number,
+                                                name,
+                                                call_type,
+                                                duration_sec,
+                                                call_date,
+                                                call_time,
+                                                ts,
+                                                dedup_key
+                                            ],
+                                        )
+                                        .unwrap_or(0);
+                                    if affected > 0 {
+                                        inserted += 1;
+                                    } else {
+                                        skipped += 1;
+                                    }
+                                    let type_kr = match call_type.as_str() {
+                                        "outgoing" => "발신통화",
+                                        "missed" => "부재중통화",
+                                        "rejected" => "수신거절",
+                                        _ => "수신통화",
+                                    };
+                                    let display_target = if name.trim().is_empty() {
+                                        number.clone()
+                                    } else {
+                                        format!("{} ({})", name, number)
+                                    };
+                                    let mins = duration_sec / 60;
+                                    let secs = duration_sec % 60;
+                                    let msg_summary = if duration_sec > 0 {
+                                        format!(
+                                            "📞 [{}] {} — 통화시간 {}분 {}초",
+                                            type_kr, display_target, mins, secs
+                                        )
+                                    } else {
+                                        format!("📞 [{}] {}", type_kr, display_target)
+                                    };
+                                    let _ = conn.execute(
+                                        "INSERT OR IGNORE INTO lifelog_messages
+                                         (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
+                                         VALUES ('call', ?1, ?2, ?3, ?4, ?5, ?6)",
+                                        params![
+                                            display_target,
+                                            type_kr,
+                                            msg_summary,
+                                            call_date,
+                                            call_time,
+                                            dedup_key
+                                        ],
+                                    );
+                                    let md_line = format!("- **[{}] {}**", call_time, msg_summary);
+                                    md_coalesced
+                                        .entry((
+                                            "calls".to_string(),
+                                            display_target.clone(),
+                                            format!("[통화내역 스크립트] {}", display_target),
+                                            "[\"통화\", \"통화내역\", \"통화내용\", \"전화\", \"통화기록\"]"
+                                                .to_string(),
+                                        ))
+                                        .or_default()
+                                        .push((call_date, md_line));
+                                }
+                                if max_ts > 0 {
+                                    set_meta_i64_max(&conn, "last_call_ts", max_ts);
+                                    if !dev_id.is_empty() {
+                                        let _ = conn.execute(
+                                            "UPDATE paired_devices SET last_call_ts = MAX(COALESCE(last_call_ts, 0), ?1) WHERE device_id = ?2",
+                                            params![max_ts, dev_id],
+                                        );
+                                    }
+                                }
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    "call",
+                                    total_len,
+                                    total_len,
+                                    skipped,
+                                    inserted,
+                                    None,
+                                );
+                            }
+                            SyncWorkerJob::KakaoChat {
+                                dev_id,
+                                mut room_name,
+                                raw_folder_name,
+                                raw_text,
+                                file_hash,
+                                folder_index,
+                                total_folders,
+                                now_ms,
+                            } => {
+                                let mut current_date =
+                                    chrono::Local::now().format("%Y-%m-%d").to_string();
+                                let mut parsed_kakao_items: Vec<(String, String, String, String)> =
+                                    Vec::new();
+                                let mut participants: Vec<String> = Vec::new();
+
+                                for line in raw_text.lines() {
+                                    let t_line = line.trim().trim_start_matches('\u{feff}');
+                                    if t_line.is_empty() {
+                                        continue;
+                                    }
+                                    if let Some(cap) = android_msg_re.captures(t_line) {
+                                        let y = cap.get(1).map(|m| m.as_str()).unwrap_or("2026");
+                                        let m: u32 = cap
+                                            .get(2)
+                                            .and_then(|m| m.as_str().parse().ok())
+                                            .unwrap_or(1);
+                                        let d: u32 = cap
+                                            .get(3)
+                                            .and_then(|m| m.as_str().parse().ok())
+                                            .unwrap_or(1);
+                                        let ampm = cap.get(4).map(|m| m.as_str()).unwrap_or("오전");
+                                        let hm = cap.get(5).map(|m| m.as_str()).unwrap_or("00:00");
+                                        let sender =
+                                            cap.get(6).map(|m| m.as_str()).unwrap_or("").trim();
+                                        let body = cap.get(7).map(|m| m.as_str()).unwrap_or("");
+                                        if !sender.is_empty()
+                                            && sender != "회원님"
+                                            && !participants.iter().any(|p| p == sender)
+                                        {
+                                            participants.push(sender.to_string());
+                                        }
+                                        current_date = format!("{}-{:02}-{:02}", y, m, d);
+                                        let time_str = format!("{} {}", ampm, hm);
+                                        parsed_kakao_items.push((
+                                            current_date.clone(),
+                                            time_str,
+                                            sender.to_string(),
+                                            body.to_string(),
+                                        ));
+                                        continue;
+                                    }
+                                    if t_line.starts_with("---") {
+                                        if let Some(cap) = date_re.captures(t_line) {
+                                            let y =
+                                                cap.get(1).map(|m| m.as_str()).unwrap_or("2026");
+                                            let m: u32 = cap
+                                                .get(2)
+                                                .and_then(|m| m.as_str().parse().ok())
+                                                .unwrap_or(1);
+                                            let d: u32 = cap
+                                                .get(3)
+                                                .and_then(|m| m.as_str().parse().ok())
+                                                .unwrap_or(1);
+                                            current_date = format!("{}-{:02}-{:02}", y, m, d);
+                                            continue;
+                                        }
+                                    }
+                                    if let Some(cap) = pc_msg_re.captures(t_line) {
+                                        let sender = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+                                        let time_str = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+                                        let body = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+                                        if !sender.is_empty()
+                                            && sender != "회원님"
+                                            && !participants.iter().any(|p| p == sender)
+                                        {
+                                            participants.push(sender.to_string());
+                                        }
+                                        parsed_kakao_items.push((
+                                            current_date.clone(),
+                                            time_str.to_string(),
+                                            sender.to_string(),
+                                            body.to_string(),
+                                        ));
+                                        continue;
+                                    }
+                                    if !t_line.contains("님과 카카오톡 대화")
+                                        && !t_line.ends_with("카카오톡 대화")
+                                        && !t_line.starts_with("저장한 날짜 :")
+                                        && !t_line.contains("님이 들어왔습니다")
+                                        && !t_line.contains("님이 나갔습니다")
+                                    {
+                                        if let Some(last_item) = parsed_kakao_items.last_mut() {
+                                            last_item.3.push_str("<br/>");
+                                            last_item.3.push_str(t_line);
+                                        }
+                                    }
+                                }
+
+                                if room_name.starts_with("KakaoTalk_Chats_")
+                                    && !participants.is_empty()
+                                {
+                                    room_name = if participants.len() <= 4 {
+                                        participants.join(", ")
+                                    } else {
+                                        format!(
+                                            "{} 외 {}명",
+                                            participants[..3].join(", "),
+                                            participants.len() - 3
+                                        )
+                                    };
+                                }
+
+                                let mut messages_added = 0usize;
+                                let mut overlapping_count = 0usize;
+                                let mut kakao_md_lines: Vec<(String, String)> =
+                                    Vec::with_capacity(parsed_kakao_items.len());
+
+                                for (c_date, time_str, sender, body) in parsed_kakao_items {
+                                    let dedup_raw = format!(
+                                        "kakao|{}|{}|{}|{}|{}",
+                                        room_name, c_date, time_str, sender, body
+                                    );
+                                    let dedup_key =
+                                        blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+                                    let affected = conn
+                                        .execute(
+                                            "INSERT OR IGNORE INTO lifelog_messages
+                                             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
+                                             VALUES ('kakaotalk', ?1, ?2, ?3, ?4, ?5, ?6)",
+                                            params![
+                                                room_name, sender, body, c_date, time_str,
+                                                dedup_key
+                                            ],
+                                        )
+                                        .unwrap_or(0);
+                                    if affected > 0 {
+                                        messages_added += 1;
+                                    } else {
+                                        overlapping_count += 1;
+                                    }
+                                    let md_line =
+                                        format!("- **[{}] {}**: {}", time_str, sender, body);
+                                    kakao_md_lines.push((c_date, md_line));
+                                }
+
+                                append_lines_to_mobile_md_batch(
+                                    &conn,
+                                    "kakao",
+                                    &room_name,
+                                    &format!("[카카오톡 대화내역] {}", room_name),
+                                    "[\"카카오톡\", \"카톡\", \"단톡방\", \"대화내역\", \"채팅이력\", \"KakaoTalk\"]",
+                                    &kakao_md_lines,
+                                );
+
+                                upsert_kakao_metadata_in_md(
+                                    &conn,
+                                    &room_name,
+                                    &raw_folder_name,
+                                    &participants,
+                                    overlapping_count,
+                                    messages_added,
+                                    now_ms,
+                                );
+                                let kakao_md_path = get_archive_mobile_dir(&conn, "kakao")
+                                    .join(format!("{}.md", sanitize_filename_stem(&room_name)));
+                                if kakao_md_path.exists() {
+                                    let _ = enrich_kakao_markdown_with_media(&conn, &kakao_md_path);
+                                }
+
+                                set_meta_i64_max(&conn, "last_kakao_ts", now_ms);
+                                if !dev_id.is_empty() {
+                                    let _ = conn.execute(
+                                        "UPDATE paired_devices SET last_kakao_ts = MAX(COALESCE(last_kakao_ts, 0), ?1) WHERE device_id = ?2",
+                                        params![now_ms, dev_id],
+                                    );
+                                }
+                                if !file_hash.is_empty() {
+                                    let now_str = chrono::Local::now()
+                                        .format("%Y-%m-%d %H:%M:%S")
+                                        .to_string();
+                                    let _ = conn.execute(
+                                        "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
+                                         VALUES (?1, ?2, ?3)",
+                                        params![file_hash, room_name, now_str],
+                                    );
+                                }
+
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    "kakaotalk",
+                                    folder_index,
+                                    total_folders,
+                                    overlapping_count,
+                                    messages_added,
+                                    Some(&format!(
+                                        "[{}] 폴더 {}/{} 완료 ({}% · 신규 {}건, 기존중복 {}건)",
+                                        room_name,
+                                        folder_index,
+                                        total_folders,
+                                        ((folder_index as f64 / total_folders.max(1) as f64)
+                                            * 100.0)
+                                            .round() as usize,
+                                        messages_added,
+                                        overlapping_count
+                                    )),
+                                );
+                            }
+                            SyncWorkerJob::Contacts { dev_id, items } => {
+                                let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+                                let mut max_ts = 0i64;
+                                for (name, phones, org, memo, ts) in items {
+                                    if ts > max_ts {
+                                        max_ts = ts;
+                                    }
+                                    let phone_joined = phones.join(", ");
+                                    let md_line = format!(
+                                        "- **{}** | 전화: `{}`{}{}",
+                                        name,
+                                        phone_joined,
+                                        if org.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" | 소속: {}", org)
+                                        },
+                                        if memo.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" | 메모: {}", memo)
+                                        }
+                                    );
+                                    md_coalesced
+                                        .entry((
+                                            "contacts".to_string(),
+                                            "연락처_주소록".to_string(),
+                                            "[스마트폰 연락처/주소록] 통합 목록".to_string(),
+                                            "[\"연락처\", \"주소록\", \"전화번호\", \"전화번호부\", \"지인\"]"
+                                                .to_string(),
+                                        ))
+                                        .or_default()
+                                        .push((today_str.clone(), md_line));
+                                }
+                                if max_ts > 0 {
+                                    set_meta_i64_max(&conn, "last_contact_ts", max_ts);
+                                    if !dev_id.is_empty() {
+                                        let _ = conn.execute(
+                                            "UPDATE paired_devices SET last_contact_ts = MAX(COALESCE(last_contact_ts, 0), ?1) WHERE device_id = ?2",
+                                            params![max_ts, dev_id],
+                                        );
+                                    }
+                                }
+                            }
+                            SyncWorkerJob::AppUsage { dev_id, items } => {
+                                let mut max_ts = 0i64;
+                                for (date_str, pkg, app_name, fg_ms, launch_count, last_used) in
+                                    items
+                                {
+                                    if last_used > max_ts {
+                                        max_ts = last_used;
+                                    }
+                                    let mins = fg_ms / 60_000;
+                                    let secs = (fg_ms % 60_000) / 1000;
+                                    let ym = if date_str.len() >= 7 {
+                                        &date_str[..7]
+                                    } else {
+                                        "2026-10"
+                                    };
+                                    let md_line = format!(
+                                        "- **{}** (`{}`): 사용시간 **{}분 {}초** (실행 {}회)",
+                                        app_name, pkg, mins, secs, launch_count
+                                    );
+                                    md_coalesced
+                                        .entry((
+                                            "usage".to_string(),
+                                            format!("{}_휴대폰사용량", ym),
+                                            format!("[휴대폰 사용량/스크린타임] {}", ym),
+                                            "[\"휴대폰사용량\", \"사용시간\", \"스크린타임\", \"앱사용시간\", \"디지털웰빙\"]"
+                                                .to_string(),
+                                        ))
+                                        .or_default()
+                                        .push((date_str, md_line));
+                                }
+                                if max_ts > 0 {
+                                    set_meta_i64_max(&conn, "last_usage_ts", max_ts);
+                                    if !dev_id.is_empty() {
+                                        let _ = conn.execute(
+                                            "UPDATE paired_devices SET last_usage_ts = MAX(COALESCE(last_usage_ts, 0), ?1) WHERE device_id = ?2",
+                                            params![max_ts, dev_id],
+                                        );
+                                    }
+                                }
+                            }
+                            SyncWorkerJob::CallRecording {
+                                dev_id,
+                                dev_name,
+                                file_hash,
+                                file_name,
+                                mut contact_label,
+                                transcript_text,
+                                audio_bytes,
+                                now_ms,
+                            } => {
+                                let contacts_map = load_mobile_contacts_map(&conn);
+                                let file_stem = Path::new(&file_name)
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| file_name.clone());
+                                let (is_voice_memo, rec_source) = is_voice_memo_or_watch_recording(
+                                    &file_name,
+                                    &contact_label,
+                                    &dev_name,
+                                );
+
+                                if is_voice_memo {
+                                    let (_, parsed_src, rec_date, rec_time) =
+                                        parse_voice_recording_filename_meta(&file_stem, &rec_source);
+                                    let rec_dir = get_archive_mobile_dir(&conn, "recordings");
+                                    let audio_dir = rec_dir.join("audio");
+                                    let _ = fs::create_dir_all(&audio_dir);
+                                    let audio_path = audio_dir.join(&file_name);
+                                    let _ = fs::write(&audio_path, &audio_bytes);
+
+                                    write_voice_recording_markdown(
+                                        &conn,
+                                        &file_name,
+                                        &parsed_src,
+                                        &rec_date,
+                                        &rec_time,
+                                        if transcript_text.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&transcript_text)
+                                        },
+                                        None,
+                                    );
+                                    upsert_single_recording_into_lifelog_db(
+                                        &conn,
+                                        true,
+                                        &file_stem,
+                                        &parsed_src,
+                                        &rec_date,
+                                        &rec_time,
+                                        if transcript_text.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&transcript_text)
+                                        },
+                                        &dev_id,
+                                        &dev_name,
+                                    );
+                                    let _ = emit_live_service_sync_progress(
+                                        &app_handle,
+                                        "recording",
+                                        1,
+                                        1,
+                                        0,
+                                        1,
+                                        None,
+                                    );
+                                } else {
+                                    let (parsed_contact, rec_date, rec_time) =
+                                        parse_call_audio_filename_meta(&file_stem, &contacts_map);
+                                    if contact_label.trim().is_empty() {
+                                        contact_label = parsed_contact;
+                                    } else {
+                                        contact_label =
+                                            extract_clean_contact_name(&contact_label, &contacts_map);
+                                    }
+                                    let calls_dir = get_archive_mobile_dir(&conn, "calls");
+                                    let audio_dir = calls_dir.join("audio");
+                                    let _ = fs::create_dir_all(&audio_dir);
+                                    let audio_path = audio_dir.join(&file_name);
+                                    let _ = fs::write(&audio_path, &audio_bytes);
+
+                                    write_call_recording_markdown(
+                                        &conn,
+                                        &file_name,
+                                        &contact_label,
+                                        &rec_date,
+                                        &rec_time,
+                                        if transcript_text.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&transcript_text)
+                                        },
+                                        None,
+                                    );
+                                    upsert_single_recording_into_lifelog_db(
+                                        &conn,
+                                        false,
+                                        &file_stem,
+                                        &contact_label,
+                                        &rec_date,
+                                        &rec_time,
+                                        if transcript_text.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&transcript_text)
+                                        },
+                                        &dev_id,
+                                        &dev_name,
+                                    );
+                                    let _ = emit_live_service_sync_progress(
+                                        &app_handle,
+                                        "call",
+                                        1,
+                                        1,
+                                        0,
+                                        1,
+                                        None,
+                                    );
+                                }
+
+                                set_meta_i64_max(&conn, "last_recording_ts", now_ms);
+                                if !dev_id.is_empty() {
+                                    let _ = conn.execute(
+                                        "UPDATE paired_devices SET last_recording_ts = MAX(COALESCE(last_recording_ts, 0), ?1) WHERE device_id = ?2",
+                                        params![now_ms, dev_id],
+                                    );
+                                }
+                                let now_str = chrono::Local::now()
+                                    .format("%Y-%m-%d %H:%M:%S")
+                                    .to_string();
+                                let _ = conn.execute(
+                                    "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
+                                     VALUES (?1, ?2, ?3)",
+                                    params![file_hash, file_name, now_str],
+                                );
+                                if transcript_text.is_empty() && !audio_bytes.is_empty() {
+                                    need_transcript_trigger = true;
+                                }
+                            }
+                            SyncWorkerJob::Media {
+                                file_name,
+                                source_type,
+                                folder_name,
+                                file_bytes,
+                                taken_date,
+                                taken_time,
+                                media_uuid,
+                                content_hash,
+                            } => {
+                                let data_base: String = conn
+                                    .query_row(
+                                        "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
+                                        [],
+                                        |r| r.get(0),
+                                    )
+                                    .unwrap_or_else(|_| {
+                                        r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string()
+                                    });
+                                let inbox_dir = Path::new(&data_base).join("_MediaInbox");
+                                let _ = fs::create_dir_all(&inbox_dir);
+                                let target_path = inbox_dir.join(&file_name);
+                                let _ = fs::write(&target_path, &file_bytes);
+
+                                if !folder_name.is_empty() {
+                                    let raw_kakao_folder = get_archive_mobile_dir(&conn, "kakao")
+                                        .join(sanitize_filename_stem(&folder_name));
+                                    let _ = fs::create_dir_all(&raw_kakao_folder);
+                                    let _ =
+                                        fs::write(raw_kakao_folder.join(&file_name), &file_bytes);
+                                }
+                                if !folder_name.is_empty()
+                                    || source_type.to_lowercase().contains("kakao")
+                                    || file_name.to_lowercase().starts_with("kakaotalk_")
+                                    || file_name.len() >= 40
+                                {
+                                    let kakao_media_dir =
+                                        get_archive_mobile_dir(&conn, "kakao").join("media");
+                                    let _ = fs::create_dir_all(&kakao_media_dir);
+                                    let _ =
+                                        fs::write(kakao_media_dir.join(&file_name), &file_bytes);
+
+                                    let (cur_idx, tot_cnt) = {
+                                        let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| {
+                                            Mutex::new(default_live_sync_progress())
+                                        });
+                                        if let Ok(guard) = mutex.lock() {
+                                            guard
+                                                .steps
+                                                .iter()
+                                                .find(|s| s.key == "kakaotalk")
+                                                .map(|s| {
+                                                    let cur = s.skipped_count + s.downloaded_count + 1;
+                                                    let tot = s.total_count.max(cur + 1);
+                                                    (cur, tot)
+                                                })
+                                                .unwrap_or((1, 2))
+                                        } else {
+                                            (1, 2)
+                                        }
+                                    };
+                                    let _ = emit_live_service_sync_progress(
+                                        &app_handle,
+                                        "kakaotalk",
+                                        cur_idx,
+                                        tot_cnt,
+                                        0,
+                                        1,
+                                        Some(&format!("카톡 미디어 다운로드 중: {}", file_name)),
+                                    );
+                                }
+                                let _ = conn.execute(
+                                    "INSERT OR REPLACE INTO media_inbox
+                                     (uuid, file_name, full_path, taken_date, taken_time, file_size, content_hash, status)
+                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'inbox')",
+                                    params![
+                                        media_uuid,
+                                        file_name,
+                                        target_path.to_string_lossy().to_string(),
+                                        taken_date,
+                                        taken_time,
+                                        file_bytes.len() as i64,
+                                        content_hash
+                                    ],
+                                );
+                                let now_str = chrono::Local::now()
+                                    .format("%Y-%m-%d %H:%M:%S")
+                                    .to_string();
+                                let _ = conn.execute(
+                                    "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
+                                     VALUES (?1, ?2, ?3)",
+                                    params![content_hash, file_name, now_str],
+                                );
+                            }
+                            SyncWorkerJob::SamsungHealth {
+                                dev_id,
+                                dev_name,
+                                raw_bytes,
+                                now_ms,
+                            } => {
+                                let (added, skipped, _) = process_samsung_health_sync_payload(
+                                    &conn, &dev_id, &dev_name, &raw_bytes, now_ms,
+                                );
+                                let _ = emit_live_service_sync_progress(
+                                    &app_handle,
+                                    "health",
+                                    (added + skipped).max(1),
+                                    (added + skipped).max(1),
+                                    skipped,
+                                    added,
+                                    None,
+                                );
+                            }
+                        }
+                        if is_fg {
+                            SYNC_QUEUE_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+
+                    let _ = conn.execute_batch("COMMIT;");
+
+                    // 큐에서 병합된 마크다운 라인들을 파일당 단 1회씩만 디스크에 기록
+                    for ((sub, file_stem, doc_title, source_aliases), entries) in md_coalesced {
+                        append_lines_to_mobile_md_batch(
+                            &conn,
+                            &sub,
+                            &file_stem,
+                            &doc_title,
+                            &source_aliases,
+                            &entries,
+                        );
+                    }
+
+                    if need_transcript_trigger && is_auto_call_transcription_enabled(&conn) {
+                        let db_bg = db_path.clone();
+                        let app_bg = app_handle.clone();
+                        thread::spawn(move || {
+                            let _ = process_pending_call_transcriptions(
+                                &db_bg,
+                                Some(&app_bg),
+                                false,
+                            );
+                        });
+                    }
+                } else {
+                    for job in &batch {
+                        if job.is_foreground_sync_job() {
+                            SYNC_QUEUE_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                // 백그라운드 메타데이터(AppUsage/Contacts)만 처리된 경우 진행률 상태나 배지를 건드리지 않음
+                if !cycle_had_foreground_job {
+                    continue;
+                }
+
+                // 연속 도착하는 동기화 패킷 사이에 추가 작업이 들어오는지 대기 (초기 요청 시 2800ms, 일반 패킷 간 1200ms)
+                if SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    let wait_ms = if waiting_for_initial_phone_burst {
+                        2800
+                    } else {
+                        1200
+                    };
+                    match rx.recv_timeout(std::time::Duration::from_millis(wait_ms)) {
+                        Ok(j) => {
+                            if j.is_foreground_sync_job() {
+                                waiting_for_initial_phone_burst = false;
+                            }
+                            next_first_job = Some(j);
+                            continue;
+                        }
+                        Err(_) => {
+                            if SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                                waiting_for_initial_phone_burst = false;
+                                cycle_had_foreground_job = false;
+                                complete_all_remaining_sync_steps(&app_handle, &db_path, false);
+                                let _ = app_handle.emit(
+                                    "mobile-sync-event",
+                                    serde_json::json!({
+                                        "type": "sync_cycle_complete",
+                                        "message": "✅ 모바일 백그라운드 동기화 큐 처리가 모두 완료되었습니다."
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
 }
 
 fn spawn_mobile_companion_http_server(
@@ -6123,376 +9684,535 @@ fn spawn_mobile_companion_http_server(
 
         if let Ok(server) = tiny_http::Server::http("0.0.0.0:18443") {
             let dist_dir = PathBuf::from(r"c:\git\myLore\dist");
-            for mut request in server.incoming_requests() {
-                if request.method() == &tiny_http::Method::Options {
-                    respond_json(request, 200, serde_json::json!({ "ok": true }));
-                    continue;
-                }
+            for request in server.incoming_requests() {
+                let app_handle = app_handle.clone();
+                let db_path = db_path.clone();
+                let pending_cli_files = pending_cli_files.clone();
+                let dist_dir = dist_dir.clone();
 
-                let raw_url = request.url().to_string();
-                let url_path = raw_url.split('?').next().unwrap_or("/");
+                // 다운로드/동기화 요청과 미디어·열람 요청이 서로 블로킹하지 않도록 요청별 독립 스레드에서 처리
+                thread::spawn(move || {
+                    let mut request = request;
+                    if request.method() == &tiny_http::Method::Options {
+                        respond_json(request, 200, serde_json::json!({ "ok": true }));
+                        return;
+                    }
 
-                if url_path == "/api/v1/open-files" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let paths: Vec<String> =
-                        serde_json::from_str(&body_str).unwrap_or_default();
+                    let raw_url = request.url().to_string();
+                    let url_path = raw_url.split('?').next().unwrap_or("/");
 
-                    if !paths.is_empty() {
-                        if let Ok(mut guard) = pending_cli_files.lock() {
-                            for p in &paths {
-                                if !guard.contains(p) {
-                                    guard.push(p.clone());
+                    if url_path == "/api/v1/open-files" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        let paths: Vec<String> =
+                            serde_json::from_str(&body_str).unwrap_or_default();
+
+                        if !paths.is_empty() {
+                            if let Ok(mut guard) = pending_cli_files.lock() {
+                                for p in &paths {
+                                    if !guard.contains(p) {
+                                        guard.push(p.clone());
+                                    }
                                 }
                             }
+                            let _ = app_handle.emit("cli-open-files", paths);
                         }
-                        let _ = app_handle.emit("cli-open-files", paths);
-                    }
 
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.unminimize();
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-
-                    respond_json(request, 200, serde_json::json!({ "ok": true }));
-                } else if url_path == "/api/v1/status" {
-                    let pc_name = std::env::var("COMPUTERNAME")
-                        .unwrap_or_else(|_| "MYLORE-DESKTOP".to_string());
-                    let (
-                        mut last_sms_ts,
-                        mut last_call_ts,
-                        mut last_noti_ts,
-                        mut last_contact_ts,
-                        mut last_usage_ts,
-                    ) = (0i64, 0i64, 0i64, 0i64, 0i64);
-                    let mut force_full_sync = false;
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
-                            respond_json(
-                                request,
-                                401,
-                                serde_json::json!({ "ok": false, "status": "unauthorized", "error": "Invalid X-MyLore-Token" }),
-                            );
-                            continue;
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
-                        force_full_sync = get_meta_i64(&conn, "force_full_sync") == 1;
-                        if !force_full_sync {
-                            let (req_dev_id, _) = resolve_request_device(&request, None, &conn);
-                            let dev_ts: Option<(i64, i64, i64, i64, i64)> = if !req_dev_id.is_empty() {
-                                conn.query_row(
-                                    "SELECT last_sms_ts, last_call_ts, last_noti_ts, last_contact_ts, last_usage_ts
-                                     FROM paired_devices WHERE device_id = ?1 LIMIT 1",
-                                    params![req_dev_id],
-                                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                                )
-                                .optional()
-                                .unwrap_or(None)
-                            } else {
-                                None
-                            };
-                            if let Some((s, c, n, ct, u)) = dev_ts {
-                                if s > 0 || c > 0 || n > 0 || ct > 0 || u > 0 {
-                                    last_sms_ts = s;
-                                    last_call_ts = c;
-                                    last_noti_ts = n;
-                                    last_contact_ts = ct;
-                                    last_usage_ts = u;
-                                } else {
-                                    last_sms_ts = get_meta_i64(&conn, "last_sms_ts");
-                                    last_call_ts = get_meta_i64(&conn, "last_call_ts");
-                                    last_noti_ts = get_meta_i64(&conn, "last_noti_ts");
-                                    last_contact_ts = get_meta_i64(&conn, "last_contact_ts");
-                                    last_usage_ts = get_meta_i64(&conn, "last_usage_ts");
+
+                        respond_json(request, 200, serde_json::json!({ "ok": true }));
+                    } else if url_path == "/api/v1/status" || url_path == "/api/v1/sync/watermarks" {
+                        let pc_name = std::env::var("COMPUTERNAME")
+                            .unwrap_or_else(|_| "MYLORE-DESKTOP".to_string());
+                        let mut body_str = String::new();
+                        if request.method() == &tiny_http::Method::Post {
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+                        }
+                        let client_json: serde_json::Value = if !body_str.trim().is_empty() {
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}))
+                        } else {
+                            serde_json::json!({})
+                        };
+
+                        let (
+                            mut last_kakao_ts,
+                            mut last_sms_ts,
+                            mut last_call_ts,
+                            mut last_noti_ts,
+                            mut last_recording_ts,
+                            mut last_health_ts,
+                            mut last_contact_ts,
+                            mut last_usage_ts,
+                        ) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
+                        let mut force_full_sync = false;
+                        if let Ok(conn) = open_db(&db_path) {
+                            if !check_request_token(&request, &conn) {
+                                respond_json(
+                                    request,
+                                    401,
+                                    serde_json::json!({ "ok": false, "status": "unauthorized", "error": "Invalid X-MyLore-Token" }),
+                                );
+                                return;
+                            }
+                            force_full_sync = get_meta_i64(&conn, "force_full_sync") == 1;
+                            let (req_dev_id, _) =
+                                resolve_request_device(&request, Some(&client_json), &conn);
+
+                            if url_path == "/api/v1/sync/watermarks" {
+                                if force_full_sync {
+                                    let _ = conn.execute(
+                                        "INSERT INTO mobile_sync_meta (key, value) VALUES ('force_full_sync', '0')
+                                         ON CONFLICT(key) DO UPDATE SET value = '0'",
+                                        [],
+                                    );
+                                } else if !INITIAL_SYNC_CHECKED
+                                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    // 서버 기동 후 첫 워터마크 핸드셰이크 시:
+                                    // 폰은 이미 전송했다고 기억(watermark > 0)하지만 PC DB에는 해당 항목이 0건인 경우 자동 재동기화 유도
+                                    let c_kakao = client_json
+                                        .get("last_kakao_ts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let c_sms = client_json
+                                        .get("last_sms_ts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let c_call = client_json
+                                        .get("last_call_ts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let c_noti = client_json
+                                        .get("last_noti_ts")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+
+                                    let db_kakao_cnt: i64 = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM lifelog_messages WHERE source = 'kakaotalk'",
+                                            [],
+                                            |r| r.get(0),
+                                        )
+                                        .unwrap_or(0);
+                                    let db_sms_cnt: i64 = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM lifelog_messages WHERE source = 'sms'",
+                                            [],
+                                            |r| r.get(0),
+                                        )
+                                        .unwrap_or(0);
+                                    let db_call_cnt: i64 = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM lifelog_call_logs",
+                                            [],
+                                            |r| r.get(0),
+                                        )
+                                        .unwrap_or(0);
+                                    let db_noti_cnt: i64 = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM lifelog_messages WHERE source = 'notification'",
+                                            [],
+                                            |r| r.get(0),
+                                        )
+                                        .unwrap_or(0);
+
+                                    if (c_kakao > 0 && db_kakao_cnt == 0)
+                                        || (c_sms > 0 && db_sms_cnt == 0)
+                                        || (c_call > 0 && db_call_cnt == 0)
+                                        || (c_noti > 0 && db_noti_cnt == 0)
+                                    {
+                                        force_full_sync = true;
+                                        reset_in_memory_sync_caches();
+                                        enqueue_sync_worker_job(
+                                            SyncWorkerJob::StartSyncInspection {
+                                                reset_watermarks: false,
+                                            },
+                                        );
+                                    }
                                 }
-                            } else {
-                                last_sms_ts = get_meta_i64(&conn, "last_sms_ts");
-                                last_call_ts = get_meta_i64(&conn, "last_call_ts");
-                                last_noti_ts = get_meta_i64(&conn, "last_noti_ts");
-                                last_contact_ts = get_meta_i64(&conn, "last_contact_ts");
-                                last_usage_ts = get_meta_i64(&conn, "last_usage_ts");
+                            }
+
+                            if !force_full_sync {
+                                let dev_ts: Option<(i64, i64, i64, i64, i64, i64, i64, i64)> =
+                                    if !req_dev_id.is_empty() {
+                                        conn.query_row(
+                                            "SELECT COALESCE(last_kakao_ts, 0), COALESCE(last_sms_ts, 0), COALESCE(last_call_ts, 0),
+                                                    COALESCE(last_noti_ts, 0), COALESCE(last_recording_ts, 0), COALESCE(last_health_ts, 0),
+                                                    COALESCE(last_contact_ts, 0), COALESCE(last_usage_ts, 0)
+                                             FROM paired_devices WHERE device_id = ?1 LIMIT 1",
+                                            params![req_dev_id],
+                                            |r| {
+                                                Ok((
+                                                    r.get(0)?,
+                                                    r.get(1)?,
+                                                    r.get(2)?,
+                                                    r.get(3)?,
+                                                    r.get(4)?,
+                                                    r.get(5)?,
+                                                    r.get(6)?,
+                                                    r.get(7)?,
+                                                ))
+                                            },
+                                        )
+                                        .optional()
+                                        .unwrap_or(None)
+                                    } else {
+                                        None
+                                    };
+                                last_kakao_ts = get_meta_i64(&conn, "last_kakao_ts").max(
+                                    MEM_LAST_KAKAO_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_sms_ts = get_meta_i64(&conn, "last_sms_ts").max(
+                                    MEM_LAST_SMS_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_call_ts = get_meta_i64(&conn, "last_call_ts").max(
+                                    MEM_LAST_CALL_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_noti_ts = get_meta_i64(&conn, "last_noti_ts").max(
+                                    MEM_LAST_NOTI_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_recording_ts = get_meta_i64(&conn, "last_recording_ts").max(
+                                    MEM_LAST_RECORDING_TS
+                                        .load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_health_ts = get_meta_i64(&conn, "last_health_ts").max(
+                                    MEM_LAST_HEALTH_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_contact_ts = get_meta_i64(&conn, "last_contact_ts").max(
+                                    MEM_LAST_CONTACT_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+                                last_usage_ts = get_meta_i64(&conn, "last_usage_ts").max(
+                                    MEM_LAST_USAGE_TS.load(std::sync::atomic::Ordering::Relaxed),
+                                );
+
+                                if let Some((k, s, c, n, rec, h, ct, u)) = dev_ts {
+                                    last_kakao_ts = last_kakao_ts.max(k);
+                                    last_sms_ts = last_sms_ts.max(s);
+                                    last_call_ts = last_call_ts.max(c);
+                                    last_noti_ts = last_noti_ts.max(n);
+                                    last_recording_ts = last_recording_ts.max(rec);
+                                    last_health_ts = last_health_ts.max(h);
+                                    last_contact_ts = last_contact_ts.max(ct);
+                                    last_usage_ts = last_usage_ts.max(u);
+                                }
+
+                                update_atomic_max_i64(&MEM_LAST_KAKAO_TS, last_kakao_ts);
+                                update_atomic_max_i64(&MEM_LAST_SMS_TS, last_sms_ts);
+                                update_atomic_max_i64(&MEM_LAST_CALL_TS, last_call_ts);
+                                update_atomic_max_i64(&MEM_LAST_NOTI_TS, last_noti_ts);
+                                update_atomic_max_i64(&MEM_LAST_RECORDING_TS, last_recording_ts);
+                                update_atomic_max_i64(&MEM_LAST_HEALTH_TS, last_health_ts);
+                                update_atomic_max_i64(&MEM_LAST_CONTACT_TS, last_contact_ts);
+                                update_atomic_max_i64(&MEM_LAST_USAGE_TS, last_usage_ts);
                             }
                         }
-                    }
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "status": "ok",
-                            "pc_name": pc_name,
-                            "version": "0.1.0",
-                            "db_ready": db_path.exists(),
-                            "force_full_sync": force_full_sync,
-                            "last_sms_ts": last_sms_ts,
-                            "last_call_ts": last_call_ts,
-                            "last_noti_ts": last_noti_ts,
-                            "last_contact_ts": last_contact_ts,
-                            "last_usage_ts": last_usage_ts
-                        }),
-                    );
-                } else if url_path == "/api/v1/pair/confirm" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-
-                    let device_name = json_val
-                        .get("device_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Android Device")
-                        .to_string();
-                    let model = json_val
-                        .get("model")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown Model")
-                        .to_string();
-
-                    let hash_seed = format!("{}|{}", device_name, model);
-                    let short_hash = &blake3::hash(hash_seed.as_bytes()).to_hex()[..10];
-                    let device_id = format!("dev_{}", short_hash);
-                    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
-                            respond_json(
-                                request,
-                                401,
-                                serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
-                            );
-                            continue;
-                        }
-                        let _ = conn.execute(
-                            "INSERT INTO paired_devices (device_id, device_name, model, paired_at, last_seen_at)
-                             VALUES (?1, ?2, ?3, ?4, ?4)
-                             ON CONFLICT(device_id) DO UPDATE SET
-                                device_name = excluded.device_name,
-                                model = excluded.model,
-                                last_seen_at = excluded.last_seen_at",
-                            params![device_id, device_name, model, now_str],
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "status": "ok",
+                                "pc_name": pc_name,
+                                "version": "0.1.0",
+                                "db_ready": db_path.exists(),
+                                "force_full_sync": force_full_sync,
+                                "last_kakao_ts": last_kakao_ts,
+                                "last_sms_ts": last_sms_ts,
+                                "last_call_ts": last_call_ts,
+                                "last_noti_ts": last_noti_ts,
+                                "last_recording_ts": last_recording_ts,
+                                "last_health_ts": last_health_ts,
+                                "last_contact_ts": last_contact_ts,
+                                "last_usage_ts": last_usage_ts
+                            }),
                         );
-                    }
+                    } else if url_path == "/api/v1/sync/batch-init" {
+                        // 카톡(전달할 전체 폴더 수) 또는 알림(전달할 전체 메시지 수) 동기화 시작 전 총 개수 선발송 수신
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let service = json_val
+                            .get("service")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("kakaotalk");
+                        let total_count = json_val
+                            .get("total_count")
+                            .or_else(|| json_val.get("total_folders"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
 
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "paired",
-                            "message": format!("📱 모바일 기기 QR 페어링 완료: {} ({})", device_name, model)
-                        }),
-                    );
+                        enqueue_sync_worker_job(SyncWorkerJob::BatchInit {
+                            service: service.to_string(),
+                            total_count,
+                        });
+                        let pct = emit_live_service_sync_progress(
+                            &app_handle,
+                            service,
+                            0,
+                            total_count.max(1),
+                            0,
+                            0,
+                            Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
+                        );
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "registered_device_id": device_id
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/check-hashes" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let hashes: Vec<String> = json_val
-                        .get("hashes")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "service": service,
+                                "total_count": total_count,
+                                "percent": pct
+                            }),
+                        );
+                    } else if url_path == "/api/v1/pair/confirm" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
 
-                    let mut missing_hashes = Vec::new();
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        let device_name = json_val
+                            .get("device_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Android Device")
+                            .to_string();
+                        let model = json_val
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown Model")
+                            .to_string();
+
+                        let hash_seed = format!("{}|{}", device_name, model);
+                        let short_hash = &blake3::hash(hash_seed.as_bytes()).to_hex()[..10];
+                        let device_id = format!("dev_{}", short_hash);
+                        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+                        if let Ok(conn) = open_db(&db_path) {
+                            if !check_request_token(&request, &conn) {
+                                respond_json(
+                                    request,
+                                    401,
+                                    serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
+                                );
+                                return;
+                            }
+                            let _ = conn.execute(
+                                "INSERT INTO paired_devices (device_id, device_name, model, paired_at, last_seen_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?4)
+                                 ON CONFLICT(device_id) DO UPDATE SET
+                                    device_name = excluded.device_name,
+                                    model = excluded.model,
+                                    last_seen_at = excluded.last_seen_at",
+                                params![device_id, device_name, model, now_str],
+                            );
+                        }
+
+                        let _ = app_handle.emit(
+                            "mobile-sync-event",
+                            serde_json::json!({
+                                "type": "paired",
+                                "message": format!("📱 모바일 기기 QR 페어링 완료: {} ({})", device_name, model)
+                            }),
+                        );
+
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "registered_device_id": device_id
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/check-hashes" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let hashes: Vec<String> = json_val
+                            .get("hashes")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
+
+                        let mut missing_hashes = Vec::new();
+                        let mut db_candidates = Vec::new();
                         for h in hashes {
-                            let exists_in_sync: bool = conn
-                                .query_row(
-                                    "SELECT 1 FROM synced_file_hashes WHERE file_hash = ?1 LIMIT 1",
-                                    params![h],
-                                    |_| Ok(true),
-                                )
-                                .unwrap_or(false);
-                            let exists_in_media: bool = conn
-                                .query_row(
-                                    "SELECT 1 FROM media_inbox WHERE content_hash = ?1 LIMIT 1",
-                                    params![h],
-                                    |_| Ok(true),
-                                )
-                                .unwrap_or(false);
-                            if !exists_in_sync && !exists_in_media {
-                                missing_hashes.push(h);
+                            if is_hash_synced_in_memory(&h) {
+                                continue;
+                            }
+                            db_candidates.push(h);
+                        }
+
+                        if !db_candidates.is_empty() {
+                            if let Ok(conn) = open_db(&db_path) {
+                                for h in db_candidates {
+                                    let exists_in_sync: bool = conn
+                                        .query_row(
+                                            "SELECT 1 FROM synced_file_hashes WHERE file_hash = ?1 LIMIT 1",
+                                            params![h],
+                                            |_| Ok(true),
+                                        )
+                                        .unwrap_or(false);
+                                    let exists_in_media: bool = conn
+                                        .query_row(
+                                            "SELECT 1 FROM media_inbox WHERE content_hash = ?1 LIMIT 1",
+                                            params![h],
+                                            |_| Ok(true),
+                                        )
+                                        .unwrap_or(false);
+                                    if exists_in_sync || exists_in_media {
+                                        mark_hash_synced_in_memory(&h);
+                                    } else {
+                                        missing_hashes.push(h);
+                                    }
+                                }
+                            } else {
+                                missing_hashes = db_candidates;
                             }
                         }
-                    }
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "missing_hashes": missing_hashes
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/notifications" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let empty_vec = Vec::new();
-                    let items = json_val
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .unwrap_or(&empty_vec);
-
-                    let mut ack_ids = Vec::new();
-                    let mut finance_parsed = 0usize;
-                    let mut max_ts = 0i64;
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "missing_hashes": missing_hashes
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/notifications" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let empty_vec = Vec::new();
+                        let items = json_val
+                            .get("items")
+                            .and_then(|v| v.as_array())
+                            .unwrap_or(&empty_vec);
+                        let total_count = json_val
+                            .get("total_count")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or_else(|| items.len().max(1));
+                        let current_index = json_val
+                            .get("current_index")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or(total_count);
+
                         let (dev_id, dev_name) =
-                            resolve_request_device(&request, Some(&json_val), &conn);
-                        let _ = conn.execute(
-                            "INSERT INTO mobile_sync_meta (key, value) VALUES ('force_full_sync', '0')
-                             ON CONFLICT(key) DO UPDATE SET value = '0'",
-                            [],
-                        );
+                            extract_request_device_headers(&request, Some(&json_val));
+                        let mut ack_ids = Vec::with_capacity(items.len());
+                        let mut worker_items = Vec::with_capacity(items.len());
+                        let mut max_ts = 0i64;
+
                         for item in items {
                             if let Some(id_val) = item.get("id") {
                                 ack_ids.push(id_val.clone());
                             }
-                            let pkg = item.get("pkg").and_then(|v| v.as_str()).unwrap_or("app");
-                            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                            let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            let pkg = item
+                                .get("pkg")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("app")
+                                .to_string();
+                            let title = item
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let text = item
+                                .get("text")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let ts = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
                             if ts > max_ts {
                                 max_ts = ts;
                             }
-                            let (sent_date, sent_time) = epoch_ms_to_local_date_time(ts);
-
-                            let dedup_raw =
-                                format!("noti|{}|{}|{}|{}|{}", pkg, sent_date, sent_time, title, text);
-                            let dedup_key =
-                                blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-
-                            let _ = conn.execute(
-                                "INSERT OR IGNORE INTO lifelog_messages
-                                 (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
-                                 VALUES ('notification', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                                params![pkg, title, text, sent_date, sent_time, dedup_key, dev_id, dev_name],
-                            );
-
-                            // mobile/notifications/{YYYY-MM}_알람내역.md 에 자동 누적
-                            let ym = if sent_date.len() >= 7 {
-                                &sent_date[..7]
-                            } else {
-                                "2026-10"
-                            };
-                            let md_line = format!(
-                                "- **[{}] [{}] {}**: {}",
-                                sent_time,
-                                pkg,
-                                title.replace('\n', " "),
-                                text.replace('\n', " ")
-                            );
-                            append_line_to_mobile_md(
-                                &conn,
-                                "notifications",
-                                &format!("{}_알람내역", ym),
-                                &format!("[모바일 알람/알림 내역] {}", ym),
-                                "[\"알람\", \"알림\", \"알람내역\", \"푸시알림\", \"상단바알림\"]",
-                                &sent_date,
-                                &md_line,
-                            );
-
-                            if try_insert_finance_from_mobile_text(
-                                &conn,
-                                pkg,
-                                title,
-                                text,
-                                &sent_date,
-                                &sent_time,
-                                "모바일 실시간 푸시 알림 적재",
-                            ) {
-                                finance_parsed += 1;
-                            }
+                            worker_items.push((pkg, title, text, ts));
                         }
                         if max_ts > 0 {
-                            set_meta_i64_max(&conn, "last_noti_ts", max_ts);
-                            if !dev_id.is_empty() {
-                                let _ = conn.execute(
-                                    "UPDATE paired_devices SET last_noti_ts = MAX(last_noti_ts, ?1) WHERE device_id = ?2",
-                                    params![max_ts, dev_id],
-                                );
-                            }
+                            update_atomic_max_i64(&MEM_LAST_NOTI_TS, max_ts);
                         }
-                    }
 
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "notifications",
-                            "message": format!("🔔 모바일 알림 {}건 수신 및 mobile/notifications 아카이빙 완료 (금융 파싱: {}건)", ack_ids.len(), finance_parsed)
-                        }),
-                    );
+                        if !worker_items.is_empty() {
+                            enqueue_sync_worker_job(SyncWorkerJob::Notifications {
+                                dev_id,
+                                dev_name,
+                                items: worker_items,
+                                current_index,
+                                total_count,
+                            });
+                        }
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "ack_ids": ack_ids,
-                            "finance_parsed": finance_parsed
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/sms" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let empty_vec = Vec::new();
-                    let items = json_val
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .unwrap_or(&empty_vec);
-
-                    let mut ack_ids = Vec::new();
-                    let mut finance_parsed = 0usize;
-                    let mut max_ts = 0i64;
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        let pct = ((current_index as f64 / total_count.max(1) as f64) * 100.0)
+                            .round()
+                            .clamp(0.0, 100.0) as usize;
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "ack_ids": ack_ids,
+                                "finance_parsed": 0,
+                                "current_index": current_index,
+                                "total_count": total_count,
+                                "percent": pct,
+                                "last_noti_ts": max_ts
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/sms" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let empty_vec = Vec::new();
+                        let items = json_val
+                            .get("items")
+                            .and_then(|v| v.as_array())
+                            .unwrap_or(&empty_vec);
+
                         let (dev_id, dev_name) =
-                            resolve_request_device(&request, Some(&json_val), &conn);
-                        let _ = conn.execute(
-                            "INSERT INTO mobile_sync_meta (key, value) VALUES ('force_full_sync', '0')
-                             ON CONFLICT(key) DO UPDATE SET value = '0'",
-                            [],
-                        );
+                            extract_request_device_headers(&request, Some(&json_val));
+                        let mut ack_ids = Vec::with_capacity(items.len());
+                        let mut worker_items = Vec::with_capacity(items.len());
+                        let mut max_ts = 0i64;
+
                         for item in items {
                             if let Some(id_val) = item.get("id") {
                                 ack_ids.push(id_val.clone());
@@ -6500,126 +10220,69 @@ fn spawn_mobile_companion_http_server(
                             let address = item
                                 .get("address")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("알수없음");
-                            let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                                .unwrap_or("알수없음")
+                                .to_string();
+                            let raw_body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                            let clean_body = clean_mms_and_multiline_body(raw_body);
                             let sms_type = item
                                 .get("type")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("inbox");
+                                .unwrap_or("inbox")
+                                .to_string();
                             let ts = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
                             if ts > max_ts {
                                 max_ts = ts;
                             }
-                            let (sent_date, sent_time) = epoch_ms_to_local_date_time(ts);
-                            let sender_label = if sms_type == "sent" {
-                                "나 (문자발신)"
-                            } else {
-                                address
-                            };
-
-                            let dedup_raw = format!(
-                                "sms|{}|{}|{}|{}|{}",
-                                address, sent_date, sent_time, sms_type, body
-                            );
-                            let dedup_key =
-                                blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-
-                            let _ = conn.execute(
-                                "INSERT OR IGNORE INTO lifelog_messages
-                                 (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key, device_id, device_name)
-                                 VALUES ('sms', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                                params![address, sender_label, body, sent_date, sent_time, dedup_key, dev_id, dev_name],
-                            );
-
-                            // mobile/sms/{address}.md 에 상대방별 문자 스크립트 자동 누적
-                            let dir_tag = if sms_type == "sent" {
-                                "📤 발신"
-                            } else {
-                                "📥 수신"
-                            };
-                            let md_line = format!(
-                                "- **[{}] [{}] {}**: {}",
-                                sent_time,
-                                dir_tag,
-                                sender_label,
-                                body.replace('\n', " ")
-                            );
-                            append_line_to_mobile_md(
-                                &conn,
-                                "sms",
-                                address,
-                                &format!("[문자(SMS) 내역] {}", address),
-                                "[\"문자\", \"문자내역\", \"메시지\", \"SMS\", \"MMS\"]",
-                                &sent_date,
-                                &md_line,
-                            );
-
-                            if sms_type != "sent"
-                                && try_insert_finance_from_mobile_text(
-                                    &conn,
-                                    address,
-                                    address,
-                                    body,
-                                    &sent_date,
-                                    &sent_time,
-                                    "모바일 SMS 문자 자동 적재",
-                                )
-                            {
-                                finance_parsed += 1;
-                            }
+                            worker_items.push((address, clean_body, sms_type, ts));
                         }
                         if max_ts > 0 {
-                            set_meta_i64_max(&conn, "last_sms_ts", max_ts);
-                            if !dev_id.is_empty() {
-                                let _ = conn.execute(
-                                    "UPDATE paired_devices SET last_sms_ts = MAX(last_sms_ts, ?1) WHERE device_id = ?2",
-                                    params![max_ts, dev_id],
-                                );
-                            }
+                            update_atomic_max_i64(&MEM_LAST_SMS_TS, max_ts);
                         }
-                    }
 
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "sms",
-                            "message": format!("✉️ 모바일 문자(SMS) {}건 수신 및 mobile/sms 아카이빙 완료 (금융 파싱: {}건)", ack_ids.len(), finance_parsed)
-                        }),
-                    );
+                        if !worker_items.is_empty() {
+                            enqueue_sync_worker_job(SyncWorkerJob::Sms {
+                                dev_id,
+                                dev_name,
+                                items: worker_items,
+                            });
+                        }
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "ack_ids": ack_ids,
-                            "finance_parsed": finance_parsed
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/call-logs" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let empty_vec = Vec::new();
-                    let items = json_val
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .unwrap_or(&empty_vec);
-
-                    let mut ack_ids = Vec::new();
-                    let mut inserted_count = 0usize;
-                    let mut max_ts = 0i64;
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "ack_ids": ack_ids,
+                                "finance_parsed": 0,
+                                "last_sms_ts": max_ts
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/call-logs" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let empty_vec = Vec::new();
+                        let items = json_val
+                            .get("items")
+                            .and_then(|v| v.as_array())
+                            .unwrap_or(&empty_vec);
+
+                        let (dev_id, dev_name) =
+                            extract_request_device_headers(&request, Some(&json_val));
+                        let mut ack_ids = Vec::with_capacity(items.len());
+                        let mut worker_items = Vec::with_capacity(items.len());
+                        let mut max_ts = 0i64;
+
                         for item in items {
                             if let Some(id_val) = item.get("id") {
                                 ack_ids.push(id_val.clone());
@@ -6627,12 +10290,18 @@ fn spawn_mobile_companion_http_server(
                             let number = item
                                 .get("number")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("번호없음");
-                            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                .unwrap_or("번호없음")
+                                .to_string();
+                            let name = item
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let call_type = item
                                 .get("call_type")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("incoming");
+                                .unwrap_or("incoming")
+                                .to_string();
                             let duration_sec = item
                                 .get("duration_sec")
                                 .and_then(|v| v.as_i64())
@@ -6641,357 +10310,181 @@ fn spawn_mobile_companion_http_server(
                             if ts > max_ts {
                                 max_ts = ts;
                             }
-                            let (call_date, call_time) = epoch_ms_to_local_date_time(ts);
-
-                            let dedup_raw = format!(
-                                "call|{}|{}|{}|{}|{}",
-                                number, call_date, call_time, call_type, duration_sec
-                            );
-                            let dedup_key =
-                                blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-
-                            let affected = conn
-                                .execute(
-                                    "INSERT OR IGNORE INTO lifelog_call_logs
-                                     (phone_number, contact_name, call_type, duration_sec, call_date, call_time, timestamp_ms, dedup_key)
-                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                                    params![
-                                        number,
-                                        name,
-                                        call_type,
-                                        duration_sec,
-                                        call_date,
-                                        call_time,
-                                        ts,
-                                        dedup_key
-                                    ],
-                                )
-                                .unwrap_or(0);
-                            if affected > 0 {
-                                inserted_count += 1;
-                            }
-
-                            let type_kr = match call_type {
-                                "outgoing" => "발신통화",
-                                "missed" => "부재중통화",
-                                "rejected" => "수신거절",
-                                _ => "수신통화",
-                            };
-                            let display_target = if name.trim().is_empty() {
-                                number.to_string()
-                            } else {
-                                format!("{} ({})", name, number)
-                            };
-                            let mins = duration_sec / 60;
-                            let secs = duration_sec % 60;
-                            let msg_summary = if duration_sec > 0 {
-                                format!(
-                                    "📞 [{}] {} — 통화시간 {}분 {}초",
-                                    type_kr, display_target, mins, secs
-                                )
-                            } else {
-                                format!("📞 [{}] {}", type_kr, display_target)
-                            };
-
-                            let _ = conn.execute(
-                                "INSERT OR IGNORE INTO lifelog_messages
-                                 (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
-                                 VALUES ('call', ?1, ?2, ?3, ?4, ?5, ?6)",
-                                params![
-                                    display_target,
-                                    type_kr,
-                                    msg_summary,
-                                    call_date,
-                                    call_time,
-                                    dedup_key
-                                ],
-                            );
-
-                            // mobile/calls/{display_target}.md 에 상대방별 통화내역 스크립트 누적
-                            let md_line = format!("- **[{}] {}**", call_time, msg_summary);
-                            append_line_to_mobile_md(
-                                &conn,
-                                "calls",
-                                &display_target,
-                                &format!("[통화내역 스크립트] {}", display_target),
-                                "[\"통화\", \"통화내역\", \"통화내용\", \"전화\", \"통화기록\"]",
-                                &call_date,
-                                &md_line,
-                            );
+                            worker_items.push((number, name, call_type, duration_sec, ts));
                         }
                         if max_ts > 0 {
-                            set_meta_i64_max(&conn, "last_call_ts", max_ts);
+                            update_atomic_max_i64(&MEM_LAST_CALL_TS, max_ts);
                         }
-                    }
 
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "call_logs",
-                            "message": format!("📞 모바일 통화기록 {}건 동기화 및 mobile/calls 아카이빙 완료", inserted_count)
-                        }),
-                    );
-
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "ack_ids": ack_ids,
-                            "inserted_count": inserted_count
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/kakao-chats" {
-                    let mut raw_bytes = Vec::new();
-                    let _ = request.as_reader().read_to_end(&mut raw_bytes);
-                    let body_str = String::from_utf8_lossy(&raw_bytes).to_string();
-
-                    let mut room_name = "카카오톡 대화방".to_string();
-                    let mut raw_text = String::new();
-                    let mut file_hash = String::new();
-
-                    let trimmed = body_str.trim();
-                    if trimmed.starts_with('{') {
-                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                            if let Some(rn) = json_val
-                                .get("room_name")
-                                .or_else(|| json_val.get("folder_name"))
-                                .and_then(|v| v.as_str())
-                            {
-                                room_name = rn.to_string();
-                            }
-                            if let Some(rt) = json_val.get("raw_text").and_then(|v| v.as_str()) {
-                                raw_text = rt.to_string();
-                            }
-                            if let Some(fh) = json_val.get("file_hash").and_then(|v| v.as_str()) {
-                                file_hash = fh.to_string();
-                            }
+                        let item_len = worker_items.len();
+                        if !worker_items.is_empty() {
+                            enqueue_sync_worker_job(SyncWorkerJob::CallLogs {
+                                dev_id,
+                                dev_name,
+                                items: worker_items,
+                            });
                         }
-                    } else {
-                        // multipart/form-data 에서 file_hash, folder_name, 순수 파일 본문 분리 추출
-                        let (parsed_folder, parsed_hash, clean_txt) =
-                            parse_multipart_kakao_payload(&body_str);
-                        if !parsed_folder.is_empty() {
-                            room_name = parsed_folder;
-                        }
-                        if !parsed_hash.is_empty() {
-                            file_hash = parsed_hash;
-                        }
-                        for line in clean_txt.lines() {
-                            if line.contains("님과 카카오톡 대화") {
-                                room_name = line
-                                    .replace("님과 카카오톡 대화", "")
-                                    .trim()
-                                    .trim_start_matches('\u{feff}')
-                                    .to_string();
-                                break;
-                            }
-                        }
-                        raw_text = clean_txt;
-                    }
 
-                    if file_hash.is_empty() && !raw_text.is_empty() {
-                        file_hash = blake3::hash(raw_text.as_bytes()).to_hex().to_string();
-                    }
-
-                    let mut messages_added = 0usize;
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "ack_ids": ack_ids,
+                                "inserted_count": item_len,
+                                "last_call_ts": max_ts
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/kakao-chats" {
+                        let mut raw_bytes = Vec::new();
+                        let _ = request.as_reader().read_to_end(&mut raw_bytes);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
+                        }
+                        let body_str = String::from_utf8_lossy(&raw_bytes).to_string();
+
+                        let mut room_name = "카카오톡 대화방".to_string();
+                        let mut raw_folder_name = String::new();
+                        let mut raw_text = String::new();
+                        let mut file_hash = String::new();
+                        let mut folder_index = 1usize;
+                        let mut total_folders = 1usize;
+
+                        let trimmed = body_str.trim();
+                        if trimmed.starts_with('{') {
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                if let Some(fnm) = json_val.get("folder_name").and_then(|v| v.as_str()) {
+                                    raw_folder_name = fnm.trim().to_string();
+                                }
+                                if let Some(rn) = json_val
+                                    .get("room_name")
+                                    .or_else(|| json_val.get("folder_name"))
+                                    .and_then(|v| v.as_str())
+                                {
+                                    room_name = rn.to_string();
+                                }
+                                if let Some(rt) = json_val.get("raw_text").and_then(|v| v.as_str()) {
+                                    raw_text = rt.to_string();
+                                }
+                                if let Some(fh) = json_val.get("file_hash").and_then(|v| v.as_str()) {
+                                    file_hash = fh.to_string();
+                                }
+                                if let Some(fi) = json_val.get("folder_index").and_then(|v| v.as_u64()) {
+                                    folder_index = (fi as usize).max(1);
+                                }
+                                if let Some(tf) = json_val.get("total_folders").and_then(|v| v.as_u64()) {
+                                    total_folders = (tf as usize).max(1);
+                                }
+                            }
+                        } else {
+                            let (parsed_folder, parsed_hash, clean_txt, fi, tf) =
+                                parse_multipart_kakao_payload(&body_str);
+                            folder_index = fi;
+                            total_folders = tf;
+                            if !parsed_folder.is_empty() {
+                                raw_folder_name = parsed_folder.clone();
+                                room_name = parsed_folder;
+                            }
+                            if !parsed_hash.is_empty() {
+                                file_hash = parsed_hash;
+                            }
+                            for line in clean_txt.lines() {
+                                let t = line.trim().trim_start_matches('\u{feff}');
+                                if t.contains("님과 카카오톡 대화") {
+                                    room_name = t
+                                        .replace("님과 카카오톡 대화", "")
+                                        .trim()
+                                        .to_string();
+                                    break;
+                                } else if t.ends_with("카카오톡 대화") {
+                                    let cand = t.trim_end_matches("카카오톡 대화").trim();
+                                    if !cand.is_empty() {
+                                        room_name = cand.to_string();
+                                        break;
+                                    }
+                                }
+                            }
+                            raw_text = clean_txt;
                         }
 
-                        // 안드로이드 포맷(2026년 10월 28일 오후 9:12, 박재홍 : 내용) 및 PC 포맷([박재홍] [오후 9:12] 내용) 동시 지원
-                        let android_msg_re = Regex::new(
-                            r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$",
-                        )
-                        .unwrap();
-                        let date_re =
-                            Regex::new(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일").unwrap();
-                        let pc_msg_re =
-                            Regex::new(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$").unwrap();
-                        let mut current_date =
-                            chrono::Local::now().format("%Y-%m-%d").to_string();
-
-                        for line in raw_text.lines() {
-                            let t_line = line.trim().trim_start_matches('\u{feff}');
-                            if t_line.is_empty() {
-                                continue;
-                            }
-                            if let Some(cap) = android_msg_re.captures(t_line) {
-                                let y = cap.get(1).map(|m| m.as_str()).unwrap_or("2026");
-                                let m: u32 = cap
-                                    .get(2)
-                                    .and_then(|m| m.as_str().parse().ok())
-                                    .unwrap_or(1);
-                                let d: u32 = cap
-                                    .get(3)
-                                    .and_then(|m| m.as_str().parse().ok())
-                                    .unwrap_or(1);
-                                let ampm = cap.get(4).map(|m| m.as_str()).unwrap_or("오전");
-                                let hm = cap.get(5).map(|m| m.as_str()).unwrap_or("00:00");
-                                let sender = cap.get(6).map(|m| m.as_str()).unwrap_or("").trim();
-                                let body = cap.get(7).map(|m| m.as_str()).unwrap_or("");
-                                current_date = format!("{}-{:02}-{:02}", y, m, d);
-                                let time_str = format!("{} {}", ampm, hm);
-
-                                let dedup_raw = format!(
-                                    "kakao|{}|{}|{}|{}|{}",
-                                    room_name, current_date, time_str, sender, body
-                                );
-                                let dedup_key =
-                                    blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-                                let affected = conn
-                                    .execute(
-                                        "INSERT OR IGNORE INTO lifelog_messages
-                                         (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
-                                         VALUES ('kakaotalk', ?1, ?2, ?3, ?4, ?5, ?6)",
-                                        params![
-                                            room_name,
-                                            sender,
-                                            body,
-                                            current_date,
-                                            time_str,
-                                            dedup_key
-                                        ],
-                                    )
-                                    .unwrap_or(0);
-                                if affected > 0 {
-                                    messages_added += 1;
-                                }
-
-                                let md_line = format!("- **[{}] {}**: {}", time_str, sender, body);
-                                append_line_to_mobile_md(
-                                    &conn,
-                                    "kakao",
-                                    &room_name,
-                                    &format!("[카카오톡 대화내역] {}", room_name),
-                                    "[\"카카오톡\", \"카톡\", \"단톡방\", \"대화내역\", \"채팅이력\", \"KakaoTalk\"]",
-                                    &current_date,
-                                    &md_line,
-                                );
-                                continue;
-                            }
-
-                            if t_line.starts_with("---") {
-                                if let Some(cap) = date_re.captures(t_line) {
-                                    let y = cap.get(1).map(|m| m.as_str()).unwrap_or("2026");
-                                    let m: u32 = cap
-                                        .get(2)
-                                        .and_then(|m| m.as_str().parse().ok())
-                                        .unwrap_or(1);
-                                    let d: u32 = cap
-                                        .get(3)
-                                        .and_then(|m| m.as_str().parse().ok())
-                                        .unwrap_or(1);
-                                    current_date = format!("{}-{:02}-{:02}", y, m, d);
-                                    continue;
-                                }
-                            }
-                            if let Some(cap) = pc_msg_re.captures(t_line) {
-                                let sender = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-                                let time_str = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-                                let body = cap.get(3).map(|m| m.as_str()).unwrap_or("");
-
-                                let dedup_raw = format!(
-                                    "kakao|{}|{}|{}|{}|{}",
-                                    room_name, current_date, time_str, sender, body
-                                );
-                                let dedup_key =
-                                    blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-                                let affected = conn
-                                    .execute(
-                                        "INSERT OR IGNORE INTO lifelog_messages
-                                         (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
-                                         VALUES ('kakaotalk', ?1, ?2, ?3, ?4, ?5, ?6)",
-                                        params![
-                                            room_name,
-                                            sender,
-                                            body,
-                                            current_date,
-                                            time_str,
-                                            dedup_key
-                                        ],
-                                    )
-                                    .unwrap_or(0);
-                                if affected > 0 {
-                                    messages_added += 1;
-                                }
-
-                                let md_line = format!("- **[{}] {}**: {}", time_str, sender, body);
-                                append_line_to_mobile_md(
-                                    &conn,
-                                    "kakao",
-                                    &room_name,
-                                    &format!("[카카오톡 대화내역] {}", room_name),
-                                    "[\"카카오톡\", \"카톡\", \"단톡방\", \"대화내역\", \"채팅이력\", \"KakaoTalk\"]",
-                                    &current_date,
-                                    &md_line,
-                                );
-                            }
+                        if file_hash.is_empty() && !raw_text.is_empty() {
+                            file_hash = blake3::hash(raw_text.as_bytes()).to_hex().to_string();
                         }
-
                         if !file_hash.is_empty() {
-                            let now_str =
-                                chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                            let _ = conn.execute(
-                                "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
-                                 VALUES (?1, ?2, ?3)",
-                                params![file_hash, room_name, now_str],
-                            );
+                            mark_hash_synced_in_memory(&file_hash);
                         }
-                    }
 
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "kakao_chats",
-                            "message": format!("💬 카카오톡 [{}] 대화 신규 {}건 mobile/kakao/{}.md 병합 완료", room_name, messages_added, room_name)
-                        }),
-                    );
+                        let now_ms = chrono::Local::now().timestamp_millis();
+                        update_atomic_max_i64(&MEM_LAST_KAKAO_TS, now_ms);
+                        let (dev_id, _) = extract_request_device_headers(&request, None);
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "messages_added": messages_added,
-                            "verified_for_cleanup": true
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/contacts" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let empty_vec = Vec::new();
-                    let items = json_val
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .unwrap_or(&empty_vec);
+                        enqueue_sync_worker_job(SyncWorkerJob::KakaoChat {
+                            dev_id,
+                            room_name: room_name.clone(),
+                            raw_folder_name: raw_folder_name.clone(),
+                            raw_text,
+                            file_hash,
+                            folder_index,
+                            total_folders,
+                            now_ms,
+                        });
 
-                    let mut upserted_count = 0usize;
-                    let mut max_ts = 0i64;
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        let pct = ((folder_index as f64 / total_folders.max(1) as f64) * 100.0)
+                            .round()
+                            .clamp(0.0, 100.0) as usize;
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "room_name": room_name,
+                                "folder_name": raw_folder_name,
+                                "folder_index": folder_index,
+                                "total_folders": total_folders,
+                                "percent": pct,
+                                "messages_added": 0,
+                                "overlapping_count": 0,
+                                "last_kakao_ts": now_ms,
+                                "verified_for_cleanup": true
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/contacts" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
-                        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let empty_vec = Vec::new();
+                        let items = json_val
+                            .get("items")
+                            .and_then(|v| v.as_array())
+                            .unwrap_or(&empty_vec);
+
+                        let (dev_id, _) =
+                            extract_request_device_headers(&request, Some(&json_val));
+                        let mut worker_items = Vec::with_capacity(items.len());
+                        let mut max_ts = 0i64;
+
                         for item in items {
                             let name = item
                                 .get("name")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("이름없음");
+                                .unwrap_or("이름없음")
+                                .to_string();
                             let phones: Vec<String> = item
                                 .get("phones")
                                 .and_then(|v| v.as_array())
@@ -7004,8 +10497,13 @@ fn spawn_mobile_companion_http_server(
                             let org = item
                                 .get("organization")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let memo = item.get("memo").and_then(|v| v.as_str()).unwrap_or("");
+                                .unwrap_or("")
+                                .to_string();
+                            let memo = item
+                                .get("memo")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let ts = item
                                 .get("updated_ts")
                                 .and_then(|v| v.as_i64())
@@ -7013,80 +10511,70 @@ fn spawn_mobile_companion_http_server(
                             if ts > max_ts {
                                 max_ts = ts;
                             }
-
-                            let phone_joined = phones.join(", ");
-                            let md_line = format!(
-                                "- **{}** | 전화: `{}`{}{}",
-                                name,
-                                phone_joined,
-                                if org.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" | 소속: {}", org)
-                                },
-                                if memo.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" | 메모: {}", memo)
-                                }
-                            );
-                            append_line_to_mobile_md(
-                                &conn,
-                                "contacts",
-                                "연락처_주소록",
-                                "[스마트폰 연락처/주소록] 통합 목록",
-                                "[\"연락처\", \"주소록\", \"전화번호\", \"전화번호부\", \"지인\"]",
-                                &today_str,
-                                &md_line,
-                            );
-                            upserted_count += 1;
+                            worker_items.push((name, phones, org, memo, ts));
                         }
                         if max_ts > 0 {
-                            set_meta_i64_max(&conn, "last_contact_ts", max_ts);
+                            update_atomic_max_i64(&MEM_LAST_CONTACT_TS, max_ts);
                         }
-                    }
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "upserted_count": upserted_count
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/app-usage" {
-                    let mut body_str = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body_str);
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
-                    let empty_vec = Vec::new();
-                    let items = json_val
-                        .get("items")
-                        .and_then(|v| v.as_array())
-                        .unwrap_or(&empty_vec);
+                        let upserted_count = worker_items.len();
+                        if !worker_items.is_empty() {
+                            enqueue_sync_worker_job(SyncWorkerJob::Contacts {
+                                dev_id,
+                                items: worker_items,
+                            });
+                        }
 
-                    let mut recorded_count = 0usize;
-                    let mut max_ts = 0i64;
-
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "upserted_count": upserted_count,
+                                "last_contact_ts": max_ts
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/app-usage" {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
+                        let json_val: serde_json::Value =
+                            serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+                        let empty_vec = Vec::new();
+                        let items = json_val
+                            .get("items")
+                            .and_then(|v| v.as_array())
+                            .unwrap_or(&empty_vec);
+
+                        let (dev_id, _) =
+                            extract_request_device_headers(&request, Some(&json_val));
+                        let mut worker_items = Vec::with_capacity(items.len());
+                        let mut max_ts = 0i64;
+
                         for item in items {
                             let date_str = item
                                 .get("date")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or("2026-10-30");
-                            let pkg = item.get("pkg").and_then(|v| v.as_str()).unwrap_or("");
+                                .unwrap_or("2026-10-30")
+                                .to_string();
+                            let pkg = item
+                                .get("pkg")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let app_name = item
                                 .get("app_name")
                                 .and_then(|v| v.as_str())
-                                .unwrap_or(pkg);
+                                .unwrap_or(&pkg)
+                                .to_string();
                             let fg_ms = item
                                 .get("total_foreground_ms")
                                 .and_then(|v| v.as_i64())
@@ -7102,531 +10590,486 @@ fn spawn_mobile_companion_http_server(
                             if last_used > max_ts {
                                 max_ts = last_used;
                             }
-
-                            let mins = fg_ms / 60_000;
-                            let secs = (fg_ms % 60_000) / 1000;
-                            let ym = if date_str.len() >= 7 {
-                                &date_str[..7]
-                            } else {
-                                "2026-10"
-                            };
-                            let md_line = format!(
-                                "- **{}** (`{}`): 사용시간 **{}분 {}초** (실행 {}회)",
-                                app_name, pkg, mins, secs, launch_count
-                            );
-                            append_line_to_mobile_md(
-                                &conn,
-                                "usage",
-                                &format!("{}_휴대폰사용량", ym),
-                                &format!("[휴대폰 사용량/스크린타임] {}", ym),
-                                "[\"휴대폰사용량\", \"사용시간\", \"스크린타임\", \"앱사용시간\", \"디지털웰빙\"]",
-                                date_str,
-                                &md_line,
-                            );
-                            recorded_count += 1;
+                            worker_items.push((date_str, pkg, app_name, fg_ms, launch_count, last_used));
                         }
                         if max_ts > 0 {
-                            set_meta_i64_max(&conn, "last_usage_ts", max_ts);
+                            update_atomic_max_i64(&MEM_LAST_USAGE_TS, max_ts);
                         }
-                    }
 
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "recorded_count": recorded_count
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/call-recordings" {
-                    let mut raw_bytes = Vec::new();
-                    let _ = request.as_reader().read_to_end(&mut raw_bytes);
-                    let mut file_hash = blake3::hash(&raw_bytes).to_hex().to_string();
-                    let mut file_name = format!(
-                        "CallRec_{}.m4a",
-                        chrono::Local::now().format("%Y%m%d_%H%M%S")
-                    );
-                    let mut contact_label = String::new();
-                    let mut transcript_text = String::new();
-                    let mut audio_bytes: Vec<u8> = Vec::new();
-
-                    if raw_bytes.first() == Some(&b'{') {
-                        if let Ok(jv) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
-                            if let Some(fh) = jv.get("file_hash").and_then(|v| v.as_str()) {
-                                file_hash = fh.to_string();
-                            }
-                            if let Some(fn_s) = jv.get("file_name").and_then(|v| v.as_str()) {
-                                file_name = fn_s.to_string();
-                            }
-                            if let Some(cl) = jv.get("contact_name").and_then(|v| v.as_str()) {
-                                if !cl.is_empty() && !cl.starts_with("--") {
-                                    contact_label = cl.to_string();
-                                }
-                            }
-                            if let Some(b64) = jv.get("base64_data").and_then(|v| v.as_str()) {
-                                audio_bytes = base64_decode(b64);
-                            }
-                            if let Some(tr) = jv.get("transcript").and_then(|v| v.as_str()) {
-                                transcript_text = tr.to_string();
-                            }
-                        }
-                    } else {
-                        let header_str = String::from_utf8_lossy(
-                            &raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)],
-                        );
-                        if let Ok(re_fh) =
-                            Regex::new(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#)
-                        {
-                            if let Some(cap) = re_fh.captures(&header_str) {
-                                if let Some(m) = cap.get(1) {
-                                    file_hash = m.as_str().trim().to_string();
-                                }
-                            }
-                        }
-                        if let Ok(re_cn) =
-                            Regex::new(r#"name="contact_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#)
-                        {
-                            if let Some(cap) = re_cn.captures(&header_str) {
-                                if let Some(m) = cap.get(1) {
-                                    let cname = m.as_str().trim();
-                                    if !cname.is_empty() && !cname.starts_with("--") {
-                                        contact_label = cname.to_string();
+                        let recorded_count = worker_items.len();
+                        if !worker_items.is_empty() {
+                            let payload_digest =
+                                blake3::hash(body_str.as_bytes()).to_hex().to_string();
+                            let now_ms = chrono::Local::now().timestamp_millis();
+                            let should_enqueue = {
+                                let mutex = LAST_APP_USAGE_DIGEST
+                                    .get_or_init(|| Mutex::new((String::new(), 0)));
+                                if let Ok(mut guard) = mutex.lock() {
+                                    if guard.0 != payload_digest || (now_ms - guard.1) >= 60_000 {
+                                        *guard = (payload_digest, now_ms);
+                                        true
+                                    } else {
+                                        false
                                     }
+                                } else {
+                                    true
                                 }
+                            };
+                            if should_enqueue {
+                                enqueue_sync_worker_job(SyncWorkerJob::AppUsage {
+                                    dev_id,
+                                    items: worker_items,
+                                });
                             }
                         }
-                        let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
-                        if let Some(cap) = fn_re.captures(&header_str) {
-                            if let Some(m) = cap.get(1) {
-                                file_name = m.as_str().to_string();
-                            }
-                        }
-                        let (clean_b, _) = strip_multipart_prefix_if_present(&raw_bytes);
-                        audio_bytes = clean_b;
-                    }
 
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "recorded_count": recorded_count,
+                                "last_usage_ts": max_ts
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/call-recordings" {
+                        let mut raw_bytes = Vec::new();
+                        let _ = request.as_reader().read_to_end(&mut raw_bytes);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
+                            return;
                         }
-                        let contacts_map = load_mobile_contacts_map(&conn);
-                        let file_stem = Path::new(&file_name)
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_else(|| file_name.clone());
-                        let (parsed_contact, rec_date, rec_time) =
-                            parse_call_audio_filename_meta(&file_stem, &contacts_map);
-                        if contact_label.trim().is_empty() {
-                            contact_label = parsed_contact;
+                        let mut file_hash = blake3::hash(&raw_bytes).to_hex().to_string();
+                        let mut file_name = format!(
+                            "CallRec_{}.m4a",
+                            chrono::Local::now().format("%Y%m%d_%H%M%S")
+                        );
+                        let mut contact_label = String::new();
+                        let mut transcript_text = String::new();
+                        let mut audio_bytes: Vec<u8> = Vec::new();
+
+                        if raw_bytes.first() == Some(&b'{') {
+                            if let Ok(jv) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
+                                if let Some(fh) = jv.get("file_hash").and_then(|v| v.as_str()) {
+                                    file_hash = fh.to_string();
+                                }
+                                if let Some(fn_s) = jv.get("file_name").and_then(|v| v.as_str()) {
+                                    file_name = fn_s.to_string();
+                                }
+                                if let Some(cl) = jv.get("contact_name").and_then(|v| v.as_str()) {
+                                    if !cl.is_empty() && !cl.starts_with("--") {
+                                        contact_label = cl.to_string();
+                                    }
+                                }
+                                if let Some(b64) = jv.get("base64_data").and_then(|v| v.as_str()) {
+                                    audio_bytes = base64_decode(b64);
+                                }
+                                if let Some(tr) = jv.get("transcript").and_then(|v| v.as_str()) {
+                                    transcript_text = tr.to_string();
+                                }
+                            }
                         } else {
-                            contact_label = resolve_contact_display(&contact_label, &contacts_map);
-                        }
-
-                        let calls_dir = get_archive_mobile_dir(&conn, "calls");
-                        let audio_dir = calls_dir.join("audio");
-                        let _ = fs::create_dir_all(&audio_dir);
-                        let audio_path = audio_dir.join(&file_name);
-                        let _ = fs::write(&audio_path, &audio_bytes);
-
-                        let mut quota_err_tuple: Option<(String, String, String)> = None;
-                        if transcript_text.is_empty()
-                            && !audio_bytes.is_empty()
-                            && is_auto_call_transcription_enabled(&conn)
-                        {
-                            let (api_key, _) = read_local_gemini_api_key();
-                            if !api_key.is_empty() {
-                                let now_ms = chrono::Local::now().timestamp_millis();
-                                let retry_after_ms =
-                                    get_meta_i64(&conn, "gemini_quota_retry_after_ms");
-                                if now_ms >= retry_after_ms {
-                                    match transcribe_call_audio_with_gemini(
-                                        &api_key,
-                                        &audio_bytes,
-                                        &file_name,
-                                        &contact_label,
-                                    ) {
-                                        Ok(gen_txt) => {
-                                            transcript_text = gen_txt;
-                                            clear_gemini_quota_exhaustion(&conn);
-                                        }
-                                        Err(err_msg) => {
-                                            let (ex_s, rt_s) =
-                                                record_gemini_quota_exhaustion(&conn, &err_msg);
-                                            quota_err_tuple = Some((ex_s, rt_s, err_msg));
+                            let header_str = String::from_utf8_lossy(
+                                &raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)],
+                            );
+                            if let Ok(re_fh) =
+                                Regex::new(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#)
+                            {
+                                if let Some(cap) = re_fh.captures(&header_str) {
+                                    if let Some(m) = cap.get(1) {
+                                        file_hash = m.as_str().trim().to_string();
+                                    }
+                                }
+                            }
+                            if let Ok(re_cn) =
+                                Regex::new(r#"name="contact_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#)
+                            {
+                                if let Some(cap) = re_cn.captures(&header_str) {
+                                    if let Some(m) = cap.get(1) {
+                                        let cname = m.as_str().trim();
+                                        if !cname.is_empty() && !cname.starts_with("--") {
+                                            contact_label = cname.to_string();
                                         }
                                     }
                                 }
                             }
-                        }
-
-                        // 통화 녹음 파일과 동일한 파일명(`mobile/calls/{file_stem}.md`)으로 요약부+스크립트 2부분 문서 생성
-                        write_call_recording_markdown(
-                            &conn,
-                            &file_name,
-                            &contact_label,
-                            &rec_date,
-                            &rec_time,
-                            if transcript_text.is_empty() {
-                                None
-                            } else {
-                                Some(&transcript_text)
-                            },
-                            quota_err_tuple
-                                .as_ref()
-                                .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str())),
-                        );
-
-                        backfill_mobile_md_into_lifelog_db(&conn);
-
-                        let now_str =
-                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                        let _ = conn.execute(
-                            "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
-                             VALUES (?1, ?2, ?3)",
-                            params![file_hash, file_name, now_str],
-                        );
-                    }
-
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "call_recording",
-                            "message": format!(
-                                "🎙️ 통화녹음 [{}] 수신 및 스크립트 변환 {}",
-                                contact_label,
-                                if transcript_text.is_empty() { "대기(5시간 후 자동 재시도 예약)" } else { "완료!" }
-                            )
-                        }),
-                    );
-
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "file_hash": file_hash,
-                            "transcript_generated": !transcript_text.is_empty()
-                        }),
-                    );
-                } else if url_path == "/api/v1/sync/media" {
-                    let mut raw_bytes = Vec::new();
-                    let _ = request.as_reader().read_to_end(&mut raw_bytes);
-
-                    let mut file_name = format!(
-                        "QuickCam_{}.jpg",
-                        chrono::Local::now().format("%Y%m%d_%H%M%S")
-                    );
-                    let mut source_type = String::new();
-                    let mut file_bytes: Vec<u8> = Vec::new();
-                    let mut taken_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-                    let mut taken_time = chrono::Local::now().format("%H:%M:%S").to_string();
-
-                    if raw_bytes.first() == Some(&b'{') {
-                        if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&raw_bytes)
-                        {
-                            if let Some(fn_str) =
-                                json_val.get("file_name").and_then(|v| v.as_str())
-                            {
-                                if !fn_str.trim().is_empty() {
-                                    file_name = fn_str.trim().to_string();
-                                }
-                            }
-                            if let Some(st_str) =
-                                json_val.get("source_type").and_then(|v| v.as_str())
-                            {
-                                source_type = st_str.trim().to_string();
-                            }
-                            if let Some(b64) =
-                                json_val.get("base64_data").and_then(|v| v.as_str())
-                            {
-                                file_bytes = base64_decode(b64);
-                            }
-                            if let Some(ta) = json_val.get("taken_at").and_then(|v| v.as_str()) {
-                                if ta.len() >= 10 {
-                                    taken_date = ta[..10].to_string();
-                                }
-                                if ta.len() >= 19 {
-                                    taken_time = ta[11..19].to_string();
-                                }
-                            }
-                        }
-                    } else {
-                        let header_part = String::from_utf8_lossy(
-                            &raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)],
-                        );
-                        let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
-                        if let Some(cap) = fn_re.captures(&header_part) {
-                            if let Some(m) = cap.get(1) {
-                                file_name = m.as_str().to_string();
-                            }
-                        }
-                        if let Ok(re_st) =
-                            Regex::new(r#"name="source_type"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#)
-                        {
-                            if let Some(cap) = re_st.captures(&header_part) {
+                            let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
+                            if let Some(cap) = fn_re.captures(&header_str) {
                                 if let Some(m) = cap.get(1) {
-                                    source_type = m.as_str().trim().to_string();
+                                    file_name = m.as_str().to_string();
                                 }
                             }
+                            let (clean_b, _) = strip_multipart_prefix_if_present(&raw_bytes);
+                            audio_bytes = clean_b;
                         }
-                        let (clean_b, _) = strip_multipart_prefix_if_present(&raw_bytes);
-                        file_bytes = clean_b;
-                    }
 
-                    let media_uuid = Uuid::new_v4().to_string();
-                    let content_hash = blake3::hash(&file_bytes).to_hex().to_string();
+                        if !file_hash.is_empty() {
+                            mark_hash_synced_in_memory(&file_hash);
+                        }
+                        let now_ms = chrono::Local::now().timestamp_millis();
+                        update_atomic_max_i64(&MEM_LAST_RECORDING_TS, now_ms);
+                        let (dev_id, dev_name) = extract_request_device_headers(&request, None);
+                        let has_transcript = !transcript_text.is_empty();
 
-                    if let Ok(conn) = open_db(&db_path) {
-                        if !check_request_token(&request, &conn) {
+                        enqueue_sync_worker_job(SyncWorkerJob::CallRecording {
+                            dev_id,
+                            dev_name,
+                            file_hash: file_hash.clone(),
+                            file_name,
+                            contact_label,
+                            transcript_text,
+                            audio_bytes,
+                            now_ms,
+                        });
+
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "file_hash": file_hash,
+                                "last_recording_ts": now_ms,
+                                "transcript_generated": has_transcript
+                            }),
+                        );
+                    } else if url_path == "/api/v1/sync/media" {
+                        let mut raw_bytes = Vec::new();
+                        let _ = request.as_reader().read_to_end(&mut raw_bytes);
+                        if !check_request_token_fast(&request, &db_path) {
                             respond_json(
                                 request,
                                 401,
                                 serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
                             );
-                            continue;
-                        }
-                        let data_base: String = conn
-                            .query_row(
-                                "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-                                [],
-                                |r| r.get(0),
-                            )
-                            .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
-                        let inbox_dir = Path::new(&data_base).join("_MediaInbox");
-                        let _ = fs::create_dir_all(&inbox_dir);
-                        let target_path = inbox_dir.join(&file_name);
-                        let _ = fs::write(&target_path, &file_bytes);
-
-                        // 카카오톡 미디어 파일인 경우 `mobile/kakao/media/` 에도 보관하여 카톡 대화록과 즉시 연결
-                        if source_type.to_lowercase().contains("kakao")
-                            || file_name.to_lowercase().starts_with("kakaotalk_")
-                            || file_name.len() >= 40
-                        {
-                            let kakao_media_dir =
-                                get_archive_mobile_dir(&conn, "kakao").join("media");
-                            let _ = fs::create_dir_all(&kakao_media_dir);
-                            let _ = fs::write(kakao_media_dir.join(&file_name), &file_bytes);
+                            return;
                         }
 
-                        let _ = conn.execute(
-                            "INSERT OR REPLACE INTO media_inbox
-                             (uuid, file_name, full_path, taken_date, taken_time, file_size, content_hash, status)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'inbox')",
-                            params![
-                                media_uuid,
-                                file_name,
-                                target_path.to_string_lossy().to_string(),
-                                taken_date,
-                                taken_time,
-                                file_bytes.len() as i64,
-                                content_hash
-                            ],
+                        let mut file_name = format!(
+                            "QuickCam_{}.jpg",
+                            chrono::Local::now().format("%Y%m%d_%H%M%S")
                         );
-                        let now_str =
-                            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                        let _ = conn.execute(
-                            "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)
-                             VALUES (?1, ?2, ?3)",
-                            params![content_hash, file_name, now_str],
+                        let mut source_type = String::new();
+                        let mut folder_name = String::new();
+                        let mut file_bytes: Vec<u8> = Vec::new();
+                        let mut taken_date = chrono::Local::now().format("%Y-%m-%d").to_string();
+                        let mut taken_time = chrono::Local::now().format("%H:%M:%S").to_string();
+
+                        if raw_bytes.first() == Some(&b'{') {
+                            if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&raw_bytes)
+                            {
+                                if let Some(fn_str) =
+                                    json_val.get("file_name").and_then(|v| v.as_str())
+                                {
+                                    if !fn_str.trim().is_empty() {
+                                        file_name = fn_str.trim().to_string();
+                                    }
+                                }
+                                if let Some(st_str) =
+                                    json_val.get("source_type").and_then(|v| v.as_str())
+                                {
+                                    source_type = st_str.trim().to_string();
+                                }
+                                if let Some(fd_str) =
+                                    json_val.get("folder_name").and_then(|v| v.as_str())
+                                {
+                                    folder_name = fd_str.trim().to_string();
+                                }
+                                if let Some(b64) =
+                                    json_val.get("base64_data").and_then(|v| v.as_str())
+                                {
+                                    file_bytes = base64_decode(b64);
+                                }
+                                if let Some(ta) = json_val.get("taken_at").and_then(|v| v.as_str()) {
+                                    if ta.len() >= 10 {
+                                        taken_date = ta[..10].to_string();
+                                    }
+                                    if ta.len() >= 19 {
+                                        taken_time = ta[11..19].to_string();
+                                    }
+                                }
+                            }
+                        } else {
+                            let header_part = String::from_utf8_lossy(
+                                &raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)],
+                            );
+                            let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
+                            if let Some(cap) = fn_re.captures(&header_part) {
+                                if let Some(m) = cap.get(1) {
+                                    file_name = m.as_str().to_string();
+                                }
+                            }
+                            if let Ok(re_st) =
+                                Regex::new(r#"name="source_type"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#)
+                            {
+                                if let Some(cap) = re_st.captures(&header_part) {
+                                    if let Some(m) = cap.get(1) {
+                                        source_type = m.as_str().trim().to_string();
+                                    }
+                                }
+                            }
+                            if let Ok(re_fd) =
+                                Regex::new(r#"name="folder_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#)
+                            {
+                                if let Some(cap) = re_fd.captures(&header_part) {
+                                    if let Some(m) = cap.get(1) {
+                                        folder_name = m.as_str().trim().to_string();
+                                    }
+                                }
+                            }
+                            let (clean_b, _) = strip_multipart_prefix_if_present(&raw_bytes);
+                            file_bytes = clean_b;
+                        }
+
+                        let media_uuid = Uuid::new_v4().to_string();
+                        let content_hash = blake3::hash(&file_bytes).to_hex().to_string();
+                        mark_hash_synced_in_memory(&content_hash);
+
+                        enqueue_sync_worker_job(SyncWorkerJob::Media {
+                            file_name,
+                            source_type,
+                            folder_name,
+                            file_bytes,
+                            taken_date,
+                            taken_time,
+                            media_uuid: media_uuid.clone(),
+                            content_hash,
+                        });
+
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "uuid": media_uuid,
+                                "uri": format!("mylore://media/{}", media_uuid)
+                            }),
                         );
-                    }
-
-                    let _ = app_handle.emit(
-                        "mobile-sync-event",
-                        serde_json::json!({
-                            "type": "media",
-                            "message": format!("📷 모바일 미디어 수신 완료: {}", file_name)
-                        }),
-                    );
-
-                    respond_json(
-                        request,
-                        200,
-                        serde_json::json!({
-                            "ok": true,
-                            "uuid": media_uuid,
-                            "uri": format!("mylore://media/{}", media_uuid)
-                        }),
-                    );
-                } else if url_path == "/api/v1/local-media" {
-                    // 로컬 미디어 파일(카톡 사진/동영상, 통화녹음 m4a 등)을 WebView `<img/>`, `<video/>`, `<audio/>`에 서빙
-                    let query = raw_url.splitn(2, '?').nth(1).unwrap_or("");
-                    let mut req_file = String::new();
-                    let mut req_sub = String::new();
-                    for pair in query.split('&') {
-                        let mut kv = pair.splitn(2, '=');
-                        let k = kv.next().unwrap_or("");
-                        let v = kv.next().unwrap_or("");
-                        if k == "file" {
-                            req_file = url_decode_utf8(v);
-                        } else if k == "sub" {
-                            req_sub = url_decode_utf8(v);
+                    } else if url_path == "/api/v1/sync/samsung-health" {
+                        // 삼성 헬스 및 갤럭시 워치 GPS 운동 데이터 동기화 엔드포인트 (백그라운드 워커 큐 적재)
+                        let mut raw_bytes = Vec::new();
+                        let _ = request.as_reader().read_to_end(&mut raw_bytes);
+                        if !check_request_token_fast(&request, &db_path) {
+                            respond_json(
+                                request,
+                                401,
+                                serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
+                            );
+                            return;
                         }
-                    }
+                        let now_ms = chrono::Local::now().timestamp_millis();
+                        update_atomic_max_i64(&MEM_LAST_HEALTH_TS, now_ms);
+                        let (dev_id, dev_name) = extract_request_device_headers(&request, None);
 
-                    let clean_name = req_file
-                        .trim()
-                        .trim_start_matches("audio/")
-                        .trim_start_matches("media/")
-                        .trim_matches(|c| c == '[' || c == ']' || c == '<' || c == '>')
-                        .to_string();
+                        enqueue_sync_worker_job(SyncWorkerJob::SamsungHealth {
+                            dev_id,
+                            dev_name,
+                            raw_bytes,
+                            now_ms,
+                        });
 
-                    let mut found_path: Option<PathBuf> = None;
-                    if let Ok(conn) = open_db(&db_path) {
-                        let data_base: String = conn
-                            .query_row(
-                                "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-                                [],
-                                |r| r.get(0),
-                            )
-                            .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
-                        let base_p = Path::new(&data_base);
-                        let mut candidates = Vec::new();
-                        if !req_sub.is_empty() {
-                            candidates.push(base_p.join("mobile").join(&req_sub).join(&clean_name));
-                        }
-                        candidates.push(base_p.join("mobile").join("calls").join("audio").join(&clean_name));
-                        candidates.push(base_p.join("mobile").join("kakao").join("media").join(&clean_name));
-                        candidates.push(base_p.join("mobile").join("kakao").join(&clean_name));
-                        candidates.push(base_p.join("_MediaInbox").join(&clean_name));
-
-                        for c in candidates {
-                            if c.exists() && c.is_file() {
-                                found_path = Some(c);
-                                break;
+                        respond_json(
+                            request,
+                            200,
+                            serde_json::json!({
+                                "ok": true,
+                                "queued": true,
+                                "last_health_ts": now_ms
+                            }),
+                        );
+                    } else if url_path == "/api/v1/local-media" {
+                        // 로컬 미디어 파일(카톡 사진/동영상, 통화녹음/음성녹음 m4a 등)을 WebView `<img/>`, `<video/>`, `<audio/>`에 서빙
+                        let query = raw_url.splitn(2, '?').nth(1).unwrap_or("");
+                        let mut req_file = String::new();
+                        let mut req_sub = String::new();
+                        for pair in query.split('&') {
+                            let mut kv = pair.splitn(2, '=');
+                            let k = kv.next().unwrap_or("");
+                            let v = kv.next().unwrap_or("");
+                            if k == "file" {
+                                req_file = url_decode_utf8(v);
+                            } else if k == "sub" {
+                                req_sub = url_decode_utf8(v);
                             }
                         }
-                    }
 
-                    if let Some(fp) = found_path {
-                        if let Ok(mut bytes) = fs::read(&fp) {
-                            let (clean_b, repaired) = strip_multipart_prefix_if_present(&bytes);
-                            if repaired {
-                                let _ = fs::write(&fp, &clean_b);
-                                bytes = clean_b;
+                        let clean_name = req_file
+                            .trim()
+                            .trim_start_matches("audio/")
+                            .trim_start_matches("media/")
+                            .trim_matches(|c| c == '[' || c == ']' || c == '<' || c == '>')
+                            .to_string();
+
+                        let mut found_path: Option<PathBuf> = None;
+                        if let Ok(conn) = open_db(&db_path) {
+                            let data_base: String = conn
+                                .query_row(
+                                    "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
+                                    [],
+                                    |r| r.get(0),
+                                )
+                                .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+                            let base_p = Path::new(&data_base);
+                            let mut candidates = Vec::new();
+                            if !req_sub.is_empty() {
+                                candidates.push(base_p.join("mobile").join(&req_sub).join(&clean_name));
                             }
-                            let lower = fp.to_string_lossy().to_lowercase();
-                            let mime = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-                                "image/jpeg"
-                            } else if lower.ends_with(".png") {
-                                "image/png"
-                            } else if lower.ends_with(".gif") {
-                                "image/gif"
-                            } else if lower.ends_with(".webp") {
-                                "image/webp"
-                            } else if lower.ends_with(".bmp") {
-                                "image/bmp"
-                            } else if lower.ends_with(".mp4") || lower.ends_with(".m4v") {
-                                "video/mp4"
-                            } else if lower.ends_with(".mov") {
-                                "video/quicktime"
-                            } else if lower.ends_with(".webm") {
-                                "video/webm"
-                            } else if lower.ends_with(".m4a") {
-                                "audio/mp4"
-                            } else if lower.ends_with(".mp3") {
-                                "audio/mpeg"
-                            } else if lower.ends_with(".amr") {
-                                "audio/amr"
-                            } else if lower.ends_with(".wav") {
-                                "audio/wav"
-                            } else if lower.ends_with(".ogg") {
-                                "audio/ogg"
-                            } else {
-                                "application/octet-stream"
-                            };
-                            let total_len = bytes.len();
-                            let range_header = request
-                                .headers()
-                                .iter()
-                                .find(|h| h.field.equiv("Range"))
-                                .map(|h| h.value.as_str().to_string());
+                            candidates.push(base_p.join("mobile").join("calls").join("audio").join(&clean_name));
+                            candidates.push(base_p.join("mobile").join("recordings").join("audio").join(&clean_name));
+                            candidates.push(base_p.join("mobile").join("kakao").join("media").join(&clean_name));
+                            candidates.push(base_p.join("mobile").join("kakao").join(&clean_name));
+                            candidates.push(base_p.join("_MediaInbox").join(&clean_name));
 
-                            let h_ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap();
-                            let h_cors = tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
-                            let h_ar = tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap();
-
-                            if let Some(rh) = range_header {
-                                if let Some(spec) = rh.strip_prefix("bytes=") {
-                                    let parts: Vec<&str> = spec.split('-').collect();
-                                    if !parts.is_empty() && total_len > 0 {
-                                        let start = parts[0].trim().parse::<usize>().unwrap_or(0).min(total_len.saturating_sub(1));
-                                        let end = if parts.len() > 1 && !parts[1].trim().is_empty() {
-                                            parts[1].trim().parse::<usize>().unwrap_or(total_len.saturating_sub(1)).min(total_len.saturating_sub(1))
-                                        } else {
-                                            total_len.saturating_sub(1)
-                                        };
-                                        if start <= end && end < total_len {
-                                            let slice = bytes[start..=end].to_vec();
-                                            let cr_val = format!("bytes {}-{}/{}", start, end, total_len);
-                                            let h_cr = tiny_http::Header::from_bytes(&b"Content-Range"[..], cr_val.as_bytes()).unwrap();
-                                            let _ = request.respond(
-                                                tiny_http::Response::from_data(slice)
-                                                    .with_status_code(206)
-                                                    .with_header(h_ct)
-                                                    .with_header(h_cors)
-                                                    .with_header(h_ar)
-                                                    .with_header(h_cr),
-                                            );
-                                            continue;
-                                        }
+                            // `mobile/kakao/{folder_name}/` 하위 폴더에 그대로 적재된 이미지/동영상도 탐색
+                            let kakao_root = base_p.join("mobile").join("kakao");
+                            if let Ok(entries) = fs::read_dir(&kakao_root) {
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p.is_dir() {
+                                        candidates.push(p.join(&clean_name));
                                     }
                                 }
                             }
 
-                            let _ = request.respond(
-                                tiny_http::Response::from_data(bytes)
-                                    .with_header(h_ct)
-                                    .with_header(h_cors)
-                                    .with_header(h_ar),
-                            );
-                            continue;
+                            for c in candidates {
+                                if c.exists() && c.is_file() {
+                                    found_path = Some(c);
+                                    break;
+                                }
+                            }
                         }
-                    }
 
-                    respond_json(
-                        request,
-                        404,
-                        serde_json::json!({ "ok": false, "error": "Media file not found locally" }),
-                    );
-                } else {
-                    // Chrome App Mode (`chrome.exe --app=http://127.0.0.1:18443`) 요청 시 dist/ 정적 파일 서빙
-                    let clean_path = url_path.trim_start_matches('/');
-                    let rel_file = if clean_path.is_empty() {
-                        "index.html"
-                    } else {
-                        clean_path
-                    };
-                    let target_file = dist_dir.join(rel_file);
-                    if target_file.exists() && target_file.is_file() {
-                        if let Ok(bytes) = fs::read(&target_file) {
-                            let mime = if rel_file.ends_with(".html") {
-                                "text/html; charset=utf-8"
-                            } else if rel_file.ends_with(".js") {
-                                "application/javascript; charset=utf-8"
-                            } else if rel_file.ends_with(".css") {
-                                "text/css; charset=utf-8"
-                            } else {
-                                "application/octet-stream"
-                            };
-                            let header = tiny_http::Header::from_bytes(
-                                &b"Content-Type"[..],
-                                mime.as_bytes(),
-                            )
-                            .unwrap();
-                            let _ = request.respond(
-                                tiny_http::Response::from_data(bytes).with_header(header),
-                            );
-                            continue;
+                        if let Some(fp) = found_path {
+                            if let Ok(mut bytes) = fs::read(&fp) {
+                                let (clean_b, repaired) = strip_multipart_prefix_if_present(&bytes);
+                                if repaired {
+                                    let _ = fs::write(&fp, &clean_b);
+                                    bytes = clean_b;
+                                }
+                                let lower = fp.to_string_lossy().to_lowercase();
+                                let mime = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                                    "image/jpeg"
+                                } else if lower.ends_with(".png") {
+                                    "image/png"
+                                } else if lower.ends_with(".gif") {
+                                    "image/gif"
+                                } else if lower.ends_with(".webp") {
+                                    "image/webp"
+                                } else if lower.ends_with(".bmp") {
+                                    "image/bmp"
+                                } else if lower.ends_with(".mp4") || lower.ends_with(".m4v") {
+                                    "video/mp4"
+                                } else if lower.ends_with(".mov") {
+                                    "video/quicktime"
+                                } else if lower.ends_with(".webm") {
+                                    "video/webm"
+                                } else if lower.ends_with(".m4a") {
+                                    "audio/mp4"
+                                } else if lower.ends_with(".mp3") {
+                                    "audio/mpeg"
+                                } else if lower.ends_with(".amr") {
+                                    "audio/amr"
+                                } else if lower.ends_with(".wav") {
+                                    "audio/wav"
+                                } else if lower.ends_with(".ogg") {
+                                    "audio/ogg"
+                                } else {
+                                    "application/octet-stream"
+                                };
+                                let total_len = bytes.len();
+                                let range_header = request
+                                    .headers()
+                                    .iter()
+                                    .find(|h| h.field.equiv("Range"))
+                                    .map(|h| h.value.as_str().to_string());
+
+                                let h_ct = tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap();
+                                let h_cors = tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
+                                let h_ar = tiny_http::Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap();
+
+                                if let Some(rh) = range_header {
+                                    if let Some(spec) = rh.strip_prefix("bytes=") {
+                                        let parts: Vec<&str> = spec.split('-').collect();
+                                        if !parts.is_empty() && total_len > 0 {
+                                            let start = parts[0].trim().parse::<usize>().unwrap_or(0).min(total_len.saturating_sub(1));
+                                            let end = if parts.len() > 1 && !parts[1].trim().is_empty() {
+                                                parts[1].trim().parse::<usize>().unwrap_or(total_len.saturating_sub(1)).min(total_len.saturating_sub(1))
+                                            } else {
+                                                total_len.saturating_sub(1)
+                                            };
+                                            if start <= end && end < total_len {
+                                                let slice = bytes[start..=end].to_vec();
+                                                let cr_val = format!("bytes {}-{}/{}", start, end, total_len);
+                                                let h_cr = tiny_http::Header::from_bytes(&b"Content-Range"[..], cr_val.as_bytes()).unwrap();
+                                                let _ = request.respond(
+                                                    tiny_http::Response::from_data(slice)
+                                                        .with_status_code(206)
+                                                        .with_header(h_ct)
+                                                        .with_header(h_cors)
+                                                        .with_header(h_ar)
+                                                        .with_header(h_cr),
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let _ = request.respond(
+                                    tiny_http::Response::from_data(bytes)
+                                        .with_header(h_ct)
+                                        .with_header(h_cors)
+                                        .with_header(h_ar),
+                                );
+                                return;
+                            }
                         }
+
+                        respond_json(
+                            request,
+                            404,
+                            serde_json::json!({ "ok": false, "error": "Media file not found locally" }),
+                        );
+                    } else {
+                        // Chrome App Mode (`chrome.exe --app=http://127.0.0.1:18443`) 요청 시 dist/ 정적 파일 서빙
+                        let clean_path = url_path.trim_start_matches('/');
+                        let rel_file = if clean_path.is_empty() {
+                            "index.html"
+                        } else {
+                            clean_path
+                        };
+                        let target_file = dist_dir.join(rel_file);
+                        if target_file.exists() && target_file.is_file() {
+                            if let Ok(bytes) = fs::read(&target_file) {
+                                let mime = if rel_file.ends_with(".html") {
+                                    "text/html; charset=utf-8"
+                                } else if rel_file.ends_with(".js") {
+                                    "application/javascript; charset=utf-8"
+                                } else if rel_file.ends_with(".css") {
+                                    "text/css; charset=utf-8"
+                                } else {
+                                    "application/octet-stream"
+                                };
+                                let header = tiny_http::Header::from_bytes(
+                                    &b"Content-Type"[..],
+                                    mime.as_bytes(),
+                                )
+                                .unwrap();
+                                let _ = request.respond(
+                                    tiny_http::Response::from_data(bytes).with_header(header),
+                                );
+                                return;
+                            }
+                        }
+                        respond_json(request, 200, serde_json::json!({ "ok": true }));
                     }
-                    respond_json(request, 200, serde_json::json!({ "ok": true }));
-                }
+                });
             }
         }
     });
@@ -7655,6 +11098,8 @@ fn url_decode_utf8(input: &str) -> String {
     }
     String::from_utf8_lossy(&bytes).to_string()
 }
+
+const _FRONTEND_DIST_INDEX_SYNC: &str = include_str!("../../dist/index.html");
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -7699,6 +11144,10 @@ pub fn run() {
             detached_preview: Arc::new(Mutex::new(DetachedPreviewState::default())),
         })
         .setup(move |app| {
+            spawn_mobile_sync_worker_thread(
+                app.handle().clone(),
+                db_path_for_server.clone(),
+            );
             spawn_mobile_companion_http_server(
                 app.handle().clone(),
                 db_path_for_server.clone(),
@@ -7755,6 +11204,8 @@ pub fn run() {
             remove_paired_mobile_device,
             trigger_full_mobile_resync,
             send_mobile_udp_wake_broadcast,
+            trigger_sequential_mobile_sync,
+            get_mobile_sync_progress_state,
             get_all_lifelog_messages,
             get_mobile_contacts_map,
             open_lifelog_item_document,
