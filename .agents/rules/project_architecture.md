@@ -1,3 +1,6 @@
+---
+uuid: "125c7d9e-5b61-4ecc-b8e3-796683e8e393"
+---
 # myLore Project Architecture & Styling Rules
 
 ## 1. 플랫폼 및 애플리케이션 구조 (Platform Architecture)
@@ -19,3 +22,9 @@
 - **정식 시맨틱 버전 (Semantic Versioning, SemVer)**:
   - 정식 시맨틱 버전(`vMajor.Minor.Patch`, 예: `v0.1.0`) 단일 체계를 사용한다.
   - 버전 업데이트 및 `CHANGELOG.md` 기록은 사용자의 사전 승인을 거쳐 반영한다.
+
+## 4. 코드 구조 및 탐색 원칙 (Code Structure & Navigation)
+- **코드 지도 우선**: 코드를 수정하기 전에 [`docs/CODEMAP.md`](../../docs/CODEMAP.md)에서 대상 파일과 함수를 먼저 찾고, 저장소 전체를 grep으로 훑지 않는다. `node_modules/`, `dist/`, `src-tauri/target/`은 검색 대상에서 제외한다.
+- **파일 크기 상한**: 소스 파일 하나는 **1,000줄 이하**를 목표로 한다. 새 기능은 기존 거대 파일(`App.tsx`)에 덧붙이지 말고, 도메인 모듈이나 컴포넌트 파일을 새로 만들어 분리한다.
+- **백엔드 모듈 배치**: Rust 코드는 `src-tauri/src/{vault,lifelog,gemini,mobile}/` 또는 `settings.rs`/`db.rs`/`finance.rs`/`window.rs`/`system.rs`/`util.rs` 중 해당 도메인에 둔다. `lib.rs`에는 `run()`과 `generate_handler!` 등록만 둔다.
+- **코드 지도 갱신**: 파일·모듈·커맨드를 추가하거나 옮기면 `docs/CODEMAP.md`와 루트 `AGENTS.md`(구조 요약)도 같은 작업에서 갱신한다.
