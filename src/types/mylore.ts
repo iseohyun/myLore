@@ -1,4 +1,4 @@
-export type BaseFolderRole = 'data' | 'diary' | 'projects';
+export type BaseFolderRole = 'data' | 'diary' | 'projects' | 'git';
 
 export interface BaseFolderConfig {
   id: string;
@@ -66,13 +66,38 @@ export interface ParsedTaskItem {
 
 export interface LifelogMessage {
   id: number;
-  source: 'kakaotalk' | 'sms' | 'notification';
+  source: 'kakaotalk' | 'sms' | 'notification' | 'call';
   roomOrSender: string;
   sender: string;
   message: string;
   sentDate: string; // YYYY-MM-DD
   sentTime: string; // HH:mm:ss
   attachmentUuid?: string;
+  deviceId?: string | null;
+  deviceName?: string | null;
+  hasAudioRecording?: boolean;
+}
+
+export interface PairedDeviceItem {
+  deviceId: string;
+  deviceName: string;
+  model: string;
+  pairedAt: string;
+  lastSeenAt: string;
+}
+
+export interface MobilePairingPayload {
+  qrJsonRaw: string;
+  qrBase64: string;
+  pcName: string;
+  ips: string[];
+  port: number;
+  token: string;
+  ssids: string[];
+  pairedDevices: PairedDeviceItem[];
+  lastNotiTs: number;
+  lastSmsTs: number;
+  lastCallTs: number;
 }
 
 export interface FinanceTransaction {
@@ -151,3 +176,96 @@ export interface OpenDocumentTab {
   isDirty: boolean;
   cursorOffset?: number;
 }
+
+export interface TrashedFileRecord {
+  trashId: string;
+  originalPath: string;
+  fileName: string;
+  backupPath: string;
+}
+
+export interface DetachedPreviewState {
+  title: string;
+  relativePath: string;
+  fullPath: string;
+  role: string;
+  bodyText: string;
+  yamlText: string;
+  scrollTopLine?: number;
+  scrollRatio?: number;
+}
+
+export interface DetachedScrollPayload {
+  topLine: number;
+  scrollRatio: number;
+}
+
+export interface DetachedPreviewActionPayload {
+  actionType: 'open-uuid' | 'toggle-task';
+  uuid?: string;
+  lineIndex?: number;
+  nextCode?: TaskPriorityCode;
+}
+
+export type F11ViewerMode = 'detached' | 'split';
+
+export type ThemePresetId =
+  | 'dark_indigo'
+  | 'light_clean'
+  | 'nord_slate'
+  | 'sepia_warm'
+  | 'emerald_forest'
+  | 'custom';
+
+export interface MyLoreAppSettings {
+  f11ViewerMode: F11ViewerMode;
+  autoSaveEnabled: boolean;
+  defaultEditorViewMode: 'editor' | 'split' | 'preview';
+  defaultMenuBarExpanded: boolean;
+  scrollSyncEnabled: boolean;
+  autoCallTranscription: boolean;
+  baseFontFamily: string;
+  headingFontFamily: string;
+  tableFontFamily: string;
+  baseFontSize: number;
+  headingScale: number;
+  tableFontSize: number;
+  themePreset: ThemePresetId;
+  bgPrimary: string;
+  bgSecondary: string;
+  textPrimary: string;
+  textSecondary: string;
+  headingColor: string;
+  accentPrimary: string;
+  tableHeaderBg: string;
+  tableHeaderColor: string;
+  borderColor: string;
+  settingsFilePath: string;
+}
+
+export interface GeminiApiKeyStatus {
+  hasKey: boolean;
+  maskedKey: string;
+  modelName: string;
+  lastVerifiedAt: string;
+  storageLocation: string;
+  quotaExhaustedAt?: string;
+  retryAfterAt?: string;
+  pendingCallCount?: number;
+  lastQuotaError?: string;
+  todayUsedTokens?: number;
+  totalUsedTokens?: number;
+  todayRequestCount?: number;
+  lastRequestTokens?: number;
+  autoCallTranscription?: boolean;
+}
+
+export interface CallPlayInfoPayload {
+  audioUrl: string;
+  fullPath: string;
+  fileName: string;
+  contactDisplay: string;
+  hasTranscript: boolean;
+}
+
+

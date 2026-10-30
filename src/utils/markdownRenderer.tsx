@@ -272,9 +272,15 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         i++;
       }
       if (i < lines.length) i++; // 닫는 펜스 소비
+      const endLine = Math.max(startLine, i - 1);
       const codeContent = codeLines.join('\n');
       elements.push(
-        <div key={`code-${startLine}`} className="md-code-block-wrapper">
+        <div
+          key={`code-${startLine}`}
+          className="md-code-block-wrapper"
+          data-source-line={startLine}
+          data-source-line-end={endLine}
+        >
           {lang && <div className="md-code-lang-badge">{lang}</div>}
           <pre className="md-code-pre">
             <code>{codeContent}</code>
@@ -286,7 +292,14 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
 
     // 3. 수평선 (---, ***, ___, <hr>, <hr/>)
     if (isHorizontalRuleLine(line)) {
-      elements.push(<hr key={`hr-${i}`} className="md-hr" />);
+      elements.push(
+        <hr
+          key={`hr-${i}`}
+          className="md-hr"
+          data-source-line={i}
+          data-source-line-end={i}
+        />
+      );
       i++;
       continue;
     }
@@ -312,9 +325,15 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         bodyRows.push(splitTableCells(lines[i]));
         i++;
       }
+      const tableEnd = Math.max(tableStart, i - 1);
 
       elements.push(
-        <div key={`tbl-${tableStart}`} className="md-table-container">
+        <div
+          key={`tbl-${tableStart}`}
+          className="md-table-container"
+          data-source-line={tableStart}
+          data-source-line-end={tableEnd}
+        >
           <table className="md-table">
             <thead>
               <tr>
@@ -365,6 +384,8 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
           <div
             key={`html-blk-${blockStart}`}
             className="md-raw-html-block"
+            data-source-line={blockStart}
+            data-source-line-end={blockStart}
             dangerouslySetInnerHTML={{ __html: line }}
           />
         );
@@ -383,10 +404,13 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         }
         i++;
       }
+      const blockEnd = Math.max(blockStart, i - 1);
       elements.push(
         <div
           key={`html-blk-${blockStart}`}
           className="md-raw-html-block"
+          data-source-line={blockStart}
+          data-source-line-end={blockEnd}
           dangerouslySetInnerHTML={{ __html: htmlLines.join('\n') }}
         />
       );
@@ -403,7 +427,11 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         onOpenExternalUrl
       );
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      elements.push(<Tag key={`h-${i}`}>{content}</Tag>);
+      elements.push(
+        <Tag key={`h-${i}`} data-source-line={i} data-source-line-end={i}>
+          {content}
+        </Tag>
+      );
       i++;
       continue;
     }
@@ -416,13 +444,56 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         quoteLines.push(lines[i].trim().replace(/^>\s?/, ''));
         i++;
       }
+      const quoteEnd = Math.max(quoteStart, i - 1);
+      const joinedQuote = quoteLines.join('\n');
+      const audioMatch = joinedQuote.match(
+        /`audio\/([^`]+\.(?:m4a|amr|mp3|wav|ogg|aac))`/i
+      );
       elements.push(
-        <blockquote key={`bq-${quoteStart}`} className="md-blockquote">
+        <blockquote
+          key={`bq-${quoteStart}`}
+          className="md-blockquote"
+          data-source-line={quoteStart}
+          data-source-line-end={quoteEnd}
+        >
           {quoteLines.map((qLine, qIdx) => (
             <p key={qIdx}>
               {renderInlineMarkdown(qLine, onNavigateUuid, onOpenExternalUrl)}
             </p>
           ))}
+          {audioMatch && (
+            <div
+              style={{
+                marginTop: '10px',
+                padding: '10px 12px',
+                borderRadius: '8px',
+                background: 'rgba(15, 23, 42, 0.55)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div
+                style={{
+                  fontSize: '0.76rem',
+                  fontWeight: 700,
+                  color: '#38bdf8',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <span>🔊 통화 녹음 원본 재생 ({audioMatch[1]})</span>
+              </div>
+              <audio
+                controls
+                preload="metadata"
+                style={{ width: '100%', height: '34px' }}
+                src={`http://127.0.0.1:18443/api/v1/local-media?sub=calls/audio&file=${encodeURIComponent(audioMatch[1])}`}
+              />
+            </div>
+          )}
         </blockquote>
       );
       continue;
@@ -453,7 +524,12 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
               ? 'priority-done'
               : '';
       elements.push(
-        <div key={`task-${lineIdx}`} className={`rendered-task-row ${rowClass}`}>
+        <div
+          key={`task-${lineIdx}`}
+          className={`rendered-task-row ${rowClass}`}
+          data-source-line={lineIdx}
+          data-source-line-end={lineIdx}
+        >
           <select
             className="task-status-select"
             value={normCode}
@@ -501,16 +577,100 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         }
         i++;
       }
+      const listEnd = Math.max(listStart, i - 1);
       elements.push(
-        <ul key={`ul-${listStart}`} className="md-list">
-          {items.map((it) => (
-            <li
-              key={`li-${it.idx}`}
-              style={{ marginLeft: `${it.indent * 16}px` }}
-            >
-              {renderInlineMarkdown(it.text, onNavigateUuid, onOpenExternalUrl)}
-            </li>
-          ))}
+        <ul
+          key={`ul-${listStart}`}
+          className="md-list"
+          data-source-line={listStart}
+          data-source-line-end={listEnd}
+        >
+          {items.map((it) => {
+            const isImgMeta = it.text.startsWith('🖼️ **[연결된 이미지 정보]**');
+            const isVidMeta = it.text.startsWith('🎬 **[연결된 동영상 정보]**');
+            const mediaFileMatch = it.text.match(
+              /`([^`]+\.(?:jpg|jpeg|png|gif|webp|bmp|mp4|mov|webm|mkv|avi|m4v|3gp))`/i
+            );
+            const mediaFileName = mediaFileMatch ? mediaFileMatch[1].trim() : '';
+
+            return (
+              <li
+                key={`li-${it.idx}`}
+                style={{
+                  marginLeft: `${it.indent * 16}px`,
+                  listStyleType: isImgMeta || isVidMeta ? 'none' : undefined,
+                }}
+              >
+                {isImgMeta || isVidMeta ? (
+                  <div
+                    style={{
+                      margin: '4px 0 8px 0',
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      background: isImgMeta
+                        ? 'rgba(56, 189, 248, 0.08)'
+                        : 'rgba(168, 85, 247, 0.09)',
+                      border: isImgMeta
+                        ? '1px solid rgba(56, 189, 248, 0.28)'
+                        : '1px solid rgba(168, 85, 247, 0.3)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px',
+                      maxWidth: '520px',
+                    }}
+                  >
+                    <div style={{ fontSize: '0.78rem', lineHeight: 1.4 }}>
+                      {renderInlineMarkdown(
+                        it.text,
+                        onNavigateUuid,
+                        onOpenExternalUrl
+                      )}
+                    </div>
+                    {isImgMeta && mediaFileName && (
+                      <img
+                        src={`http://127.0.0.1:18443/api/v1/local-media?sub=kakao&file=${encodeURIComponent(mediaFileName)}`}
+                        alt={mediaFileName}
+                        style={{
+                          maxWidth: '100%',
+                          maxHeight: '280px',
+                          borderRadius: '6px',
+                          objectFit: 'contain',
+                          alignSelf: 'flex-start',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                        }}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).style.display =
+                            'none';
+                        }}
+                      />
+                    )}
+                    {isVidMeta && mediaFileName && (
+                      <video
+                        controls
+                        preload="metadata"
+                        src={`http://127.0.0.1:18443/api/v1/local-media?sub=kakao&file=${encodeURIComponent(mediaFileName)}`}
+                        style={{
+                          maxWidth: '100%',
+                          maxHeight: '280px',
+                          borderRadius: '6px',
+                        }}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLVideoElement).style.display =
+                            'none';
+                        }}
+                      />
+                    )}
+                  </div>
+                ) : (
+                  renderInlineMarkdown(
+                    it.text,
+                    onNavigateUuid,
+                    onOpenExternalUrl
+                  )
+                )}
+              </li>
+            );
+          })}
         </ul>
       );
       continue;
@@ -531,8 +691,14 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         }
         i++;
       }
+      const listEnd = Math.max(listStart, i - 1);
       elements.push(
-        <ol key={`ol-${listStart}`} className="md-list md-ordered-list">
+        <ol
+          key={`ol-${listStart}`}
+          className="md-list md-ordered-list"
+          data-source-line={listStart}
+          data-source-line-end={listEnd}
+        >
           {items.map((it) => (
             <li
               key={`oli-${it.idx}`}
@@ -559,7 +725,23 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         onOpenExternalUrl
       );
       elements.push(
-        isH1 ? <h1 key={`sh1-${i}`}>{content}</h1> : <h2 key={`sh2-${i}`}>{content}</h2>
+        isH1 ? (
+          <h1
+            key={`sh1-${i}`}
+            data-source-line={i}
+            data-source-line-end={i + 1}
+          >
+            {content}
+          </h1>
+        ) : (
+          <h2
+            key={`sh2-${i}`}
+            data-source-line={i}
+            data-source-line-end={i + 1}
+          >
+            {content}
+          </h2>
+        )
       );
       i += 2;
       continue;
@@ -567,7 +749,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
 
     // 12. 일반 문단
     elements.push(
-      <p key={`p-${i}`}>
+      <p key={`p-${i}`} data-source-line={i} data-source-line-end={i}>
         {renderInlineMarkdown(line, onNavigateUuid, onOpenExternalUrl)}
       </p>
     );
@@ -576,3 +758,82 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
 
   return <>{elements}</>;
 };
+
+/**
+ * 원본 마크다운 에디터의 상단 줄 번호(topLine) 및 스크롤 비율(scrollRatio)에 맞추어
+ * 뷰어 컨테이너(병렬 뷰어 또는 전용 독립 뷰어)의 스크롤 위치를 선형 보간으로 정밀 동기화합니다.
+ */
+export function scrollPreviewPaneToSourceLine(
+  container: HTMLElement | null,
+  topLine: number,
+  scrollRatio: number
+): void {
+  if (!container) return;
+  const maxScroll = Math.max(
+    0,
+    container.scrollHeight - container.clientHeight
+  );
+  if (maxScroll <= 0) return;
+
+  if (scrollRatio <= 0.005) {
+    container.scrollTop = 0;
+    return;
+  }
+  if (scrollRatio >= 0.995) {
+    container.scrollTop = maxScroll;
+    return;
+  }
+
+  const blocks = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-source-line]')
+  );
+  if (blocks.length === 0) {
+    container.scrollTop = scrollRatio * maxScroll;
+    return;
+  }
+
+  const containerRectTop = container.getBoundingClientRect().top;
+  const getRelTop = (el: HTMLElement): number =>
+    el.getBoundingClientRect().top - containerRectTop + container.scrollTop;
+
+  let prevEl: HTMLElement | null = null;
+  let prevStart = 0;
+  let prevEnd = 0;
+  let nextEl: HTMLElement | null = null;
+  let nextStart = 0;
+
+  for (const el of blocks) {
+    const s = Number(el.getAttribute('data-source-line') || '0');
+    const e = Number(el.getAttribute('data-source-line-end') || String(s));
+    if (s <= topLine) {
+      prevEl = el;
+      prevStart = s;
+      prevEnd = e;
+    } else {
+      nextEl = el;
+      nextStart = s;
+      break;
+    }
+  }
+
+  if (!prevEl) {
+    container.scrollTop = scrollRatio * maxScroll;
+    return;
+  }
+
+  const prevTop = getRelTop(prevEl);
+  if (!nextEl) {
+    // 마지막 블록 이후 영역 보간
+    const span = Math.max(1, prevEnd - prevStart + 1);
+    const localFrac = Math.min(1, Math.max(0, (topLine - prevStart) / span));
+    const target = prevTop + localFrac * prevEl.offsetHeight;
+    container.scrollTop = Math.min(maxScroll, Math.max(0, target - 16));
+    return;
+  }
+
+  const nextTop = getRelTop(nextEl);
+  const lineSpan = Math.max(1, nextStart - prevStart);
+  const frac = Math.min(1, Math.max(0, (topLine - prevStart) / lineSpan));
+  const interpolatedTop = prevTop + frac * (nextTop - prevTop);
+  container.scrollTop = Math.min(maxScroll, Math.max(0, interpolatedTop - 16));
+}
