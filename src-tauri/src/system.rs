@@ -27,7 +27,7 @@ pub(crate) fn open_native_file_dialog() -> Result<Option<String>, String> {
 Add-Type -AssemblyName System.Windows.Forms
 $dlg = New-Object System.Windows.Forms.OpenFileDialog
 $dlg.Filter = "Markdown Files (*.md)|*.md|All Files (*.*)|*.*"
-$dlg.InitialDirectory = "C:\Users\iseoh\OneDrive"
+$dlg.InitialDirectory = $env:USERPROFILE
 if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Write-Output $dlg.FileName
@@ -52,7 +52,7 @@ pub(crate) fn open_native_folder_dialog() -> Result<Option<String>, String> {
     let ps_script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-$dlg.SelectedPath = "C:\Users\iseoh\OneDrive"
+$dlg.SelectedPath = $env:USERPROFILE
 if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Write-Output $dlg.SelectedPath

@@ -414,7 +414,8 @@ pub(crate) fn normalize_call_contact_key(raw: &str) -> String {
         .trim_start_matches("Call_")
         .trim()
         .to_string();
-    if let Ok(re_paren_phone) = Regex::new(r"\s*\([0-9+\-\s]{7,}\)\s*$") {
+    {
+        let re_paren_phone = cached_regex!(r"\s*\([0-9+\-\s]{7,}\)\s*$");
         s = re_paren_phone.replace(&s, "").to_string();
     }
     s.trim().trim_start_matches('#').trim().to_lowercase()

@@ -4,9 +4,7 @@ use crate::*;
 
 /// 방법 A: 클라우드(OneDrive/Google Drive)나 Git에 동기화되지 않는 PC 로컬 전용 `%APPDATA%\com.iseohyun.mylore\gemini_secret.json` 경로
 pub(crate) fn resolve_local_appdata_gemini_key_path() -> PathBuf {
-    let appdata = std::env::var("APPDATA")
-        .unwrap_or_else(|_| r"C:\Users\iseoh\AppData\Roaming".to_string());
-    let dir = Path::new(&appdata).join("com.iseohyun.mylore");
+    let dir = app_data_dir();
     let _ = fs::create_dir_all(&dir);
     dir.join("gemini_secret.json")
 }
@@ -52,9 +50,7 @@ pub(crate) fn read_local_gemini_api_key() -> (String, String) {
 }
 
 pub(crate) fn resolve_local_appdata_gemini_usage_path() -> PathBuf {
-    let appdata = std::env::var("APPDATA")
-        .unwrap_or_else(|_| r"C:\Users\iseoh\AppData\Roaming".to_string());
-    let dir = Path::new(&appdata).join("com.iseohyun.mylore");
+    let dir = app_data_dir();
     let _ = fs::create_dir_all(&dir);
     dir.join("gemini_usage.json")
 }

@@ -372,9 +372,9 @@ pub(crate) fn normalize_script_lines_with_timestamps_and_clean_name(
     clean_name: &str,
     raw_stem: &str,
 ) -> String {
-    let re_hms = Regex::new(r"\[(\d{1,2}):(\d{2}):(\d{2})\]").unwrap();
-    let re_ms = Regex::new(r"\[(\d{1,2}):(\d{2})\]").unwrap();
-    let re_speaker_dirty = Regex::new(r"(\*\*\[?)([^\]*:]+_[0-9]{6,}[_0-9]*)(\]?\*\*)").unwrap();
+    let re_hms = cached_regex!(r"\[(\d{1,2}):(\d{2}):(\d{2})\]");
+    let re_ms = cached_regex!(r"\[(\d{1,2}):(\d{2})\]");
+    let re_speaker_dirty = cached_regex!(r"(\*\*\[?)([^\]*:]+_[0-9]{6,}[_0-9]*)(\]?\*\*)");
 
     let mut out_lines: Vec<String> = Vec::new();
     let mut est_sec: u64 = 0;

@@ -19,7 +19,7 @@ pub(crate) fn detect_local_ipv4_addresses() -> Vec<String> {
         .output()
     {
         let text = String::from_utf8_lossy(&out.stdout);
-        let ipv4_re = Regex::new(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})").unwrap();
+        let ipv4_re = cached_regex!(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})");
         for line in text.lines() {
             if line.contains("IPv4") || line.contains("IP Address") {
                 if let Some(cap) = ipv4_re.captures(line) {
@@ -64,6 +64,51 @@ pub(crate) fn send_mobile_udp_wake_broadcast() -> Result<String, String> {
     Ok("UDP 255.255.255.255:18444 로 MYLORE_PC_ONLINE 브로드캐스트 송출 완료".to_string())
 }
 
+/// PC가 현재 연결된 Wi-Fi SSID 목록을 `netsh wlan show interfaces`로 조회합니다. (무선 어댑터가 없거나 미연결이면 빈 목록)
+///
+/// 출력 인코딩 문제(한글 SSID)를 피하기 위해 `chcp 65001`(UTF-8) 상태에서 실행합니다.
+pub(crate) fn detect_current_wifi_ssids() -> Vec<String> {
+    let output = Command::new("cmd")
+        .args(["/C", "chcp 65001 >nul && netsh wlan show interfaces"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(out) => parse_netsh_wlan_ssids(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `netsh wlan show interfaces` 출력에서 `SSID : 이름` 줄만 추출합니다. (`BSSID` 줄은 제외)
+pub(crate) fn parse_netsh_wlan_ssids(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        let Some(rest) = t.strip_prefix("SSID") else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let ssid = value.trim().to_string();
+        if !ssid.is_empty() && !out.contains(&ssid) {
+            out.push(ssid);
+        }
+    }
+    out
+}
+
+/// 현재 Wi-Fi(`current`)를 앞에 두고 저장된 SSID(`saved`)를 중복 없이 뒤에 붙입니다.
+pub(crate) fn merge_ssids(current: Vec<String>, saved: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in current.into_iter().chain(saved) {
+        let s = s.trim().to_string();
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
 pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePairingPayload, String> {
     let pc_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "MYLORE-DESKTOP".to_string());
     let ips = detect_local_ipv4_addresses();
@@ -84,15 +129,17 @@ pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePa
             t
         });
 
-    let ssids_raw: String = conn
+    let saved_ssids: Vec<String> = conn
         .query_row(
             "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
             [],
-            |r| r.get(0),
+            |r| r.get::<_, String>(0),
         )
-        .unwrap_or_else(|_| "[\"iseohyun\",\"seohyun5G\"]".to_string());
-    let ssids: Vec<String> = serde_json::from_str(&ssids_raw)
-        .unwrap_or_else(|_| vec!["iseohyun".to_string(), "seohyun5G".to_string()]);
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .unwrap_or_default();
+    // PC가 지금 연결된 Wi-Fi를 맨 앞에 넣고, 사용자가 저장한 SSID를 뒤에 붙입니다. (QR 스캔 시 동반 앱이 이 SSID를 허용 목록에 추가)
+    let ssids = merge_ssids(detect_current_wifi_ssids(), saved_ssids);
 
     let created_at = chrono::Local::now().timestamp_millis();
     let qr_json_obj = serde_json::json!({
@@ -245,16 +292,12 @@ pub(crate) async fn update_mobile_pairing_config(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&db_path)?;
 
-        let cleaned_ssids: Vec<String> = ssids
+        // 비워 두면 저장 목록은 비우고, QR에는 PC의 현재 Wi-Fi만 자동으로 들어갑니다.
+        let final_ssids: Vec<String> = ssids
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        let final_ssids = if cleaned_ssids.is_empty() {
-            vec!["iseohyun".to_string(), "seohyun5G".to_string()]
-        } else {
-            cleaned_ssids
-        };
         let ssids_json = serde_json::to_string(&final_ssids).unwrap_or_default();
         conn.execute(
             "INSERT INTO mobile_sync_meta (key, value) VALUES ('allowed_ssids', ?1)

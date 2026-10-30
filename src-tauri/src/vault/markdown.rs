@@ -18,15 +18,9 @@ pub(crate) fn is_internal_mylore_path(path: &Path) -> bool {
     })
 }
 
-/// 1번 Projects 볼트(`C:\Users\iseoh\OneDrive\Projects\.myLore\templates`)에 기본 마크다운 템플릿을 생성·관리합니다.
+/// 프로젝트 베이스 폴더의 `.myLore/templates`에 기본 마크다운 템플릿을 생성·관리합니다.
 pub(crate) fn ensure_projects_mylore_templates(conn: &Connection) -> PathBuf {
-    let projects_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\Projects".to_string());
+    let projects_base: String = projects_base_path_string(&conn);
 
     let templates_dir = Path::new(&projects_base).join(".myLore").join("templates");
     let _ = fs::create_dir_all(&templates_dir);

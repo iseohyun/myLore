@@ -146,13 +146,7 @@ pub(crate) fn handle_media_job(app_handle: &AppHandle, conn: &Connection, job: S
     else {
         return;
     };
-    let data_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+    let data_base: String = data_base_path_string(&conn);
     let inbox_dir = Path::new(&data_base).join("_MediaInbox");
     let _ = fs::create_dir_all(&inbox_dir);
     let target_path = inbox_dir.join(&file_name);

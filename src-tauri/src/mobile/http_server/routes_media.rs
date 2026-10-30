@@ -46,15 +46,16 @@ pub(crate) fn handle_sync_call_recordings(mut request: tiny_http::Request, db_pa
     } else {
         let header_str =
             String::from_utf8_lossy(&raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)]);
-        if let Ok(re_fh) = Regex::new(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#)
         {
+            let re_fh = cached_regex!(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#);
             if let Some(cap) = re_fh.captures(&header_str) {
                 if let Some(m) = cap.get(1) {
                     file_hash = m.as_str().trim().to_string();
                 }
             }
         }
-        if let Ok(re_cn) = Regex::new(r#"name="contact_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#) {
+        {
+            let re_cn = cached_regex!(r#"name="contact_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#);
             if let Some(cap) = re_cn.captures(&header_str) {
                 if let Some(m) = cap.get(1) {
                     let cname = m.as_str().trim();
@@ -64,7 +65,7 @@ pub(crate) fn handle_sync_call_recordings(mut request: tiny_http::Request, db_pa
                 }
             }
         }
-        let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
+        let fn_re = cached_regex!(r#"filename="([^"]+)""#);
         if let Some(cap) = fn_re.captures(&header_str) {
             if let Some(m) = cap.get(1) {
                 file_name = m.as_str().to_string();
@@ -157,20 +158,22 @@ pub(crate) fn handle_sync_media(mut request: tiny_http::Request, db_path: PathBu
     } else {
         let header_part =
             String::from_utf8_lossy(&raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)]);
-        let fn_re = Regex::new(r#"filename="([^"]+)""#).unwrap();
+        let fn_re = cached_regex!(r#"filename="([^"]+)""#);
         if let Some(cap) = fn_re.captures(&header_part) {
             if let Some(m) = cap.get(1) {
                 file_name = m.as_str().to_string();
             }
         }
-        if let Ok(re_st) = Regex::new(r#"name="source_type"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#) {
+        {
+            let re_st = cached_regex!(r#"name="source_type"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#);
             if let Some(cap) = re_st.captures(&header_part) {
                 if let Some(m) = cap.get(1) {
                     source_type = m.as_str().trim().to_string();
                 }
             }
         }
-        if let Ok(re_fd) = Regex::new(r#"name="folder_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#) {
+        {
+            let re_fd = cached_regex!(r#"name="folder_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#);
             if let Some(cap) = re_fd.captures(&header_part) {
                 if let Some(m) = cap.get(1) {
                     folder_name = m.as_str().trim().to_string();
@@ -269,13 +272,7 @@ pub(crate) fn handle_local_media(request: tiny_http::Request, db_path: PathBuf, 
 
     let mut found_path: Option<PathBuf> = None;
     if let Ok(conn) = open_db(&db_path) {
-        let data_base: String = conn
-            .query_row(
-                "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+        let data_base: String = data_base_path_string(&conn);
         let base_p = Path::new(&data_base);
         let mut candidates = Vec::new();
         if !req_sub.is_empty() {
@@ -432,36 +429,34 @@ pub(crate) fn handle_local_media(request: tiny_http::Request, db_path: PathBuf, 
     );
 }
 
-/// 그 외 경로: Chrome App Mode용 `dist/` 정적 파일 서빙 (없으면 `{"ok": true}`)
+/// 그 외 경로: Chrome App Mode(`chrome.exe --app=http://127.0.0.1:18443`)용 프론트엔드 정적 파일 서빙 (없으면 `{"ok": true}`)
+///
+/// 개발 PC의 `dist/` 폴더 대신 **실행 파일에 내장된 프론트엔드 자산**(Tauri asset resolver)을 사용하므로 설치 위치와 무관하게 동작합니다.
 pub(crate) fn handle_static_or_fallback(
     request: tiny_http::Request,
-    dist_dir: PathBuf,
+    app_handle: AppHandle,
     url_path: &str,
 ) {
-    // Chrome App Mode (`chrome.exe --app=http://127.0.0.1:18443`) 요청 시 dist/ 정적 파일 서빙
     let clean_path = url_path.trim_start_matches('/');
     let rel_file = if clean_path.is_empty() {
         "index.html"
     } else {
         clean_path
     };
-    let target_file = dist_dir.join(rel_file);
-    if target_file.exists() && target_file.is_file() {
-        if let Ok(bytes) = fs::read(&target_file) {
-            let mime = if rel_file.ends_with(".html") {
-                "text/html; charset=utf-8"
-            } else if rel_file.ends_with(".js") {
-                "application/javascript; charset=utf-8"
-            } else if rel_file.ends_with(".css") {
-                "text/css; charset=utf-8"
-            } else {
-                "application/octet-stream"
-            };
-            let header =
-                tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap();
-            let _ = request.respond(tiny_http::Response::from_data(bytes).with_header(header));
-            return;
-        }
+    if let Some(asset) = app_handle.asset_resolver().get(rel_file.to_string()) {
+        let mime = if rel_file.ends_with(".html") {
+            "text/html; charset=utf-8".to_string()
+        } else if rel_file.ends_with(".js") {
+            "application/javascript; charset=utf-8".to_string()
+        } else if rel_file.ends_with(".css") {
+            "text/css; charset=utf-8".to_string()
+        } else {
+            asset.mime_type().to_string()
+        };
+        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap();
+        let _ = request
+            .respond(tiny_http::Response::from_data(asset.bytes().to_vec()).with_header(header));
+        return;
     }
     respond_json(request, 200, serde_json::json!({ "ok": true }));
 }

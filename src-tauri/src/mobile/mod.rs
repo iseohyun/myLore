@@ -8,6 +8,9 @@ mod health;
 mod sync_worker;
 mod http_server;
 
+#[cfg(test)]
+mod pairing_tests;
+
 pub(crate) use pairing::*;
 pub(crate) use progress::*;
 pub(crate) use auth::*;

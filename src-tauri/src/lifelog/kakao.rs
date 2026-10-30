@@ -10,8 +10,8 @@ pub(crate) fn migrate_raw_kakao_chat_mds(conn: &Connection) {
         Ok(e) => e,
         Err(_) => return,
     };
-    let sender_re = Regex::new(r"^- \*\*\[([^\]]+)\]\s*([^\*]+)\*\*:\s*(.*)$").unwrap();
-    let date_re = Regex::new(r"^##\s*📅\s*(\d{4}-\d{2}-\d{2})").unwrap();
+    let sender_re = cached_regex!(r"^- \*\*\[([^\]]+)\]\s*([^\*]+)\*\*:\s*(.*)$");
+    let date_re = cached_regex!(r"^##\s*📅\s*(\d{4}-\d{2}-\d{2})");
 
     for entry in entries.flatten() {
         let p = entry.path();
@@ -103,13 +103,7 @@ pub(crate) fn enrich_kakao_markdown_with_media(conn: &Connection, md_path: &Path
 
     let kakao_dir = get_archive_mobile_dir(conn, "kakao");
     let kakao_media_dir = kakao_dir.join("media");
-    let data_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+    let data_base: String = data_base_path_string(&conn);
     let inbox_dir = Path::new(&data_base).join("_MediaInbox");
 
     let find_local_media = |fname: &str| -> Option<PathBuf> {
@@ -138,14 +132,8 @@ pub(crate) fn enrich_kakao_markdown_with_media(conn: &Connection, md_path: &Path
         None
     };
 
-    let img_re = Regex::new(
-        r"(?i)([0-9a-zA-Z가-힣_\-\.\s]{2,120}\.(?:jpg|jpeg|png|gif|webp|bmp))",
-    )
-    .unwrap();
-    let vid_re = Regex::new(
-        r"(?i)([0-9a-zA-Z가-힣_\-\.\s]{2,120}\.(?:mp4|mov|webm|mkv|avi|m4v|3gp))",
-    )
-    .unwrap();
+    let img_re = cached_regex!(r"(?i)([0-9a-zA-Z가-힣_\-\.\s]{2,120}\.(?:jpg|jpeg|png|gif|webp|bmp))");
+    let vid_re = cached_regex!(r"(?i)([0-9a-zA-Z가-힣_\-\.\s]{2,120}\.(?:mp4|mov|webm|mkv|avi|m4v|3gp))");
 
     let lines: Vec<&str> = raw.lines().collect();
     let mut out_lines: Vec<String> = Vec::with_capacity(lines.len() + 32);
@@ -259,8 +247,8 @@ pub(crate) fn import_kakao_chat_text(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let date_re = Regex::new(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일").unwrap();
-    let msg_re = Regex::new(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$").unwrap();
+    let date_re = cached_regex!(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일");
+    let msg_re = cached_regex!(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$");
 
     let mut current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut inserted_count = 0usize;
@@ -319,28 +307,32 @@ pub(crate) fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, 
     let mut total_folders = 1usize;
     let mut clean_content = body_str.to_string();
 
-    if let Ok(re_fh) = Regex::new(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#) {
+    {
+        let re_fh = cached_regex!(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#);
         if let Some(cap) = re_fh.captures(body_str) {
             if let Some(m) = cap.get(1) {
                 file_hash = m.as_str().trim().to_string();
             }
         }
     }
-    if let Ok(re_fn) = Regex::new(r#"name="folder_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#) {
+    {
+        let re_fn = cached_regex!(r#"name="folder_name"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#);
         if let Some(cap) = re_fn.captures(body_str) {
             if let Some(m) = cap.get(1) {
                 folder_name = m.as_str().trim().to_string();
             }
         }
     }
-    if let Ok(re_fi) = Regex::new(r#"name="folder_index"[\s\S]*?\r?\n\r?\n(\d+)"#) {
+    {
+        let re_fi = cached_regex!(r#"name="folder_index"[\s\S]*?\r?\n\r?\n(\d+)"#);
         if let Some(cap) = re_fi.captures(body_str) {
             if let Some(m) = cap.get(1) {
                 folder_index = m.as_str().trim().parse::<usize>().unwrap_or(1).max(1);
             }
         }
     }
-    if let Ok(re_tf) = Regex::new(r#"name="total_folders"[\s\S]*?\r?\n\r?\n(\d+)"#) {
+    {
+        let re_tf = cached_regex!(r#"name="total_folders"[\s\S]*?\r?\n\r?\n(\d+)"#);
         if let Some(cap) = re_tf.captures(body_str) {
             if let Some(m) = cap.get(1) {
                 total_folders = m.as_str().trim().parse::<usize>().unwrap_or(1).max(1);
@@ -359,7 +351,8 @@ pub(crate) fn parse_multipart_kakao_payload(body_str: &str) -> (String, String, 
         };
         if let Some(sp) = start_pos {
             let mut slice = body_str[sp..].to_string();
-            if let Ok(re_tail) = Regex::new(r"\r?\n--[0-9a-fA-F\-]{8,}--\s*$") {
+            {
+                let re_tail = cached_regex!(r"\r?\n--[0-9a-fA-F\-]{8,}--\s*$");
                 slice = re_tail.replace(&slice, "").to_string();
             }
             clean_content = slice.trim_start_matches('\u{feff}').trim().to_string();

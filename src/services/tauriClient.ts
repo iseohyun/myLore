@@ -25,29 +25,31 @@ const isTauriEnv = (): boolean => {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 };
 
+// 브라우저(비 Tauri) 미리보기 전용 기본값. 실제 앱에서는 백엔드(db.rs)가
+// `%USERPROFILE%\Documents\myLore\{Data,Diary,Projects}`를 기본 베이스 폴더로 등록합니다.
 export const DEFAULT_BASE_FOLDERS: BaseFolderConfig[] = [
   {
     id: 'base-data-1',
     role: 'data',
-    path: 'C:\\Users\\iseoh\\OneDrive\\iseohyunDocs',
-    label: 'iseohyunDocs (아카이브)',
-    purpose: '과거 문서, 위키, 부동산/재정, 미디어 원본 아카이브 및 분류 대기 문서',
+    path: '%USERPROFILE%\\Documents\\myLore\\Data',
+    label: '데이터 (아카이브)',
+    purpose: '과거 문서, 위키, 미디어 원본 아카이브 및 분류 대기 문서',
     enabled: true,
   },
   {
     id: 'base-diary-1',
     role: 'diary',
-    path: 'C:\\Users\\iseoh\\OneDrive\\Diary',
-    label: 'OneDrive Diary (일기)',
-    purpose: '매일의 주관적 작업/일상 기록 및 구글 캘린더 1:1 양방향 동기화 폴더',
+    path: '%USERPROFILE%\\Documents\\myLore\\Diary',
+    label: '일기',
+    purpose: '매일의 작업/일상 기록 및 구글 캘린더 1:1 동기화 폴더',
     enabled: true,
   },
   {
     id: 'base-projects-1',
     role: 'projects',
-    path: 'C:\\Users\\iseoh\\OneDrive\\Projects',
-    label: 'OneDrive Projects (프로젝트)',
-    purpose: '폴더별 main.md 기반 개발·아티클·영상 제작 프로젝트 관리 폴더',
+    path: '%USERPROFILE%\\Documents\\myLore\\Projects',
+    label: '프로젝트',
+    purpose: '폴더별 main.md 기반 프로젝트 관리 폴더',
     enabled: true,
   },
 ];
@@ -616,7 +618,7 @@ export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   themePreset: 'dark_indigo',
   ...THEME_PRESETS.dark_indigo,
   settingsFilePath:
-    'C:\\Users\\iseoh\\OneDrive\\Projects\\.myLore\\setting.json',
+    '%USERPROFILE%\\Documents\\myLore\\Projects\\.myLore\\setting.json',
 };
 
 export function applyAppSettingsToDocument(settings: MyLoreAppSettings): void {
@@ -694,7 +696,7 @@ export async function getMobilePairingInfo(): Promise<MobilePairingPayload> {
     ips: ['127.0.0.1'],
     port: 18443,
     token: 'mylore_sec_demo_token',
-    ssids: ['iseohyun', 'seohyun5G'],
+    ssids: ['MyHomeWiFi'],
     created_at: Date.now(),
   };
   const qrJsonRaw = JSON.stringify(fallbackObj);
@@ -705,7 +707,7 @@ export async function getMobilePairingInfo(): Promise<MobilePairingPayload> {
     ips: ['127.0.0.1'],
     port: 18443,
     token: 'mylore_sec_demo_token',
-    ssids: ['iseohyun', 'seohyun5G'],
+    ssids: ['MyHomeWiFi'],
     pairedDevices: [],
     lastNotiTs: 0,
     lastSmsTs: 0,

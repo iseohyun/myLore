@@ -7,6 +7,9 @@ mod kakao;
 mod backfill;
 mod commands;
 
+#[cfg(test)]
+mod parse_tests;
+
 pub(crate) use contacts::*;
 pub(crate) use parse::*;
 pub(crate) use recordings::*;

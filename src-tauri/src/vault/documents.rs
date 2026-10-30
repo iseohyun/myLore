@@ -175,7 +175,7 @@ pub(crate) fn save_document(
     fs::write(path, &raw_content).map_err(|e| e.to_string())?;
     let payload = build_document_payload(&conn, path)?;
 
-    let uri_re = Regex::new(r"mylore://(?:doc|media)/([a-fA-F0-9-]{36})").unwrap();
+    let uri_re = cached_regex!(r"mylore://(?:doc|media)/([a-fA-F0-9-]{36})");
     let _ = conn.execute(
         "DELETE FROM links WHERE source_uuid = ?1",
         params![payload.uuid],
@@ -324,13 +324,7 @@ pub(crate) fn create_temp_memo(state: State<AppState>, title: Option<String>) ->
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let projects_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\Projects".to_string());
+    let projects_base: String = projects_base_path_string(&conn);
 
     let temp_dir = Path::new(&projects_base).join("임시");
     let _ = fs::create_dir_all(&temp_dir);
@@ -362,13 +356,7 @@ pub(crate) fn open_root_main_md(state: State<AppState>) -> Result<DocumentPayloa
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let projects_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\Projects".to_string());
+    let projects_base: String = projects_base_path_string(&conn);
 
     let _ = fs::create_dir_all(&projects_base);
     let root_main = Path::new(&projects_base).join("main.md");

@@ -18,12 +18,10 @@ pub(crate) fn spawn_mobile_companion_http_server(
         let _ = broadcast_udp_pc_online();
 
         if let Ok(server) = tiny_http::Server::http("0.0.0.0:18443") {
-            let dist_dir = PathBuf::from(r"c:\git\myLore\dist");
             for request in server.incoming_requests() {
                 let app_handle = app_handle.clone();
                 let db_path = db_path.clone();
                 let pending_cli_files = pending_cli_files.clone();
-                let dist_dir = dist_dir.clone();
 
                 // 다운로드/동기화 요청과 미디어·열람 요청이 서로 블로킹하지 않도록 요청별 독립 스레드에서 처리
                 thread::spawn(move || {
@@ -68,7 +66,7 @@ pub(crate) fn spawn_mobile_companion_http_server(
                     } else if url_path == "/api/v1/local-media" {
                         routes_media::handle_local_media(request, db_path, &raw_url);
                     } else {
-                        routes_media::handle_static_or_fallback(request, dist_dir, url_path);
+                        routes_media::handle_static_or_fallback(request, app_handle, url_path);
                     }
                 });
             }

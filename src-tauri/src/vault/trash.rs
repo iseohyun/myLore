@@ -68,7 +68,8 @@ pub(crate) fn trash_document(
     let trash_dir = state
         .db_path
         .parent()
-        .unwrap_or_else(|| Path::new(r"C:\Users\iseoh\OneDrive\Projects\.myLore"))
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(app_data_dir)
         .join("trash_undo");
     fs::create_dir_all(&trash_dir).map_err(|e| e.to_string())?;
 

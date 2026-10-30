@@ -70,5 +70,5 @@ npx.cmd tauri build                     # 배포용 빌드 (beforeBuildCommand�
 ## 관련 설계 문서
 - [에이전트 진입 가이드 (AGENTS.md)](./AGENTS.md)
 - [코드 지도 (docs/CODEMAP.md)](./docs/CODEMAP.md)
+- [Phase 2 리팩터링 마일스톤 (docs/MILESTONE_PHASE2.md)](./docs/MILESTONE_PHASE2.md)
 - [시스템 아키텍처 설계서 (DESIGN.md)](./DESIGN.md)
-- [안드로이드 동반 앱 연동 설계서 (연동앱설계.md)](./연동앱설계.md)

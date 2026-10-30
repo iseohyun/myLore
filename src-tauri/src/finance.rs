@@ -46,7 +46,7 @@ pub(crate) fn parse_notification_into_finance(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let amt_re = Regex::new(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)원").unwrap();
+    let amt_re = cached_regex!(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)원");
     let mut amount: i64 = 0;
     if let Some(cap) = amt_re.captures(&text) {
         if let Some(m) = cap.get(1) {
@@ -67,7 +67,7 @@ pub(crate) fn parse_notification_into_finance(
         package_name
     };
 
-    let merchant_re = Regex::new(r"원\s+([^\s0-9/]+)").unwrap();
+    let merchant_re = cached_regex!(r"원\s+([^\s0-9/]+)");
     let merchant = merchant_re
         .captures(&text)
         .and_then(|c| c.get(1))
@@ -213,7 +213,7 @@ pub(crate) fn try_insert_finance_from_mobile_text(
         return false;
     }
 
-    let amt_re = Regex::new(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s*원").unwrap();
+    let amt_re = cached_regex!(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s*원");
     let mut amount: i64 = 0;
     if let Some(cap) = amt_re.captures(&combined) {
         if let Some(m) = cap.get(1) {
@@ -254,7 +254,7 @@ pub(crate) fn try_insert_finance_from_mobile_text(
         "expense"
     };
 
-    let merchant_re = Regex::new(r"원\s+([^\s0-9/]+)").unwrap();
+    let merchant_re = cached_regex!(r"원\s+([^\s0-9/]+)");
     let merchant = merchant_re
         .captures(text)
         .and_then(|c| c.get(1))

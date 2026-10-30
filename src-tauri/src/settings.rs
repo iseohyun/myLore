@@ -163,19 +163,17 @@ impl Default for MyLoreAppSettings {
             table_header_bg: default_table_header_bg(),
             table_header_color: default_table_header_color(),
             border_color: default_border_color(),
-            settings_file_path: r"C:\Users\iseoh\OneDrive\Projects\.myLore\setting.json".to_string(),
+            settings_file_path: default_projects_base_dir()
+                .join(".myLore")
+                .join("setting.json")
+                .to_string_lossy()
+                .to_string(),
         }
     }
 }
 
 pub(crate) fn resolve_projects_setting_json_path(conn: &Connection) -> PathBuf {
-    let projects_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\Projects".to_string());
+    let projects_base: String = projects_base_path_string(&conn);
     let mylore_dir = Path::new(&projects_base).join(".myLore");
     let _ = fs::create_dir_all(&mylore_dir);
     mylore_dir.join("setting.json")

@@ -331,12 +331,9 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
     if kakao_count == 0 {
         let kakao_dir = get_archive_mobile_dir(conn, "kakao");
         if let Ok(entries) = fs::read_dir(&kakao_dir) {
-            let line_re = Regex::new(r"^- \*\*\[([^\]]+)\]\s*([^\*]+)\*\*:\s*(.*)$").unwrap();
-            let date_re = Regex::new(r"^##\s*📅\s*(\d{4}-\d{2}-\d{2})").unwrap();
-            let android_re = Regex::new(
-                r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$",
-            )
-            .unwrap();
+            let line_re = cached_regex!(r"^- \*\*\[([^\]]+)\]\s*([^\*]+)\*\*:\s*(.*)$");
+            let date_re = cached_regex!(r"^##\s*📅\s*(\d{4}-\d{2}-\d{2})");
+            let android_re = cached_regex!(r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$");
 
             for entry in entries.flatten() {
                 let p = entry.path();

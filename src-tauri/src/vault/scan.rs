@@ -197,7 +197,7 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
         }
 
         let start_instant = Instant::now();
-        let uri_re = Regex::new(r"mylore://(?:doc|media)/([a-fA-F0-9-]{36})").unwrap();
+        let uri_re = cached_regex!(r"mylore://(?:doc|media)/([a-fA-F0-9-]{36})");
 
         let mut uuids_injected = 0usize;
         let mut media_indexed = 0usize;
@@ -381,8 +381,8 @@ pub(crate) fn get_virtual_tree(state: State<AppState>) -> Result<Vec<FileNode>, 
         .filter_map(|r| r.ok())
         .collect();
 
-    let urgent_task_re = Regex::new(r"(?m)^\s*[-*+]\s+\[[!>]\]\s+").unwrap();
-    let date_prefix_re = Regex::new(r"^(\d{4}-\d{2}-\d{2})").unwrap();
+    let urgent_task_re = cached_regex!(r"(?m)^\s*[-*+]\s+\[[!>]\]\s+");
+    let date_prefix_re = cached_regex!(r"^(\d{4}-\d{2}-\d{2})");
 
     let mut out = Vec::new();
     for (base_id, role, base_path_str) in folders {

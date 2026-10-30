@@ -1,8 +1,25 @@
-//! 공통 유틸리티 (Windows 프로세스 플래그, base64, URL 디코딩, 시간 변환, 파일명 정리).
+//! 공통 유틸리티 (Windows 프로세스 플래그, base64, URL 디코딩, 시간 변환, 파일명 정리, 정규식 캐시).
 
 use crate::*;
 
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 정규식을 **프로세스 전체에서 최초 1회만** 컴파일하고 `&'static Regex`를 돌려줍니다.
+///
+/// 호출 위치마다 별도의 `static LazyLock`이 생기므로, 반복문·자주 호출되는 함수 안에서도 재컴파일 비용이 없습니다.
+/// 패턴은 반드시 문자열 리터럴이어야 합니다. (잘못된 패턴은 첫 사용 시 panic — 기존 `.unwrap()`과 동일)
+///
+/// ```ignore
+/// let re = cached_regex!(r"^(\d{4})-(\d{2})-(\d{2})$");
+/// ```
+macro_rules! cached_regex {
+    ($pattern:literal) => {{
+        static RE: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new($pattern).unwrap());
+        &*RE
+    }};
+}
+pub(crate) use cached_regex;
 
 pub(crate) fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

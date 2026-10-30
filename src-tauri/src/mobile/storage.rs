@@ -10,13 +10,7 @@ pub(crate) fn get_archive_mobile_dir(conn: &Connection, sub: &str) -> PathBuf {
         let lock = CACHED_DATA_BASE_PATH.get_or_init(|| Mutex::new(String::new()));
         let mut guard = lock.lock().unwrap();
         if guard.is_empty() {
-            let db_p = conn
-                .query_row(
-                    "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or_else(|_| r"C:\Users\iseoh\OneDrive\iseohyunDocs".to_string());
+            let db_p = data_base_path_string(&conn);
             *guard = db_p.clone();
             db_p
         } else {

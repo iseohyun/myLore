@@ -122,12 +122,9 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
     let _ = thread::Builder::new()
         .name("mylore-mobile-sync-worker".to_string())
         .spawn(move || {
-            let android_msg_re = Regex::new(
-                r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$",
-            )
-            .unwrap();
-            let date_re = Regex::new(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일").unwrap();
-            let pc_msg_re = Regex::new(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$").unwrap();
+            let android_msg_re = cached_regex!(r"^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s+(오전|오후)\s*(\d{1,2}:\d{2}),\s*([^:]+?)\s*:\s*(.*)$");
+            let date_re = cached_regex!(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일");
+            let pc_msg_re = cached_regex!(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$");
 
             // 서버 기동 시 DB에 저장된 워터마크를 인메모리 캐시에 로드하고 초기 6단계 동기화 점검 수행
             if let Ok(conn) = open_db(&db_path) {

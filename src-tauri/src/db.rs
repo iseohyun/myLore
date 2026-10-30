@@ -21,12 +21,11 @@ pub(crate) fn open_db(db_path: &Path) -> Result<Connection, String> {
     .map_err(|e| e.to_string())?;
 
     if DB_SCHEMA_INITIALIZED.get().is_none() {
-        // 실행 순서가 중요합니다: 스키마 → 컬럼 마이그레이션 → 기본값 시드 → 템플릿 → 해시 시드 → 카톡 파일 마이그레이션
+        // 실행 순서가 중요합니다: 스키마 → 컬럼 마이그레이션 → 기본값 시드 → 템플릿 → 카톡 파일 마이그레이션
         create_schema(&conn)?;
         apply_column_migrations(&conn);
         seed_default_meta_and_base_folders(&conn);
         let _ = ensure_projects_mylore_templates(&conn);
-        seed_synced_file_hashes(&conn);
         migrate_raw_kakao_chat_mds(&conn);
         let _ = DB_SCHEMA_INITIALIZED.set(true);
     }
@@ -153,11 +152,12 @@ fn apply_column_migrations(conn: &Connection) {
     }
 }
 
-/// 페어링 토큰 / 허용 SSID / 기본 베이스 폴더 3종 시드.
+/// 페어링 토큰 / 기본 베이스 폴더 3종 시드.
 ///
-/// TODO: 개인 경로·SSID 하드코딩을 `setting.json` 또는 최초 실행 마법사로 이전
+/// - 허용 Wi-Fi SSID는 시드하지 않습니다. 페어링 QR을 만들 때 **PC가 현재 연결된 Wi-Fi**를 자동으로 넣습니다. (`mobile::pairing`)
+/// - 기본 베이스 폴더는 `%USERPROFILE%\Documents\myLore\{Data,Diary,Projects}` 이며, 설정 화면에서 변경할 수 있습니다.
 fn seed_default_meta_and_base_folders(conn: &Connection) {
-    // 기본 페어링 토큰 및 허용 Wi-Fi SSID (iseohyun, seohyun5G) 초기화
+    // 기본 페어링 토큰 초기화
     let has_token: Option<String> = conn
         .query_row(
             "SELECT value FROM mobile_sync_meta WHERE key = 'pairing_token'",
@@ -175,79 +175,41 @@ fn seed_default_meta_and_base_folders(conn: &Connection) {
         );
     }
 
-    let has_ssids: Option<String> = conn
-        .query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .unwrap_or(None);
-    if has_ssids.is_none() {
-        let default_ssids = serde_json::json!(["iseohyun", "seohyun5G"]).to_string();
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO mobile_sync_meta (key, value) VALUES ('allowed_ssids', ?1)",
-            params![default_ssids],
-        );
-    }
-
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM base_folders", [], |r| r.get(0))
         .unwrap_or(0);
     if count == 0 {
+        let root = default_user_root();
         let defaults = vec![
             (
                 "base-data-1",
                 "data",
-                r"C:\Users\iseoh\OneDrive\iseohyunDocs",
-                "iseohyunDocs (데이터/아카이브)",
-                "과거 문서, 위키, 부동산/재정, 미디어 원본 아카이브 및 분류 대기 문서",
+                root.join("Data"),
+                "데이터 (아카이브)",
+                "과거 문서, 위키, 미디어 원본 아카이브 및 분류 대기 문서",
             ),
             (
                 "base-diary-1",
                 "diary",
-                r"C:\Users\iseoh\OneDrive\Diary",
-                "OneDrive Diary (일기)",
-                "매일의 주관적 작업/일상 기록 및 구글 캘린더 1:1 양방향 동기화 폴더",
+                root.join("Diary"),
+                "일기",
+                "매일의 작업/일상 기록 및 구글 캘린더 1:1 동기화 폴더",
             ),
             (
                 "base-projects-1",
                 "projects",
-                r"C:\Users\iseoh\OneDrive\Projects",
-                "OneDrive Projects (프로젝트)",
-                "폴더별 main.md 기반 개발·아티클·영상 제작 프로젝트 관리 폴더",
+                root.join("Projects"),
+                "프로젝트",
+                "폴더별 main.md 기반 프로젝트 관리 폴더",
             ),
         ];
         for (id, role, path, label, purpose) in defaults {
+            let _ = fs::create_dir_all(&path);
             let _ = conn.execute(
                 "INSERT INTO base_folders (id, role, path, label, purpose, enabled) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
-                params![id, role, path, label, purpose],
+                params![id, role, path.to_string_lossy().to_string(), label, purpose],
             );
         }
-    }
-}
-
-fn seed_synced_file_hashes(conn: &Connection) {
-    // 기존 마이그레이션 완료된 카카오톡 백업 파일 해시 3종 시드 등록 (중복 재전송 방지)
-    let seeded_hashes = [
-        (
-            "70fff10a7a7ea94f690ba6ddfb3da67f157616534a9eb1c175ddedc64278971e",
-            "박재홍, 이소영, Jun 4",
-        ),
-        (
-            "c25ab6f5bda7ea7865d071398887f25793d6ca8b389de366ef13bd46cee8e5de",
-            "임현정",
-        ),
-        (
-            "a0b4ca7f25b8d715da5219bf7b3d252b7173a22a6341bf3d3f737e0114e99803",
-            "정서현",
-        ),
-    ];
-    for (fh, rname) in seeded_hashes {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at) VALUES (?1, ?2, '2026-10-30 07:15:00')",
-            params![fh, rname],
-        );
     }
 }
 

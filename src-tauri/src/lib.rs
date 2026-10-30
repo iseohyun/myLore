@@ -34,6 +34,9 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 mod util;
+mod paths;
+#[cfg(test)]
+mod paths_tests;
 mod models;
 mod state;
 mod settings;
@@ -47,6 +50,7 @@ mod gemini;
 mod mobile;
 
 pub(crate) use util::*;
+pub(crate) use paths::*;
 pub(crate) use models::*;
 pub(crate) use state::*;
 pub(crate) use settings::*;
@@ -61,6 +65,13 @@ pub(crate) use mobile::*;
 
 const _FRONTEND_DIST_INDEX_SYNC: &str = include_str!("../../dist/index.html");
 
+/// 테스트 바이너리 전용: tauri-build가 만든 Windows 리소스(Common Controls v6 매니페스트)를 링크합니다.
+/// 없으면 `cargo test` 실행 파일이 comctl32 v5를 로드하여 `TaskDialogIndirect` 진입점 누락으로 시작조차 하지 못합니다.
+/// (검색 경로는 build.rs에서 추가, 일반 bin 빌드에는 영향 없음)
+#[cfg(all(test, windows, target_env = "gnu"))]
+#[link(name = "resource", kind = "static", modifiers = "+whole-archive")]
+extern "C" {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cli_paths = extract_cli_md_paths();
@@ -69,15 +80,12 @@ pub fn run() {
         return;
     }
 
-    // 1번 Projects 볼트(C:\Users\iseoh\OneDrive\Projects\.myLore) 안에 메타 DB 및 템플릿을 통합 관리
-    let projects_vault_mylore = PathBuf::from(r"C:\Users\iseoh\OneDrive\Projects\.myLore");
-    let _ = fs::create_dir_all(&projects_vault_mylore);
-    let vault_db_path = projects_vault_mylore.join("mylore_meta.db");
-    let legacy_db_path = PathBuf::from(r"c:\git\myLore\.mylore\mylore_meta.db");
-    if !vault_db_path.exists() && legacy_db_path.exists() {
-        let _ = fs::copy(&legacy_db_path, &vault_db_path);
+    // 메타 DB는 OneDrive 같은 동기화 폴더가 아닌 PC 로컬(%APPDATA%\com.iseohyun.mylore)에 둡니다.
+    // 이전 버전의 OneDrive\Projects\.myLore\mylore_meta.db가 있으면 최초 1회 자동 이전합니다. (paths.rs)
+    let db_path = resolve_meta_db_path();
+    if let Some(parent) = db_path.parent() {
+        let _ = fs::create_dir_all(parent);
     }
-    let db_path = vault_db_path;
     if let Ok(conn) = open_db(&db_path) {
         let setting_path = resolve_projects_setting_json_path(&conn);
         if !setting_path.exists() {

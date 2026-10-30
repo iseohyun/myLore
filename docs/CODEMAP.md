@@ -61,11 +61,11 @@ flowchart LR
 동기화 라우트는 요청을 파싱해 `enqueue_sync_worker_job()`으로 큐에 넣고, 실제 디스크/DB 반영은 `sync_worker/jobs_*.rs`의 `handle_*_job`이 배치 트랜잭션 안에서 처리합니다.
 
 
-### `src-tauri/src/db.rs` (274줄)
+### `src-tauri/src/db.rs` (236줄)
 
 SQLite 메타 DB 연결, 스키마 생성/마이그레이션 및 `mobile_sync_meta` 키-값 헬퍼.
 
-- **함수**: `open_db`, `create_schema`, `apply_column_migrations`, `seed_default_meta_and_base_folders`, `seed_synced_file_hashes`, `get_meta_i64`, `set_meta_i64_max`
+- **함수**: `open_db`, `create_schema`, `apply_column_migrations`, `seed_default_meta_and_base_folders`, `get_meta_i64`, `set_meta_i64_max`
 - **전역 상태**: `DB_SCHEMA_INITIALIZED`, `LIFELOG_BACKFILLED_ONCE`
 
 ### `src-tauri/src/finance.rs` (293줄)
@@ -75,7 +75,7 @@ SQLite 메타 DB 연결, 스키마 생성/마이그레이션 및 `mobile_sync_me
 - **커맨드**: `get_all_finance_transactions`, `parse_notification_into_finance`, `import_finance_rows`
 - **함수**: `try_insert_finance_from_mobile_text`
 
-### `src-tauri/src/gemini/client.rs` (603줄)
+### `src-tauri/src/gemini/client.rs` (599줄)
 
 Gemini API 클라이언트: API 키/토큰 사용량 저장, 모델 폴백, 음성 → 텍스트 변환, 쿼터 상태.
 
@@ -89,13 +89,13 @@ Gemini API 클라이언트: API 키/토큰 사용량 저장, 모델 폴백, 음�
 - **함수**: `process_pending_call_transcriptions`, `spawn_call_transcript_retry_worker`
 - **전역 상태**: `IS_TRANSCRIPTION_RUNNING`
 
-### `src-tauri/src/lib.rs` (182줄)
+### `src-tauri/src/lib.rs` (190줄)
 
 myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `run`
 
-### `src-tauri/src/lifelog/backfill.rs` (532줄)
+### `src-tauri/src/lifelog/backfill.rs` (529줄)
 
 `mobile/*.md` 아카이브 → 라이프로그 DB 백필(재색인).
 
@@ -114,7 +114,7 @@ myLore Tauri 백엔드 크레이트 루트.
 - **커맨드**: `get_mobile_contacts_map`
 - **함수**: `normalize_phone_digits`, `load_mobile_contacts_map`, `resolve_contact_display`
 
-### `src-tauri/src/lifelog/kakao.rs` (450줄)
+### `src-tauri/src/lifelog/kakao.rs` (443줄)
 
 카카오톡 대화 마크다운: 가져오기, 병합 마이그레이션, 미디어 보강, 멀티파트 파싱.
 
@@ -127,7 +127,11 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `strip_multipart_prefix_if_present`, `clean_mms_and_multiline_body`, `is_voice_memo_or_watch_recording`, `parse_voice_recording_filename_meta`, `extract_clean_contact_name`, `parse_call_audio_filename_meta`, `normalize_script_lines_with_timestamps_and_clean_name`, `split_summary_and_transcript`
 
-### `src-tauri/src/lifelog/recordings.rs` (665줄)
+### `src-tauri/src/lifelog/parse_tests.rs` (232줄)
+
+`lifelog::parse` / `lifelog::contacts` 순수 함수 단위 테스트 (15개).
+
+### `src-tauri/src/lifelog/recordings.rs` (666줄)
 
 통화/음성 녹음 마크다운 작성, 라이프로그 DB 반영, 녹음 파일 탐색·재생 정보.
 
@@ -147,7 +151,7 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `process_samsung_health_sync_payload`
 
-### `src-tauri/src/mobile/http_server/mod.rs` (77줄)
+### `src-tauri/src/mobile/http_server/mod.rs` (75줄)
 
 모바일 동반 앱용 로컬 HTTP 서버(tiny_http, 포트 18443).
 
@@ -159,9 +163,9 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `handle_open_files`, `handle_status_and_watermarks`, `handle_batch_init`, `handle_pair_confirm`, `handle_check_hashes`
 
-### `src-tauri/src/mobile/http_server/routes_media.rs` (467줄)
+### `src-tauri/src/mobile/http_server/routes_media.rs` (462줄)
 
-동반 앱 HTTP 라우트: 통화 녹음/미디어/삼성 헬스 수신, 로컬 미디어 서빙, 정적 파일(fallback).
+동반 앱 HTTP 라우트: 통화 녹음/미디어/삼성 헬스 수신, 로컬 미디어 서빙, 정적 파일(Tauri `asset_resolver` 내장 에셋 fallback).
 
 - **함수**: `handle_sync_call_recordings`, `handle_sync_media`, `handle_sync_samsung_health`, `handle_local_media`, `handle_static_or_fallback`
 
@@ -171,12 +175,16 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `handle_sync_notifications`, `handle_sync_sms`, `handle_sync_call_logs`, `handle_sync_kakao_chats`, `handle_sync_contacts`, `handle_sync_app_usage`
 
-### `src-tauri/src/mobile/pairing.rs` (285줄)
+### `src-tauri/src/mobile/pairing.rs` (328줄)
 
-모바일 동반 앱 페어링: 로컬 IP 탐지, UDP 깨우기, 페어링 정보/설정 커맨드.
+모바일 동반 앱 페어링: 로컬 IP 탐지, 현재 연결된 Wi-Fi SSID 자동 탐지(`netsh wlan show interfaces`), UDP 깨우기, 페어링 정보/설정 커맨드.
 
 - **커맨드**: `send_mobile_udp_wake_broadcast`, `get_mobile_pairing_info`, `remove_paired_mobile_device`, `trigger_full_mobile_resync`, `update_mobile_pairing_config`
-- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `build_mobile_pairing_payload`
+- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `detect_current_wifi_ssids`, `parse_netsh_wlan_ssids`, `merge_ssids`, `build_mobile_pairing_payload`
+
+### `src-tauri/src/mobile/pairing_tests.rs` (41줄)
+
+`mobile::pairing` 순수 함수 단위 테스트 (3개).
 
 ### `src-tauri/src/mobile/progress.rs` (353줄)
 
@@ -187,14 +195,14 @@ myLore Tauri 백엔드 크레이트 루트.
 - **타입**: `MobileSyncSegment`, `MobileSyncStepSummary`, `MobileSyncProgressPayload`
 - **전역 상태**: `LIVE_SYNC_PROGRESS`, `SYNC_QUEUE_DEPTH`, `IS_WORKER_ACTIVE`, `LAST_PROGRESS_EMIT_MS`, `INITIAL_SYNC_CHECKED`, `LAST_APP_USAGE_DIGEST`
 
-### `src-tauri/src/mobile/storage.rs` (154줄)
+### `src-tauri/src/mobile/storage.rs` (148줄)
 
 모바일 아카이브 폴더(`mobile/*`) 경로·마크다운 append 및 인메모리 중복 방지 캐시.
 
 - **함수**: `get_archive_mobile_dir`, `append_lines_to_mobile_md_batch`, `append_line_to_mobile_md`, `reset_in_memory_sync_caches`, `mark_hash_synced_in_memory`, `is_hash_synced_in_memory`
 - **전역 상태**: `CACHED_DATA_BASE_PATH`, `MEM_LAST_KAKAO_TS`, `MEM_LAST_SMS_TS`, `MEM_LAST_CALL_TS`, `MEM_LAST_NOTI_TS`, `MEM_LAST_RECORDING_TS`, `MEM_LAST_HEALTH_TS`, `MEM_LAST_CONTACT_TS`, `MEM_LAST_USAGE_TS`, `PENDING_SYNCED_HASHES`
 
-### `src-tauri/src/mobile/sync_worker/jobs_files.rs` (223줄)
+### `src-tauri/src/mobile/sync_worker/jobs_files.rs` (217줄)
 
 동기화 워커 작업: 통화 녹음 / 미디어 파일 저장.
 
@@ -212,7 +220,7 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `handle_contacts_job`, `handle_app_usage_job`
 
-### `src-tauri/src/mobile/sync_worker/mod.rs` (344줄)
+### `src-tauri/src/mobile/sync_worker/mod.rs` (341줄)
 
 백그라운드 동기화 작업 큐(`SyncWorkerJob`)와 워커 스레드.
 
@@ -226,7 +234,17 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **타입**: `ScanProgressPayload`, `TrashedFileRecord`, `DetachedPreviewState`, `DetachedPreviewActionPayload`, `DetachedScrollPayload`, `BaseFolderConfig`, `FileNode`, `BacklinkItem`, `DocumentPayload`, `BatchScanSummary`, `LifelogMessage`, `FinanceTransaction`, `MediaInboxItem`, `CreateDocParams`, `SearchMatchItem`, `VaultTemplateItem`, `FinanceImportRow`, `FinanceImportSummary`, `KakaoImportResult`, `DailyLifelogResponse`, `PairedDeviceItem`, `MobilePairingPayload`, `GeminiApiKeyStatus`, `CallPlayInfoPayload`
 
-### `src-tauri/src/settings.rs` (244줄)
+### `src-tauri/src/paths.rs` (147줄)
+
+앱 경로 해석: 메타 DB(`%APPDATA%\com.iseohyun.mylore\mylore_meta.db`), 기본 베이스 폴더(`%USERPROFILE%\Documents\myLore\*`), 레거시 OneDrive DB 1회 `VACUUM INTO` 이전.
+
+- **함수**: `env_dir`, `app_data_dir`, `meta_db_path`, `default_user_root`, `default_data_base_dir`, `default_projects_base_dir`, `projects_base_path_string`, `data_base_path_string`, `legacy_meta_db_candidates`, `resolve_meta_db_path`, `migrate_meta_db`
+
+### `src-tauri/src/paths_tests.rs` (81줄)
+
+`paths` 단위 테스트: 레거시 메타 DB(WAL 포함) `VACUUM INTO` 이전 및 기본 경로 검증 (3개).
+
+### `src-tauri/src/settings.rs` (242줄)
 
 앱 설정(`setting.json`) 모델, 기본값 및 조회/저장 커맨드.
 
@@ -247,20 +265,21 @@ OS 연동: 탐색기, 네이티브 파일 대화상자, Chrome/구글 캘린더 
 - **커맨드**: `show_in_explorer`, `open_native_file_dialog`, `open_native_folder_dialog`, `open_in_chrome_app_mode`, `open_google_calendar_web`, `take_pending_cli_files`
 - **함수**: `extract_cli_md_paths`, `try_forward_to_existing_instance`
 
-### `src-tauri/src/util.rs` (128줄)
+### `src-tauri/src/util.rs` (145줄)
 
-공통 유틸리티 (Windows 프로세스 플래그, base64, URL 디코딩, 시간 변환, 파일명 정리).
+공통 유틸리티 (Windows 프로세스 플래그, `cached_regex!` 정규식 캐시 매크로, base64, URL 디코딩, 시간 변환, 파일명 정리).
 
+- **매크로**: `cached_regex!`
 - **함수**: `base64_encode`, `base64_decode`, `epoch_ms_to_local_date_time`, `sanitize_filename_stem`, `update_atomic_max_i64`, `url_decode_utf8`
 
-### `src-tauri/src/vault/documents.rs` (749줄)
+### `src-tauri/src/vault/documents.rs` (737줄)
 
 문서 읽기/저장/생성/이름변경, 파일 내 검색·치환, 템플릿, 역할 이동.
 
 - **커맨드**: `read_document`, `read_document_by_uuid`, `save_document`, `create_new_document`, `create_temp_memo`, `open_root_main_md`, `rename_current_document`, `search_in_files`, `replace_in_files`, `get_vault_templates`, `promote_to_project_folder`, `move_document_to_role`
 - **함수**: `build_document_payload`
 
-### `src-tauri/src/vault/markdown.rs` (210줄)
+### `src-tauri/src/vault/markdown.rs` (204줄)
 
 마크다운 YAML Frontmatter 파싱, UUID 주입, `.myLore` 템플릿 보장.
 
@@ -272,7 +291,7 @@ OS 연동: 탐색기, 네이티브 파일 대화상자, Chrome/구글 캘린더 
 
 - **커맨드**: `get_base_folders`, `save_base_folders`, `get_scan_progress`, `start_batch_uuid_scan`, `scan_and_inject_uuids`, `get_virtual_tree`
 
-### `src-tauri/src/vault/trash.rs` (135줄)
+### `src-tauri/src/vault/trash.rs` (136줄)
 
 Windows 휴지통 이동 및 휴지통 복원.
 
@@ -308,8 +327,8 @@ Windows 휴지통 이동 및 휴지통 복원.
 | 단축키 기본값 | `DEFAULT_KEYBINDINGS` | L137 |
 | 분리 미리보기 창 컴포넌트 | `function DetachedPreviewWindowView` | L196 |
 | 루트 컴포넌트 시작 / 상태 선언 | `export default function App` | L411~ |
-| 동기화 진행률 폴링 | `인메모리 진행 상태만 가볍게 모니터링` | L1705 |
-| 상단 헤더·메뉴 | `1. 상단 헤더` | L4263 |
+| 동기화 진행률 이벤트 리스너 | `listen<MobileSyncProgressPayload>('mobile-sync-progress'` | L1555 |
+| 상단 헤더·메뉴 | `1. 상단 헤더` | L4250 |
 | 문서 탭 바 | `다중 문서 탭 바` | L5233 |
 | 메인 바디 | `2. 메인 바디 영역` | L5387 |
 | 설정 탭 (QR, 통합 설정 표, Gemini 키) | `탭 1: ⚙️ 설정` | L5810 |

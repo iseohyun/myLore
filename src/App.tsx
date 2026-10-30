@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import * as XLSX from 'xlsx';
 import QRCode from 'qrcode';
 import {
   BaseFolderConfig,
@@ -44,7 +43,6 @@ import {
   getLifelogForDate,
   getMobileContactsMap,
   getMobilePairingInfo,
-  getMobileSyncProgressState,
   getScanProgress,
   getVaultTemplates,
   getVirtualTree,
@@ -672,7 +670,7 @@ export default function App() {
   const [mobilePairing, setMobilePairing] =
     useState<MobilePairingPayload | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
-  const [ssidInputText, setSsidInputText] = useState('iseohyun, seohyun5G');
+  const [ssidInputText, setSsidInputText] = useState('');
   const [geminiStatus, setGeminiStatus] =
     useState<GeminiApiKeyStatus | null>(null);
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
@@ -1561,6 +1559,13 @@ export default function App() {
             (event) => {
               const p = event.payload;
               setMobileSyncProgress(p);
+              // 실행 중 → 완료 전환 시 1회만 데이터 재조회 (폴링 시절 완료 감지 동작 유지)
+              const wasRunning = mobileSyncWasRunningRef.current;
+              mobileSyncWasRunningRef.current = p.isRunning;
+              if (wasRunning && !p.isRunning && p.isCompleted) {
+                void refreshAllLifelogMessages();
+                void refreshMobilePairingInfo();
+              }
               const curStep =
                 p.steps[p.currentStepIndex] || p.steps[p.steps.length - 1];
               if (p.isRunning && curStep) {
@@ -1701,24 +1706,9 @@ export default function App() {
     };
   }, []);
 
-  // 백그라운드 동기화 워커가 동작 중일 때 메인 프로그램은 인메모리 진행 상태만 가볍게 모니터링
-  useEffect(() => {
-    if (!mobileSyncProgress?.isRunning) return;
-    let cancelled = false;
-    const timer = setInterval(async () => {
-      const state = await getMobileSyncProgressState().catch(() => null);
-      if (cancelled || !state) return;
-      setMobileSyncProgress(state);
-      if (!state.isRunning && state.isCompleted) {
-        void refreshAllLifelogMessages();
-        void refreshMobilePairingInfo();
-      }
-    }, 600);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [mobileSyncProgress?.isRunning]);
+  // 동기화 진행률은 백엔드 `mobile-sync-progress` 이벤트(listen)로만 갱신합니다. (기존 600ms 폴링 제거)
+  // 실행 중 → 완료로 바뀌는 순간을 감지하기 위해 직전 isRunning 값을 보관합니다.
+  const mobileSyncWasRunningRef = useRef(false);
 
   // 선택된 문서의 날짜 또는 기본 날짜가 바뀔 때 라이프로그 갱신
   useEffect(() => {
@@ -4043,6 +4033,8 @@ export default function App() {
     if (!file) return;
     try {
       const data = await file.arrayBuffer();
+      // xlsx(약 400 KB)는 엑셀 업로드 시에만 필요하므로 지연 로딩하여 초기 번들 크기를 줄임
+      const XLSX = await import('xlsx');
       const workbook = XLSX.read(data, { type: 'array' });
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const jsonRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
@@ -5983,7 +5975,7 @@ export default function App() {
                                 }}
                                 value={ssidInputText}
                                 onChange={(e) => setSsidInputText(e.target.value)}
-                                placeholder="예: iseohyun, seohyun5G"
+                                placeholder="비워 두면 PC의 현재 Wi-Fi가 QR에 자동 포함 (예: MyHomeWiFi, MyHomeWiFi_5G)"
                               />
                               <button
                                 className="toolbar-btn primary"

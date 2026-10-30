@@ -10,12 +10,12 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 개인 지식 관리(마크다운 볼트, `mylore://` UUID 링크), 일기/구글 캘린더, 모바일 라이프로그(카톡·문자·통화·녹음·헬스), 가계부, Gemini 통화 녹음 스크립트화.
 안드로이드 동반 앱은 별도 저장소 `c:\git\myLoreSync`(Kotlin)이며, 로컬 HTTP(포트 18443)로 데이터를 보냅니다.
 
-## 2. 규모 (2026-10-30 기준)
+## 2. 규모 (2026-10-31 기준)
 
 | 영역 | 파일 | 줄 수 | 비고 |
 |---|---|---|---|
-| Rust 백엔드 | 40 | 약 11,600 | 파일당 최대 약 750줄 |
-| TSX/TS 프론트엔드 | 8 | 약 13,500 | ⚠️ `src/App.tsx` 하나가 **11,128줄 (약 43만 자)** |
+| Rust 백엔드 | 44 | 약 12,100 | 파일당 최대 약 740줄 (단위 테스트 3개 파일 포함) |
+| TSX/TS 프론트엔드 | 8 | 약 13,500 | ⚠️ `src/App.tsx` 하나가 **11,115줄 (약 43만 자)** |
 | CSS | 1 | 약 1,600 | `src/styles/app.css` |
 
 > [!WARNING]
@@ -29,12 +29,13 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
         ▼
 [Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 56개 등록)
         ├─ vault/      문서·스캔·마크다운·휴지통
-        ├─ lifelog/    연락처·파서·녹음·카톡·백필·조회
+        ├─ lifelog/    연락처·파서·녹음·카톡·백필·조회 (+ parse_tests.rs)
         ├─ gemini/     Gemini API 클라이언트·자동 스크립트화
-        ├─ mobile/     페어링·인증·저장소·진행률·헬스
+        ├─ mobile/     페어링(현재 Wi-Fi SSID 자동 탐지)·인증·저장소·진행률·헬스 (+ pairing_tests.rs)
         │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media
         │   └─ sync_worker/  큐·배치 루프(mod.rs) → jobs_messages / jobs_meta / jobs_files
-        ├─ settings.rs · window.rs · system.rs · finance.rs · util.rs
+        ├─ paths.rs    메타 DB(%APPDATA%\com.iseohyun.mylore)·기본 폴더 해석·레거시 DB 이전 (+ paths_tests.rs)
+        ├─ settings.rs · window.rs · system.rs · finance.rs · util.rs (cached_regex!)
         ├─ models.rs (공용 DTO) · state.rs (AppState)
         └─ db.rs       SQLite 연결·스키마·마이그레이션 (모든 모듈이 open_db 사용)
 ```
@@ -62,12 +63,11 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 ```powershell
 npm.cmd run build                          # tsc 타입 검사 + Vite 빌드 → dist/ (백엔드가 include_str!로 참조하므로 먼저 실행)
 cd src-tauri; cargo check                  # Rust 컴파일 검사 (기존 경고 2개: safe_stem, dev_name 미사용 필드)
+cd src-tauri; cargo test --lib             # 파서·페어링·경로 단위 테스트 (21 passed)
 cd src-tauri; cargo build                  # target/debug/mylore.exe (run-dev.bat에서 실행)
 ```
 
-## 7. 알려진 기술 부채 (수정 전 사용자 확인 필요)
+## 7. 알려진 기술 부채 및 다음 마일스톤 ([`docs/MILESTONE_PHASE2.md`](./docs/MILESTONE_PHASE2.md))
 
-- `src/App.tsx` 단일 컴포넌트 분리 (상태 97개, 인라인 스타일 392곳)
-- 개인 경로 하드코딩: `C:\Users\iseoh\OneDrive\...`, `c:\git\myLore\dist`, Wi-Fi 이름 `iseohyun`/`seohyun5G`
-- SQLite DB(WAL)가 OneDrive 폴더(`OneDrive\Projects\.myLore\mylore_meta.db`)에 있음 → `%APPDATA%`로 이전 검토
-- Gemini 호출이 `curl` 서브프로세스 + URL 쿼리에 API 키 포함
+- `src/App.tsx` 단일 컴포넌트 분리 (상태 97개, 인라인 스타일 392곳 — Step 2A~2D 4단계 분리 계획 수립 완료)
+- Gemini 호출 HTTP 클라이언트 전환 (`ureq` 3.5 + `native-tls-no-default` + `PlatformVerifier` 채택 예정)
