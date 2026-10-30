@@ -5997,6 +5997,22 @@ export default function App() {
                               >
                                 SSID 변경
                               </button>
+                              {mobilePairing.ssid && (
+                                <span
+                                  style={{
+                                    fontSize: '11px',
+                                    color: 'var(--text-secondary)',
+                                  }}
+                                >
+                                  📶 현재 QR 포함:{' '}
+                                  <strong>{mobilePairing.ssid}</strong> (
+                                  {mobilePairing.wifiAuth || 'WPA2'}
+                                  {mobilePairing.hasWifiPassword
+                                    ? ' · 접속 키 자동 포함됨'
+                                    : ' · 접속 키 없음'}
+                                  )
+                                </span>
+                              )}
                             </div>
                           </td>
                         </tr>

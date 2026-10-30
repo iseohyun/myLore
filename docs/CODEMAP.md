@@ -175,16 +175,16 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `handle_sync_notifications`, `handle_sync_sms`, `handle_sync_call_logs`, `handle_sync_kakao_chats`, `handle_sync_contacts`, `handle_sync_app_usage`
 
-### `src-tauri/src/mobile/pairing.rs` (328줄)
+### `src-tauri/src/mobile/pairing.rs` (413줄)
 
-모바일 동반 앱 페어링: 로컬 IP 탐지, 현재 연결된 Wi-Fi SSID 자동 탐지(`netsh wlan show interfaces`), UDP 깨우기, 페어링 정보/설정 커맨드.
+모바일 동반 앱 페어링: 로컬 IP 탐지, 현재 연결된 Wi-Fi SSID/비밀번호/인증방식 자동 탐지(`netsh wlan show interfaces`, `netsh wlan show profile ... key=clear`), UDP 깨우기, 페어링 정보/설정 커맨드.
 
 - **커맨드**: `send_mobile_udp_wake_broadcast`, `get_mobile_pairing_info`, `remove_paired_mobile_device`, `trigger_full_mobile_resync`, `update_mobile_pairing_config`
-- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `detect_current_wifi_ssids`, `parse_netsh_wlan_ssids`, `merge_ssids`, `build_mobile_pairing_payload`
+- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `detect_current_wifi_ssids`, `parse_netsh_wlan_ssids`, `merge_ssids`, `detect_wifi_profile_credentials`, `parse_netsh_wlan_profile_credentials`, `build_mobile_pairing_payload`
 
-### `src-tauri/src/mobile/pairing_tests.rs` (41줄)
+### `src-tauri/src/mobile/pairing_tests.rs` (78줄)
 
-`mobile::pairing` 순수 함수 단위 테스트 (3개).
+`mobile::pairing` 순수 함수 단위 테스트 (5개).
 
 ### `src-tauri/src/mobile/progress.rs` (353줄)
 

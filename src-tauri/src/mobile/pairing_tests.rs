@@ -39,3 +39,40 @@ fn merge_ssids_puts_current_first_without_duplicates() {
     );
     assert_eq!(merged, vec!["Office".to_string(), "Home".to_string()]);
 }
+
+#[test]
+fn parse_netsh_profile_extracts_key_and_prefers_wpa2_on_transition_mode() {
+    let sample = r#"
+Security settings
+-----------------
+    Authentication         : WPA3-Personal
+    Cipher                 : GCMP-256
+    Authentication         : WPA2-Personal
+    Cipher                 : CCMP
+    Security key           : Present
+    Key Content            : MySecretPass!23
+"#;
+    let (pw, auth) = parse_netsh_wlan_profile_credentials(sample);
+    assert_eq!(pw, "MySecretPass!23");
+    assert_eq!(auth, "WPA2");
+}
+
+#[test]
+fn parse_netsh_profile_handles_wpa3_only_and_korean_labels() {
+    let sample_wpa3 = r#"
+보안 설정
+-----------------
+    인증                   : WPA3-Personal
+    암호화                 : GCMP-256
+    보안 키                : 있음
+    키 콘텐츠              : kor_pass_9999
+"#;
+    let (pw, auth) = parse_netsh_wlan_profile_credentials(sample_wpa3);
+    assert_eq!(pw, "kor_pass_9999");
+    assert_eq!(auth, "WPA3");
+
+    let sample_open = "    Authentication : Open\n    Security key : Absent\n";
+    let (pw_open, auth_open) = parse_netsh_wlan_profile_credentials(sample_open);
+    assert_eq!(pw_open, "");
+    assert_eq!(auth_open, "OPEN");
+}

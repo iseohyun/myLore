@@ -280,6 +280,12 @@ pub struct MobilePairingPayload {
     pub ips: Vec<String>,
     pub port: u16,
     pub token: String,
+    #[serde(default)]
+    pub ssid: String,
+    #[serde(default)]
+    pub wifi_auth: String,
+    #[serde(default)]
+    pub has_wifi_password: bool,
     pub ssids: Vec<String>,
     pub paired_devices: Vec<PairedDeviceItem>,
     pub last_noti_ts: i64,

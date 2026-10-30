@@ -109,6 +109,78 @@ pub(crate) fn merge_ssids(current: Vec<String>, saved: Vec<String>) -> Vec<Strin
     out
 }
 
+/// 지정한 Wi-Fi 프로필(`ssid`)의 비밀번호(`Key Content`)와 인증 방식(`WPA2` / `WPA3` / `OPEN`)을
+/// 관리자 권한(UAC) 없이 `netsh wlan show profile name="<SSID>" key=clear`로 조회합니다.
+///
+/// SSID에 공백이나 특수문자가 있어도 안전하도록 환경 변수(`MYLORE_WIFI_SSID`)로 전달합니다.
+pub(crate) fn detect_wifi_profile_credentials(ssid: &str) -> (String, String) {
+    let trimmed = ssid.trim();
+    if trimmed.is_empty() {
+        return (String::new(), "WPA2".to_string());
+    }
+    let output = Command::new("cmd")
+        .args([
+            "/C",
+            "chcp 65001 >nul && netsh wlan show profile name=\"%MYLORE_WIFI_SSID%\" key=clear",
+        ])
+        .env("MYLORE_WIFI_SSID", trimmed)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match output {
+        Ok(out) => parse_netsh_wlan_profile_credentials(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => (String::new(), "WPA2".to_string()),
+    }
+}
+
+/// `netsh wlan show profile ... key=clear` 출력에서 `(비밀번호, 인증방식)`을 추출합니다.
+///
+/// - WPA2/WPA3 혼합(Transition) 공유기는 프로필에 `WPA3-Personal`과 `WPA2-Personal`이 함께 나타납니다.
+///   안드로이드 `Settings.ACTION_WIFI_ADD_NETWORKS`와의 최상위 호환성을 위해 `WPA2`가 포함되어 있으면 `"WPA2"`를 우선 반환하고,
+///   순수 WPA3 전용일 때만 `"WPA3"`를 반환합니다.
+pub(crate) fn parse_netsh_wlan_profile_credentials(text: &str) -> (String, String) {
+    let mut key_content = String::new();
+    let mut saw_wpa2 = false;
+    let mut saw_wpa3 = false;
+    let mut saw_open = false;
+
+    for line in text.lines() {
+        let t = line.trim();
+        let Some((raw_label, raw_val)) = t.split_once(':') else {
+            continue;
+        };
+        let label = raw_label.trim();
+        let val = raw_val.trim();
+        if val.is_empty() {
+            continue;
+        }
+
+        if label.eq_ignore_ascii_case("Key Content") || label == "키 콘텐츠" {
+            key_content = val.to_string();
+        } else if label.eq_ignore_ascii_case("Authentication") || label == "인증" {
+            let upper = val.to_ascii_uppercase();
+            if upper.contains("WPA2") || (upper.contains("WPA") && !upper.contains("WPA3")) {
+                saw_wpa2 = true;
+            } else if upper.contains("WPA3") || upper.contains("SAE") {
+                saw_wpa3 = true;
+            } else if upper.contains("OPEN") || val.contains("개방") {
+                saw_open = true;
+            }
+        }
+    }
+
+    let auth = if saw_wpa2 {
+        "WPA2"
+    } else if saw_wpa3 {
+        "WPA3"
+    } else if saw_open {
+        "OPEN"
+    } else {
+        "WPA2"
+    };
+
+    (key_content, auth.to_string())
+}
+
 pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePairingPayload, String> {
     let pc_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "MYLORE-DESKTOP".to_string());
     let ips = detect_local_ipv4_addresses();
@@ -138,8 +210,15 @@ pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePa
         .ok()
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
-    // PC가 지금 연결된 Wi-Fi를 맨 앞에 넣고, 사용자가 저장한 SSID를 뒤에 붙입니다. (QR 스캔 시 동반 앱이 이 SSID를 허용 목록에 추가)
+    // PC가 지금 연결된 Wi-Fi를 맨 앞에 넣고, 사용자가 저장한 SSID를 뒤에 붙입니다.
     let ssids = merge_ssids(detect_current_wifi_ssids(), saved_ssids);
+    let primary_ssid = ssids.first().cloned().unwrap_or_default();
+    let (wifi_pw, wifi_auth) = if !primary_ssid.is_empty() {
+        detect_wifi_profile_credentials(&primary_ssid)
+    } else {
+        (String::new(), "WPA2".to_string())
+    };
+    let has_wifi_password = !wifi_pw.is_empty();
 
     let created_at = chrono::Local::now().timestamp_millis();
     let qr_json_obj = serde_json::json!({
@@ -148,6 +227,9 @@ pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePa
         "ips": ips,
         "port": port,
         "token": token,
+        "ssid": primary_ssid,
+        "wifi_pw": wifi_pw,
+        "wifi_auth": wifi_auth,
         "ssids": ssids,
         "created_at": created_at
     });
@@ -186,6 +268,9 @@ pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePa
         ips,
         port,
         token,
+        ssid: primary_ssid,
+        wifi_auth,
+        has_wifi_password,
         ssids,
         paired_devices,
         last_noti_ts,

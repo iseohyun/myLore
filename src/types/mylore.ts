@@ -95,6 +95,9 @@ export interface MobilePairingPayload {
   ips: string[];
   port: number;
   token: string;
+  ssid?: string;
+  wifiAuth?: string;
+  hasWifiPassword?: boolean;
   ssids: string[];
   pairedDevices: PairedDeviceItem[];
   lastNotiTs: number;
