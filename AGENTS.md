@@ -14,24 +14,25 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 
 | 영역 | 파일 | 줄 수 | 비고 |
 |---|---|---|---|
-| Rust 백엔드 | 44 | 약 12,100 | 파일당 최대 약 740줄 (단위 테스트 3개 파일 포함) |
-| TSX/TS 프론트엔드 | 8 | 약 13,500 | ⚠️ `src/App.tsx` 하나가 **11,115줄 (약 43만 자)** |
+| Rust 백엔드 | 44 | 약 12,100 | 파일당 최대 약 740줄 (단위 테스트 23개 / 3개 파일 포함) |
+| TSX/TS 프론트엔드 | 40 | 약 14,100 | `App.tsx` (267줄) + 컴포넌트 24개(`src/components/**`) + 훅 9개(`src/hooks/**`) — 모든 파일 ≤ 840줄 |
 | CSS | 1 | 약 1,600 | `src/styles/app.css` |
-
-> [!WARNING]
-> `src/App.tsx`는 한 번에 읽을 수 없는 크기입니다. **파일 전체를 읽지 말고** `docs/CODEMAP.md` 3.1절의 검색 키워드로 해당 구간만 찾아 읽으세요.
 
 ## 3. 진입점과 데이터 흐름
 
 ```
-[UI] src/main.tsx → src/App.tsx
+[UI] src/main.tsx → src/App.tsx (267줄: DetachedPreviewWindowView 분기 + MainApp 조합)
+        ├─ hooks/      useFileTree · useLifelogAudio · useDocuments · useDocumentActions ·
+        │              useLifelogAndFinance · useEditorCommands · useDetachedPreviewAndSettings ·
+        │              useAppStartup · useKeybindings
+        ├─ components/ header/ · dashboards/ · editor/ · sidebar/ · footer/ · modals/ · window/
         │  invoke("snake_case_command")      (래퍼: src/services/tauriClient.ts, 타입: src/types/mylore.ts)
         ▼
 [Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 56개 등록)
         ├─ vault/      문서·스캔·마크다운·휴지통
         ├─ lifelog/    연락처·파서·녹음·카톡·백필·조회 (+ parse_tests.rs)
-        ├─ gemini/     Gemini API 클라이언트·자동 스크립트화
-        ├─ mobile/     페어링(현재 Wi-Fi SSID 자동 탐지)·인증·저장소·진행률·헬스 (+ pairing_tests.rs)
+        ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화
+        ├─ mobile/     페어링(현재 Wi-Fi SSID·비밀번호 자동 탐지)·인증·저장소·진행률·헬스 (+ pairing_tests.rs)
         │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media
         │   └─ sync_worker/  큐·배치 루프(mod.rs) → jobs_messages / jobs_meta / jobs_files
         ├─ paths.rs    메타 DB(%APPDATA%\com.iseohyun.mylore)·기본 폴더 해석·레거시 DB 이전 (+ paths_tests.rs)
@@ -63,11 +64,12 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 ```powershell
 npm.cmd run build                          # tsc 타입 검사 + Vite 빌드 → dist/ (백엔드가 include_str!로 참조하므로 먼저 실행)
 cd src-tauri; cargo check                  # Rust 컴파일 검사 (기존 경고 2개: safe_stem, dev_name 미사용 필드)
-cd src-tauri; cargo test --lib             # 파서·페어링·경로 단위 테스트 (21 passed)
+cd src-tauri; cargo test --lib             # 파서·페어링·경로 단위 테스트 (23 passed)
 cd src-tauri; cargo build                  # target/debug/mylore.exe (run-dev.bat에서 실행)
 ```
 
-## 7. 알려진 기술 부채 및 다음 마일스톤 ([`docs/MILESTONE_PHASE2.md`](./docs/MILESTONE_PHASE2.md))
+## 7. 완료된 리팩터링 마일스톤 ([`docs/MILESTONE_PHASE2.md`](./docs/MILESTONE_PHASE2.md))
 
-- `src/App.tsx` 단일 컴포넌트 분리 (상태 97개, 인라인 스타일 392곳 — Step 2A~2D 4단계 분리 계획 수립 완료)
-- Gemini 호출 HTTP 클라이언트 전환 (`ureq` 3.5 + `native-tls-no-default` + `PlatformVerifier` 채택 예정)
+- **Phase 0 & 1**: 백엔드 `src-tauri/src/lib.rs`(11,222줄)를 35개 도메인 모듈로 분리
+- **Phase 1.5**: 개인 경로 제거, 메타 DB `%APPDATA%` 이전, 정규식 캐시(`cached_regex!`), `xlsx` 지연 로딩, 600ms 폴링 제거, 단위 테스트 23개 추가, QR Wi-Fi 자격 증명 자동 포함
+- **Phase 2**: Gemini 호출 `ureq` (`native-tls-no-default` + `PlatformVerifier` + `x-goog-api-key` 헤더) 전환 및 프론트엔드 `src/App.tsx`(11,115줄 → 267줄) 24개 컴포넌트·9개 커스텀 훅 분리 완료

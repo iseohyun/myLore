@@ -1,19 +1,22 @@
-# myLore 리팩터링 마일스톤 (Phase 2 & Gemini HTTP 클라이언트 전환 계획)
+# myLore 리팩터링 마일스톤 (Phase 2 & Gemini HTTP 클라이언트 전환 — 완료 기록)
 
-> 이 문서는 백엔드 도메인 모듈 분리(Phase 1) 및 경로·DB·정규식·단위 테스트·지연 로딩 개선 완료 이후 진행할 **다음 마일스톤(Gemini HTTP 클라이언트 전환 및 `src/App.tsx` 단계별 분리 계획)**을 기록합니다.
+> 이 문서는 백엔드 도메인 모듈 분리(Phase 1) 및 경로·DB·정규식·단위 테스트·지연 로딩 개선(Phase 1.5)에 이어 **완료된 Phase 2 마일스톤(Gemini `ureq` HTTP 클라이언트 전환 및 `src/App.tsx` 4단계 모듈 분리)** 결과를 기록합니다.
 
 ---
 
-## 1. 완료된 선행 마일스톤 요약
+## 1. 완료된 마일스톤 요약
 
 - **Phase 0 & 1 (`30e7881`)**: `src-tauri/src/lib.rs`(11,222줄)를 35개 도메인 모듈 파일(각 750줄 이하)로 분리, `AGENTS.md` 및 `docs/CODEMAP.md` 작성
-- **Phase 1.5 (경로·DB·성능·테스트 개선)**:
-  1. 개인 경로(`C:\Users\iseoh\...`, `c:\git\myLore\dist`) 및 하드코딩된 Wi-Fi SSID 제거, 현재 연결된 Wi-Fi SSID 자동 탐지(`netsh wlan show interfaces`) 및 Tauri 내장 `asset_resolver` 적용
+- **Phase 1.5 (`a3e80c8`, `a11a4f7`)**:
+  1. 개인 경로(`C:\Users\iseoh\...`, `c:\git\myLore\dist`) 및 하드코딩된 Wi-Fi SSID 제거, 현재 연결된 Wi-Fi SSID·비밀번호·인증방식 자동 탐지(`netsh wlan show interfaces`, `netsh wlan show profile ... key=clear`) 및 Tauri 내장 `asset_resolver` 적용 (`myLoreSync` `0387190`에서 `ACTION_WIFI_ADD_NETWORKS` 영구 등록 + 다중 IP 폴링 재시도 결합)
   2. SQLite 메타 DB를 `%APPDATA%\com.iseohyun.mylore\mylore_meta.db`로 이동 (기존 OneDrive DB 존재 시 `VACUUM INTO`로 1회 무손실 자동 마이그레이션)
   3. `cached_regex!` 매크로(`std::sync::LazyLock<Regex>`) 도입 및 36곳 정규식 1회 컴파일 캐시 적용
-  4. `xlsx` 동적 `import('xlsx')` 지연 로딩 적용 (초기 메인 번들 `720.66 kB → 384.98 kB` 감소)
+  4. `xlsx` 동적 `import('xlsx')` 지연 로딩 적용 (초기 메인 번들 `720.66 kB → 391.96 kB` 감소)
   5. 모바일 동기화 진행률 600ms 폴링 제거 및 `mobile-sync-progress` Tauri `listen` 이벤트로 일원화
-  6. `lifelog::parse`, `lifelog::contacts`, `mobile::pairing`, `paths` 단위 테스트 21개 추가 (`cargo test --lib` 통과)
+  6. `lifelog::parse`, `lifelog::contacts`, `mobile::pairing`, `paths` 단위 테스트 23개 추가 (`cargo test --lib` 전원 통과)
+- **Phase 2 (본 마일스톤 완료)**:
+  1. **Gemini API 클라이언트 `ureq` 전환 (추천안 B-3 적용 완료)**: `src-tauri/src/gemini/client.rs`에서 `curl.exe` 서브프로세스 및 `?key=` URL 쿼리 파라미터, `%TEMP%` 임시 요청 파일 생성을 제거하고, `ureq 3.5` (`native-tls-no-default` + `PlatformVerifier` + `x-goog-api-key` 헤더 + 인메모리 요청 바디 전송)로 전환 완료.
+  2. **`src/App.tsx` 4단계 분리 (Step 2A ~ 2D 완료)**: 기존 **11,115줄** 단일 파일이던 `src/App.tsx`를 **267줄**(-97.6%)로 축소하고, **24개 UI 컴포넌트(`src/components/**`)**와 **9개 커스텀 훅(`src/hooks/**`)**으로 분리 완료 (모든 추출 파일 ≤ 708줄, Rules of Hooks 위반 수정, 모바일 라이프로그 4,000건 필터링 `useMemo` 적용, 전역 단축키 `useRef` 리스너 최적화, 미사용 데드 코드 제거).
 
 ---
 

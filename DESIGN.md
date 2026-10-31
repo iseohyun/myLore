@@ -3,8 +3,8 @@ uuid: "b5ea41cc-ac17-4da8-9b35-fef23b0a8540"
 ---
 # myLore 프로젝트 설계 문서 (Project Design Document)
 
-> **문서 상태**: v1.3 — 모바일 라이프로그(카톡 `Chats` 백업·문자·사진) 및 금융(실시간 알림+엑셀 대조) 통합 아키텍처 반영  
-> **최종 수정일**: 2026-10-28
+> **문서 상태**: v2.0 — 백엔드 35개 도메인 모듈 + 프론트엔드 24개 컴포넌트·9개 훅 모듈화, `%APPDATA%` 메타 DB, QR Wi-Fi 자동 연결 및 Gemini `ureq` 반영  
+> **최종 수정일**: 2026-10-31
 
 ---
 
@@ -23,10 +23,10 @@ uuid: "b5ea41cc-ac17-4da8-9b35-fef23b0a8540"
   - 커스텀 프로토콜(`mylore://doc/{uuid}`, `mylore://media/{uuid}`) 스트리밍 처리
   - Google Calendar API OAuth2 인증 및 양방향 동기화 엔진
   - 모바일 동반 앱과 로컬 통신(Wi-Fi HTTP/mDNS)하는 내장 수신 서버 및 엑셀(`.xlsx`/`.csv`)/카톡 대화 파서, 사진 EXIF 분석기
-- **데스크톱 프론트엔드 UI (`TypeScript` + `React` + `CodeMirror 6`)**:
-  - 마크다운 에디터/뷰어 (YAML 기본 숨김 및 단축키 토글, 서브미션 Auto-Format)
-  - 상단 표준 메뉴 바 + VS Code 스타일 명령어 팔레트 + 우측 접이식 사이드바
-  - 일기 작성 보조용 일자별 라이프로그 타임라인 & 독립된 가계부/메시지 통합 조회 뷰
+- **데스크톱 프론트엔드 UI (`TypeScript` + `React`)**:
+  - 마크다운 에디터(`<textarea>`) & 실시간 분할 뷰어(`MarkdownPreviewRenderer` / 전용 독립 뷰어 창 `DetachedPreviewWindowView`)
+  - 상단 표준 메뉴 바(`MenuBar`) + VS Code 스타일 명령어 팔레트(`CommandPaletteModal`) + 우측 접이식 사이드바(`RightSidebar`)
+  - 일기 작성 보조용 일자별 라이프로그 타임라인 & 독립된 가계부/메시지 통합 조회 대시보드 (`DiaryDashboard`, `LifelogDashboard`, `FinanceDashboard`, `SettingsDashboard`)
 - **개발 정책**:
   - **CSS 스타일링**: 단일 중앙 집중형 CSS (`src/styles/app.css`)
   - **버전 관리**: 정식 시맨틱 버전 (`SemVer`, 예: `v0.1.0`)
@@ -80,7 +80,7 @@ uuid: "b5ea41cc-ac17-4da8-9b35-fef23b0a8540"
 - *(참고: `개발 & 커리어`, `사색`, `수영` 등 향후 아티클 집필이나 영상 제작의 소스로 활용될 자료조사 문서들은 단순 아카이브가 아닌 **`프로젝트(Projects)`** 영역에서 관리합니다.)*
 
 ### 5.2 일기 (`Diary`)
-- **대상 경로 예시**: `C:\Users\iseoh\OneDrive\Diary`
+- **기본 경로**: `%USERPROFILE%\Documents\myLore\Diary` (또는 사용자가 지정한 `Diary` 역할 폴더)
 - **파일 단위**: 하루 다중 파일 지원 (`YYYY-MM-DD {제목}.md`)
 - **구글 캘린더 웹 연동 프로세스**:
   1. 본 앱 **달력 아이콘 클릭** → 지정 브라우저(Chrome 등)에서 구글 캘린더 웹(`https://calendar.google.com/calendar/u/0/r/month/YYYY/M/D?pli=1`) 오픈
@@ -90,7 +90,7 @@ uuid: "b5ea41cc-ac17-4da8-9b35-fef23b0a8540"
   5. 본 앱에서 **업로드(Push)** → 수정된 `.md` 내용을 구글 캘린더로 업데이트
 
 ### 5.3 프로젝트 (`Projects`) — 폴더별 `main.md` 구조 및 앱 내 문서 분류 워크플로우
-- **대상 경로 예시**: `C:\Users\iseoh\OneDrive\Projects` (및 아티클/영상 제작용 자료조사 폴더)
+- **기본 경로**: `%USERPROFILE%\Documents\myLore\Projects` (또는 사용자가 지정한 `Projects` 역할 폴더)
 - **루트 및 폴더별 `main.md` 기본 구성**:
   - 프로젝트 루트의 **`Projects/main.md`**가 전체 프로젝트 현황과 내일 할 과제를 살피는 기본 뷰어 문서가 됩니다. *(별도의 전용 대시보드 UI 제작은 보류)*
   - 모든 개별 프로젝트는 **`Projects/{프로젝트명}/`** 하위 폴더로 구성하며, 각 폴더 안의 **`main.md`**를 해당 프로젝트의 기본 대표 문서로 사용합니다.
@@ -100,16 +100,16 @@ uuid: "b5ea41cc-ac17-4da8-9b35-fef23b0a8540"
 - **확장 체크박스 및 Auto-Format**:
   - `main.md` 내에서 `- [!]`(오늘/내일 할 핵심 과제), `- [/]`(진행중), `- [ ]`(대기), `- [-]`(보류), `- [x]`(완료) 기호를 사용하며, Auto-Format 실행 시 관심도가 높은 항목을 상단으로, 낮은 항목을 하단으로 자동 재배치합니다.
 
-### 5.4 1번 `Projects` 볼트 내 `.myLore` (템플릿 및 메타데이터) 통합 관리
-- **저장 위치**: `C:\Users\iseoh\OneDrive\Projects\.myLore\`
+### 5.4 `Projects\.myLore` (템플릿·설정) 및 `%APPDATA%` 메타데이터 DB 분리 관리
+- **템플릿 및 앱 설정 저장 위치**: `{Projects 베이스 폴더}\.myLore\`
   - **템플릿 디렉토리 (`Projects\.myLore\templates\`)**:
     - `project_main.md`: 새 프로젝트 폴더(`{프로젝트명}/main.md`) 생성 시 적용되는 기본 템플릿 (요약 표, 구분선 `---`, 서브 미션 체크리스트 포함)
     - `article_research.md`: 개발 커리어, 사색, 수영 등 향후 아티클 집필 및 영상 제작 소스를 체계적으로 정리하기 위한 기획/자료조사 전용 템플릿
     - `diary_default.md`: 구글 캘린더 연동 일기(`Diary`) 작성용 기본 템플릿
-  - **볼트 메타데이터 DB (`Projects\.myLore\mylore_meta.db`)**:
-    - 소스코드 폴더 외부의 1번 프로젝트 볼트 내부에 함께 배치하여, OneDrive를 통해 템플릿과 파일 UUID/메타데이터가 모든 PC 환경에서 자동으로 백업·동기화되도록 구성합니다.
   - **일반 문서 스캔 자동 제외 및 에디터 직접 편집 지원**:
     - `.myLore` 폴더 내부의 시스템/템플릿 파일들은 일괄 UUID 스캔 시 일반 문서와 섞이지 않도록 자동 제외되며, 앱 내 **[📋 템플릿 (.myLore)]** 메뉴를 통해 언제든 현재 문서에 삽입하거나 템플릿 원본(`.md`)을 에디터로 열어 자유롭게 수정할 수 있습니다.
+- **로컬 SQLite 메타데이터 DB (`%APPDATA%\com.iseohyun.mylore\mylore_meta.db`)**:
+  - 클라우드 동기화 폴더(OneDrive 등) 내부에서 SQLite WAL(`-wal`, `-shm`) 파일 잠금 충돌이 발생하는 것을 방지하기 위해, OS 표준 로컬 앱 데이터 경로(`%APPDATA%\com.iseohyun.mylore\mylore_meta.db`, `src-tauri/src/paths.rs`)에 배치합니다. (레거시 `Projects\.myLore\mylore_meta.db` 존재 시 최초 1회 `VACUUM INTO`로 무손실 자동 이전)
 
 ---
 

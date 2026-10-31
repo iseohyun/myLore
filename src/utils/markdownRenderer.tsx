@@ -1,3 +1,7 @@
+/**
+ * @file markdownRenderer.tsx
+ * @description CommonMark + GFM(표·체크리스트·수평선) + Raw HTML 패스스루 마크다운 뷰어(`MarkdownPreviewRenderer`) 및 스크롤/오디오 오프셋 헬퍼.
+ */
 import React from 'react';
 import { TaskPriorityCode } from '../types/mylore';
 

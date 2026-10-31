@@ -135,6 +135,23 @@ pub(crate) fn mask_gemini_api_key(raw: &str) -> String {
     }
 }
 
+static GEMINI_HTTP_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+    use std::time::Duration;
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(Duration::from_secs(5)))
+        .timeout_global(Some(Duration::from_secs(180)))
+        .tls_config(
+            TlsConfig::builder()
+                .provider(TlsProvider::NativeTls)
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .into()
+});
+
 pub(crate) fn extract_recommended_model_from_error(err_msg: &str) -> Option<String> {
     let marker = "use models/";
     if let Some(idx) = err_msg.find(marker) {
@@ -152,25 +169,13 @@ pub(crate) fn extract_recommended_model_from_error(err_msg: &str) -> Option<Stri
 }
 
 pub(crate) fn discover_available_gemini_model(api_key: &str) -> Option<String> {
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-        api_key.trim()
-    );
-    #[cfg(target_os = "windows")]
-    let output_res = {
-        use std::os::windows::process::CommandExt;
-        Command::new("curl.exe")
-            .args(["-4", "--connect-timeout", "5", "-s", "-S", &url])
-            .creation_flags(0x08000000)
-            .output()
-    };
-    #[cfg(not(target_os = "windows"))]
-    let output_res = Command::new("curl")
-        .args(["-4", "--connect-timeout", "5", "-s", "-S", &url])
-        .output();
-
-    let output = output_res.ok()?;
-    let resp_str = String::from_utf8_lossy(&output.stdout);
+    let url = "https://generativelanguage.googleapis.com/v1beta/models";
+    let resp = GEMINI_HTTP_AGENT
+        .get(url)
+        .header("x-goog-api-key", api_key.trim())
+        .call()
+        .ok()?;
+    let resp_str = resp.into_body().read_to_string().ok()?;
     let jv: serde_json::Value = serde_json::from_str(&resp_str).ok()?;
     let models = jv.get("models")?.as_array()?;
 
@@ -209,56 +214,24 @@ pub(crate) fn discover_available_gemini_model(api_key: &str) -> Option<String> {
 pub(crate) fn call_gemini_generate_content_single_model(
     api_key: &str,
     model_name: &str,
-    data_arg: &str,
+    body_bytes: &[u8],
 ) -> Result<String, String> {
     let clean_model = model_name.trim().trim_start_matches("models/");
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        clean_model,
-        api_key.trim()
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        clean_model
     );
 
-    #[cfg(target_os = "windows")]
-    let output_res = {
-        use std::os::windows::process::CommandExt;
-        Command::new("curl.exe")
-            .args([
-                "-4",
-                "--connect-timeout",
-                "5",
-                "-s",
-                "-S",
-                "-X",
-                "POST",
-                &url,
-                "-H",
-                "Content-Type: application/json",
-                "--data-binary",
-                data_arg,
-            ])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .output()
-    };
-    #[cfg(not(target_os = "windows"))]
-    let output_res = Command::new("curl")
-        .args([
-            "-4",
-            "--connect-timeout",
-            "5",
-            "-s",
-            "-S",
-            "-X",
-            "POST",
-            &url,
-            "-H",
-            "Content-Type: application/json",
-            "--data-binary",
-            data_arg,
-        ])
-        .output();
-
-    let output = output_res.map_err(|e| format!("curl 실행 오류: {}", e))?;
-    let resp_str = String::from_utf8_lossy(&output.stdout).to_string();
+    let resp = GEMINI_HTTP_AGENT
+        .post(&url)
+        .header("x-goog-api-key", api_key.trim())
+        .header("Content-Type", "application/json")
+        .send(body_bytes)
+        .map_err(|e| format!("Gemini HTTP 요청 오류: {}", e))?;
+    let resp_str = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| format!("Gemini 응답 읽기 실패: {}", e))?;
     let jv: serde_json::Value = serde_json::from_str(&resp_str)
         .map_err(|_| format!("Gemini 응답 파싱 실패: {}", resp_str))?;
 
@@ -316,11 +289,7 @@ pub(crate) fn call_gemini_generate_content_with_model(
     api_key: &str,
     request_json: &serde_json::Value,
 ) -> Result<(String, String), String> {
-    let temp_file =
-        std::env::temp_dir().join(format!("mylore_gemini_req_{}.json", Uuid::new_v4()));
     let body_bytes = serde_json::to_vec(request_json).map_err(|e| e.to_string())?;
-    fs::write(&temp_file, &body_bytes).map_err(|e| format!("임시 파일 생성 실패: {}", e))?;
-    let data_arg = format!("@{}", temp_file.to_string_lossy());
 
     let (_, _, saved_model) = read_local_gemini_api_key_full();
     let mut candidates: Vec<String> = Vec::new();
@@ -349,16 +318,14 @@ pub(crate) fn call_gemini_generate_content_with_model(
         }
         tried.push(model.clone());
 
-        match call_gemini_generate_content_single_model(api_key, &model, &data_arg) {
+        match call_gemini_generate_content_single_model(api_key, &model, &body_bytes) {
             Ok(text) => {
-                let _ = fs::remove_file(&temp_file);
                 return Ok((text, model));
             }
             Err(err_msg) => {
                 last_err = err_msg.clone();
                 // API 키 자체가 잘못된 경우에는 즉시 중단
                 if err_msg.contains("API key not valid") || err_msg.contains("API_KEY_INVALID") {
-                    let _ = fs::remove_file(&temp_file);
                     return Err(format!("Gemini API 오류: {}", err_msg));
                 }
                 // 구글 에러 메시지가 권장 모델을 안내한 경우(예: Please update your code to use models/gemini-3.8-flash) 즉시 후보 최우선 추가
@@ -375,15 +342,13 @@ pub(crate) fn call_gemini_generate_content_with_model(
     if let Some(discovered) = discover_available_gemini_model(api_key) {
         if !tried.contains(&discovered) {
             if let Ok(text) =
-                call_gemini_generate_content_single_model(api_key, &discovered, &data_arg)
+                call_gemini_generate_content_single_model(api_key, &discovered, &body_bytes)
             {
-                let _ = fs::remove_file(&temp_file);
                 return Ok((text, discovered));
             }
         }
     }
 
-    let _ = fs::remove_file(&temp_file);
     Err(format!("Gemini API 오류: {}", last_err))
 }
 

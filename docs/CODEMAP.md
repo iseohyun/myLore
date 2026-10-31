@@ -75,10 +75,11 @@ SQLite 메타 DB 연결, 스키마 생성/마이그레이션 및 `mobile_sync_me
 - **커맨드**: `get_all_finance_transactions`, `parse_notification_into_finance`, `import_finance_rows`
 - **함수**: `try_insert_finance_from_mobile_text`
 
-### `src-tauri/src/gemini/client.rs` (599줄)
+### `src-tauri/src/gemini/client.rs` (590줄)
 
-Gemini API 클라이언트: API 키/토큰 사용량 저장, 모델 폴백, 음성 → 텍스트 변환, 쿼터 상태.
+Gemini API 클라이언트: `ureq` (`native-tls-no-default` + `PlatformVerifier` + `x-goog-api-key` 헤더) 인메모리 HTTP 호출, API 키/토큰 사용량 저장, 모델 폴백, 음성 → 텍스트 변환, 쿼터 상태.
 
+- **전역 상태**: `GEMINI_HTTP_AGENT`
 - **함수**: `resolve_local_appdata_gemini_key_path`, `read_local_gemini_api_key_full`, `read_local_gemini_api_key`, `resolve_local_appdata_gemini_usage_path`, `record_gemini_token_usage`, `read_gemini_token_usage`, `is_auto_call_transcription_enabled`, `mask_gemini_api_key`, `extract_recommended_model_from_error`, `discover_available_gemini_model`, `call_gemini_generate_content_single_model`, `call_gemini_generate_content_with_model`, `call_gemini_generate_content`, `transcribe_call_audio_with_gemini`, `transcribe_voice_recording_with_gemini`, `record_gemini_quota_exhaustion`, `clear_gemini_quota_exhaustion`, `build_gemini_api_key_status_with_conn`
 
 ### `src-tauri/src/gemini/transcription.rs` (707줄)
@@ -307,37 +308,60 @@ Windows 휴지통 이동 및 휴지통 복원.
 
 ## 3. 프론트엔드 (`src/`)
 
-| 파일 | 줄 수 | 역할 |
-|---|---|---|
-| `main.tsx` | 9 | React 진입점 |
-| `App.tsx` | ~11,100 | **단일 루트 컴포넌트** (상태 97개, 메뉴·탭·에디터·사이드바·대쉬보드·모달 전부 포함). 분리 예정(Phase 2) |
-| `services/tauriClient.ts` | ~830 | Rust 커맨드 `invoke()` 래퍼 58개 + 브라우저(비 Tauri) 환경 폴백 |
-| `types/mylore.ts` | ~270 | 백엔드 DTO와 1:1로 대응하는 TS 타입 |
-| `utils/markdownRenderer.tsx` | ~840 | `MarkdownPreviewRenderer`, `renderInlineMarkdown`, `scrollPreviewPaneToSourceLine`, `parseAudioOffsetSecondsFromLine` |
-| `utils/markdownAutoFormat.ts` | ~260 | YAML 분리/결합, 할 일(Task) 추출·상태 변경, TOC 추출, `GOOGLE_CALENDAR_COLOR_MAP` |
-| `styles/app.css` | ~1,400 | 전역 스타일 (디자인 토큰·레이아웃·컴포넌트) |
-| `version.ts` | 2 | 버전 상수 |
+### 3.0 코어 진입점 및 유틸리티 (8개 파일)
 
-### 3.1 `App.tsx` 내부 지도 (검색 키워드 기준)
+| 파일 | 줄 수 | 역할 및 주요 Export 심볼 |
+|---|---:|---|
+| `main.tsx` | 13 | React 진입점 (`#root` 마운트) |
+| `App.tsx` | 271 | 최상위 진입점(`App`: 독립 뷰어 분기) 및 9개 커스텀 훅·24개 하위 컴포넌트를 조합하는 레이아웃 오케스트레이터(`MainApp`). 루트 상태: `openTabs`, `activeTabPath`, `activeTab`, `currentDoc`, `yamlText`, `bodyText`, `isDirty`, `setBodyText`, `setYamlText`, `viewMode`, `rightSidebarOpen`, `rightTab`, `menuBarExpanded`, `activeMenu`, `activeSubMenu`, `paletteMode`, `paletteQuery`, `isFolderPaneFocused`, `contextMenu`, `statusMessage`, `editorRef`, `previewPaneRef`, `lastEditorKeyPressMsRef` |
+| `services/tauriClient.ts` | 742 | Rust 커맨드 `invoke()` 래퍼 56개 + 비 Tauri 폴백 (`DEFAULT_BASE_FOLDERS`, `getBaseFolders`, `saveBaseFolders`, `startBatchUuidScan`, `getScanProgress`, `scanAndInjectUuids`, `getVirtualTree`, `readDocument`, `readDocumentByUuid`, `saveDocument`, `createNewDocument`, `createTempMemo`, `openRootMainMd`, `showInExplorer`, `renameCurrentDocument`, `toggleWindowFullscreen`, `searchInFiles`, `replaceInFiles`, `openNativeFileDialog`, `openNativeFolderDialog`, `takePendingCliFiles`, `getVaultTemplates`, `openInChromeAppMode`, `promoteToProjectFolder`, `moveDocumentToRole`, `openExternalUrlInChrome`, `openGoogleCalendarWeb`, `getLifelogForDate`, `getAllFinanceTransactions`, `importFinanceRows`, `parseNotificationIntoFinance`, `importKakaoChatText`, `trashDocument`, `restoreTrashedDocument`, `toggleDetachedPreviewWindow`, `syncDetachedPreviewState`, `getDetachedPreviewState`, `emitDetachedPreviewAction`, `getAppSettings`, `saveAppSettings`, `syncDetachedPreviewScroll`, `getMobilePairingInfo`, `updateMobilePairingConfig`, `removePairedMobileDevice`, `triggerFullMobileResync`, `triggerSequentialMobileSync`, `getMobileSyncProgressState`, `getAllLifelogMessages`, `getMobileContactsMap`, `openLifelogItemDocument`, `retryPendingCallTranscriptions`, `setAutoCallTranscription`, `getCallRecordingPlayInfo`, `transcribeSingleCallItem`, `sendMobileUdpWakeBroadcast`, `getGeminiApiKeyStatus`, `saveAndVerifyGeminiApiKey`, `transcribeLocalAudioFile`) |
+| `utils/appearancePresets.ts` | 175 | 글꼴·테마 프리셋 및 CSS 변수 적용 (`FONT_FAMILY_PRESETS`, `THEME_PRESETS`, `DEFAULT_APP_SETTINGS`, `applyAppSettingsToDocument` — `tauriClient.ts`에서도 re-export) |
+| `types/mylore.ts` | 374 | 백엔드 DTO 및 프론트엔드 UI 공용 타입 (`ViewMode`, `RightSidebarTab`, `PaletteMode`, `FolderSectionMode`, `ArchiveTreeFolder`, `KeybindingConfig`, `ContextMenuState`, `MobileContextMenuState`, `DirectCallPlayInfo`, `CommandPaletteItem` 등) |
+| `utils/markdownRenderer.tsx` | 893 | `MarkdownPreviewRenderer`, `renderInlineMarkdown`, `scrollPreviewPaneToSourceLine`, `parseAudioOffsetSecondsFromLine` |
+| `utils/markdownAutoFormat.ts` | 265 | `splitYamlFrontmatter`, `combineYamlAndBody`, `extractTasksFromBody`, `autoFormatMarkdownTasks`, `updateTaskStatusInBody`, `extractTocHeadings`, `GOOGLE_CALENDAR_COLOR_MAP` |
+| `styles/app.css` | 1,615 | 단일 중앙 집중형 CSS (파일 상단 L1~20에 14개 섹션별 줄 번호 목차 수록) |
 
-줄 번호는 바뀔 수 있으니 **따옴표 안의 주석 문자열로 검색**하세요.
+### 3.1 도메인 커스텀 훅 및 반환 심볼 색인 (`src/hooks/` — 9개 파일)
 
-| 영역 | 검색 키워드 | 대략 위치 |
-|---|---|---|
-| 단축키 기본값 | `DEFAULT_KEYBINDINGS` | L137 |
-| 분리 미리보기 창 컴포넌트 | `function DetachedPreviewWindowView` | L196 |
-| 루트 컴포넌트 시작 / 상태 선언 | `export default function App` | L411~ |
-| 동기화 진행률 이벤트 리스너 | `listen<MobileSyncProgressPayload>('mobile-sync-progress'` | L1555 |
-| 상단 헤더·메뉴 | `1. 상단 헤더` | L4250 |
-| 문서 탭 바 | `다중 문서 탭 바` | L5233 |
-| 메인 바디 | `2. 메인 바디 영역` | L5387 |
-| 설정 탭 (QR, 통합 설정 표, Gemini 키) | `탭 1: ⚙️ 설정` | L5810 |
-| 휴대폰 데이터 탭 | `탭 2: 📱 휴대폰데이터` | L6406 |
-| 금융 테이블 | `필터링된 금융 거래내역 테이블` | L6846 |
-| 글꼴/테마/에디터/베이스 폴더 설정 | `2. 글꼴(기본/제목/표)` ~ `6. 베이스 폴더 설정` | L7003~L7912 |
-| 찾기/바꾸기, YAML 드로어 | `문서 내 인라인 찾기/바꾸기 바`, `YAML 메타데이터 편집 드로어` | L8063, L8131 |
-| 마크다운 에디터 & 뷰어 | `마크다운 에디터 & 라이브 뷰어` | L8286 |
-| 우측 사이드바 | `3. 우측 접이식 사이드바` | L8802 |
-| 하단 상태 표시줄 / 오디오 재생바 | `4. 하단 상태 표시줄` | L9908 |
-| 컨텍스트 메뉴 | `5. 우클릭 컨텍스트 메뉴` | L10056 |
-| 모달 (팔레트·새 일정·도움말·줄 이동·베이스 폴더·프로젝트·템플릿) | `6. 명령어 팔레트` ~ `13. 볼트 템플릿 관리 모달` | L10312~ |
+> `App.tsx`에서 `const ctx = { ...baseCtx, ...tree, ...audio, ...docs, ...docActions, ...lifelog, ...editorCmds, ...previewSettings, ...kb }` 형태로 병합되므로, 특정 상태나 핸들러를 찾을 때는 아래 표의 **반환 심볼(Return Keys)**에서 바로 해당 훅 파일을 찾으세요.
+
+| 파일 | 줄 수 | 역할 | 반환 심볼 (Return Keys: State · Ref · Memo · Handler) |
+|---|---:|---|---|
+| `hooks/useFileTree.ts` | 437 | 가상 파일 트리 조회, 프로젝트/아카이브/Git 트리 구성, 이번 주 일기 및 달력 셀 계산 | **State**: `baseFolders`, `fileTree`, `treeFilter`, `sectionModes`, `openArchiveFolders`, `expandedArchiveMore`, `openProjectFolders`, `subDocFilter`, `subDocViewStyle`, `calendarYearMonth`<br>**Memo/Fn**: `refreshTree`, `flattenedFiles`, `diaryFilesSorted`, `currentWeekRange`, `isTopPriorityProjectNode`, `isThisWeekDiaryNode`, `archiveRootTree`, `projectRootTree`, `gitRootTree`, `currentProjectSubDocs`, `calendarDays` |
+| `hooks/useLifelogAudio.ts` | 306 | 통화 녹음 오디오 플레이어 상태, `[00:00:00]` 스크립트 큐 파싱 및 양방향 타임라인 동기화 | **State/Ref**: `directCallPlayInfo`, `activeAudioLineIndex`, `callAudioRef`, `pendingSeekSecondsRef`<br>**Memo/Fn**: `currentDocMobileSource`, `isCurrentDocMobileLifelog`, `isCurrentDocSms`, `isCurrentDocCall`, `isMobileDataSidebarMode`, `loadCallAudioIntoStatusBar`, `audioScriptCues`, `handleAudioTimeUpdate`, `handleSeekAudioTime` |
+| `hooks/useDocuments.ts` | 545 | 열린 문서 탭(MRU), 자동 저장(1.2s 디바운스), 문서 열기/저장/새 메모/네이티브 다이얼로그 | **State/Ref**: `tabAccessHistory`, `tabAccessHistoryRef`, `isSessionRestoredRef`, `docTabsBarRef`, `editHistoryRef`, `editHistoryIdxRef`, `isNavigatingEditHistoryRef`, `isYamlVisible`, `autoSaveEnabled`, `scanProgress`<br>**Fn**: `recordEditPosition`, `applyLoadedDocument`, `openCliFilesInEditorMode`, `buildVirtualDashboardTab`, `openDashboardTab`, `openDocumentByNode`, `closeTab`, `handleSaveCurrentDoc`, `handleAutoFormatTasks`, `handleRunBatchUuidScan`, `handleCreateTempMemo`, `handleOpenNativeFile`, `handleOpenNativeFolder` |
+| `hooks/useDocumentActions.ts` | 312 | 문서 이름 변경(`F2`), 새 문서/일정 생성, 프로젝트 승격, 역할 폴더 이동, 휴지통 이동/복구 | **State**: `trashHistory`, `renameModalOpen`, `renameTitleInput`, `newDocModalOpen`, `newDocRole`, `newDocTitle`, `newDocDate`, `newDocCalendar`, `newDocLocation`, `newDocTemplate`, `vaultTemplates`, `templateModalOpen`, `calendarModalOpen`, `promoteModalOpen`, `promoteProjectName`<br>**Fn**: `handleOpenRenameDocModal`, `handleRenameCurrentDocSubmit`, `handleTrashDocument`, `handleRestoreTrashedDocument`, `handleCreateNewDocSubmit`, `handlePromoteToProject`, `handleMoveRole` |
+| `hooks/useLifelogAndFinance.ts` | 666 | 모바일 페어링/QR 생성, 연락처 이름 해석, Gemini API 키 검증, 가계부 조회 및 엑셀(`xlsx` 동적 import) 업로드 | **State/Ref**: `selectedDate`, `dailyMessages`, `dailyTransactions`, `allTransactions`, `reconcileResultMsg`, `mobilePairing`, `qrDataUrl`, `ssidInputText`, `geminiStatus`, `geminiKeyInput`, `isVerifyingGemini`, `awaitingClipboardKey`, `isTranscribingSingleCall`, `lifelogDashboardTab`, `mobileSidebarTab`, `allLifelogMessages`, `mobilePersonFilter`, `mobileSourceFilter`, `mobileSyncProgress`, `financeSubTab`, `mobileContextMenu`, `contactsMap`, `smsRawEditMode`, `isRetryingCalls`, `selectedLifelogMsgId`, `smsBubbleScrollRef`, `excelInputRef`<br>**Fn**: `resolveContactName`, `isLifelogMessageMatchingCurrentDoc`, `refreshAllLifelogMessages`, `refreshMobilePairingInfo`, `loadLifelogForDate`, `refreshFinanceData`, `handleSelectLifelogSidebarItem`, `tryRegisterGeminiKeyString`, `handleExcelUpload` |
+| `hooks/useEditorCommands.ts` | 572 | 에디터 편집/선택 명령, 편집점 히스토리(`Alt+←/→`), 괄호/북마크/일기 이동, 전체 파일 검색 | **State/Memo**: `findBarMode`, `docFindQuery`, `docReplaceText`, `globalSearchQuery`, `globalReplaceText`, `globalReplaceMode`, `globalSearchResults`, `activeSearchIdx`, `bookmarks`, `bookmarkIdx`, `gotoLineModalOpen`, `gotoLineInput`, `tocHeadings`<br>**Fn**: `handleEditorUndo`, `handleEditorRedo`, `handleEditorCut`, `handleEditorCopy`, `handleEditorPaste`, `handleSelectAll`, `handleMoveLine`, `handleAddCursorVertical`, `handleSwitchTabCycle`, `handleMoveEditPoint`, `handleJumpToMatchingBracket`, `handleBookmarkJumpOrToggle`, `handleGotoRootMainMd`, `handleGotoDiary`, `executeGlobalSearch`, `handleJumpSearchMatch`, `handleListSelectPrevOrNext`, `insertIntoBody` |
+| `hooks/useDetachedPreviewAndSettings.ts` | 397 | 전용 독립 뷰어 창(`BroadcastChannel` 동기화), 스크롤 동기화, F11 뷰어 토글, 앱 설정/테마 저장 | **State/Ref**: `appSettings`, `detachedPreviewOpen`, `preDetachedViewModeRef`<br>**Fn**: `handleOpenGoogleCalendar`, `handleSyncAndOpenGoogleCalendar`, `handleRunProgramPlaceholder`, `buildDetachedPreviewPayload`, `handleUpdateAppSettings`, `handleApplyThemePreset`, `handleEditorScroll`, `handleSelectDocViewMode`, `handleToggleDetachedPreview`, `handleToggleF11Viewer`, `handleToggleFullscreen` |
+| `hooks/useAppStartup.ts` | 355 | 초기 앱 설정/폴더/세션 복원 및 Tauri 실시간 이벤트(`uuid-scan-progress`, `cli-open-files`, `mobile-sync-*`) 구독 | 반환값 없음 (초기화 및 이벤트 리스너 등록 전용 사이드이펙트 훅) |
+| `hooks/useKeybindings.ts` | 643 | 전역 단축키 설정/녹음, `useRef` 기반 전역 `keydown`/`keyup` 리스너, 명령어 팔레트 항목 구성 | **State/Memo**: `shortcutsModalOpen`, `helpSearchQuery`, `recordingShortcutTarget`, `altPressed`, `keybindings`, `filteredKeybindings`, `commandItems`<br>**Fn/Const**: `getShortcutLabel`, `DEFAULT_KEYBINDINGS`, `KEYBINDINGS_STORAGE_KEY` |
+
+### 3.2 UI 컴포넌트 (`src/components/` — 24개 파일)
+
+| 영역 | 파일 | 줄 수 | 역할 |
+|---|---|---:|---|
+| **독립 창** | `components/window/DetachedPreviewWindowView.tsx` | 241 | 전용 독립 뷰어 창(`?detachedPreview=1`) 및 `DETACHED_PREVIEW_CHANNEL` |
+| **상단 헤더** | `components/header/AppHeader.tsx` | 136 | 상단 헤더 컨테이너 (햄버거 버튼 + `MenuBar` + `DocTabsBar` + 우측 퀵 버튼) |
+| | `components/header/MenuBar.tsx` | 666 | 상단 드롭다운 메뉴바 (파일/편집/선택/보기/이동/실행/대쉬보드) |
+| | `components/header/DocTabsBar.tsx` | 94 | 다중 문서/대쉬보드 열린 탭 바 (`.doc-tabs-bar`) |
+| **대쉬보드** | `components/dashboards/DiaryDashboard.tsx` | 130 | 일정(다이어리) 캘린더 대쉬보드 (`F9`) |
+| | `components/dashboards/FinanceDashboard.tsx` | 257 | 가계부/금융 대쉬보드 및 엑셀 대조 (`F8`) |
+| | `components/dashboards/SyncProgressCard.tsx` | 255 | 모바일 동기화 진행률 카드 (단계별 스킵/신규 집계) |
+| | `components/dashboards/LifelogDashboard.tsx` | 230 | 라이프로그 대쉬보드 컨테이너 (`F7`) |
+| | `components/dashboards/LifelogSettingsTab.tsx` | 647 | 라이프로그 대쉬보드 — QR 페어링(Wi-Fi 자동 연결 포함)·SSID·Gemini API 키 설정 탭 |
+| | `components/dashboards/LifelogMobileDataTab.tsx` | 310 | 라이프로그 대쉬보드 — 휴대폰 수집 데이터 테이블 탭 |
+| | `components/dashboards/SettingsDashboard.tsx` | 674 | 설정 대쉬보드 컨테이너 및 4대 베이스 폴더 경로 관리 |
+| | `components/dashboards/SettingsAppearanceSection.tsx` | 637 | 설정 대쉬보드 — 테마 프리셋·글꼴·크기·색상·F11 뷰어 설정 섹션 |
+| **에디터** | `components/editor/DocumentWorkspace.tsx` | 464 | 인라인 찾기/바꾸기 바, YAML 편집기, 마크다운 에디터/프리뷰 분할 워크스페이스 |
+| | `components/editor/SmsBubbleView.tsx` | 246 | 문자(SMS) 말풍선 대화형 뷰어(`SmsBubbleView`) 및 원문/대화형 전환 헤더(`SmsHeaderBar`) |
+| | `components/editor/ProjectSubDocsPanel.tsx` | 206 | 프로젝트 `main.md` 하위 문서(Sub-MD) 카드/테이블 패널 |
+| **우측 사이드바** | `components/sidebar/RightSidebar.tsx` | 386 | 우측 사이드바 컨테이너 (폴더 트리 / 전체 검색·바꾸기 / 목차(TOC) / 일자별 라이프로그 / 모바일 6탭) |
+| | `components/sidebar/FileTreePanel.tsx` | 712 | 우측 사이드바 폴더 트리 (프로젝트/이번주 일기/아카이브/Git 계층형 트리 렌더링) |
+| | `components/sidebar/MobileLifelogSidebar.tsx` | 596 | 우측 사이드바 모바일 라이프로그 6탭 뷰 (`useMemo` 최적화 적용) |
+| **하단 상태바** | `components/footer/StatusBar.tsx` | 188 | 하단 상태 표시줄, 통화 녹음 오디오 플레이어, UUID 스캔 진행률 바 |
+| **모달·메뉴** | `components/modals/ContextMenus.tsx` | 333 | 파일 트리/탭 우클릭 메뉴 및 모바일 라이프로그 우클릭 컨텍스트 메뉴 |
+| | `components/modals/CommandPaletteModal.tsx` | 103 | 명령어 팔레트(`Ctrl+Shift+P`) 및 빠른 파일 열기(`Ctrl+P`) 모달 |
+| | `components/modals/CalendarNewDocModal.tsx` | 199 | 달력 기반 새 일정 생성 모달 |
+| | `components/modals/ShortcutsHelpModal.tsx` | 218 | `F1` 단축키 도움말 및 단축키 녹음/초기화 모달 |
+| | `components/modals/DocumentModals.tsx` | 364 | 문서 제목 변경(`F2`), 줄 이동(`Ctrl+G`), 새 프로젝트, 프로젝트 승격, 볼트 템플릿 모달 |

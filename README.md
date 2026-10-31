@@ -31,9 +31,11 @@ Tauri v2 (`Rust` + `React/TypeScript` + `SQLite`) 기반의 개인 지식 관리
 ```
 myLore/
 ├─ src/                          # 프론트엔드 (React + TypeScript)
-│  ├─ App.tsx                    # 루트 컴포넌트 (메뉴·탭·에디터·사이드바·대쉬보드·모달)
+│  ├─ App.tsx                    # 최상위 진입점 (267줄: 독립 뷰어 분기 + MainApp 조합)
+│  ├─ components/                # 도메인별 UI 컴포넌트 24개 (header, dashboards, editor, sidebar, footer, modals, window)
+│  ├─ hooks/                     # 도메인 커스텀 훅 9개 (useDocuments, useFileTree, useKeybindings 등)
 │  ├─ services/tauriClient.ts    # Rust 커맨드 invoke() 래퍼
-│  ├─ types/mylore.ts            # 백엔드 DTO 대응 타입
+│  ├─ types/mylore.ts            # 백엔드 DTO 및 UI 상태 공용 타입
 │  ├─ utils/                     # 마크다운 렌더러 / 자동 서식
 │  └─ styles/app.css             # 단일 중앙 집중형 CSS
 ├─ src-tauri/src/                # 백엔드 (Rust, Tauri v2)
@@ -43,11 +45,11 @@ myLore/
 │  ├─ db.rs                      # SQLite 연결·스키마·마이그레이션·시드
 │  ├─ vault/                     # markdown, scan, documents, trash
 │  ├─ lifelog/                   # contacts, parse, recordings, kakao, backfill, commands
-│  ├─ gemini/                    # client(API·모델 폴백·쿼터), transcription(자동 스크립트화)
-│  ├─ mobile/                    # pairing, auth, storage, progress, health
+│  ├─ gemini/                    # client(ureq API·모델 폴백·쿼터), transcription(자동 스크립트화)
+│  ├─ mobile/                    # pairing(Wi-Fi SSID·PW 자동 탐지), auth, storage, progress, health
 │  │  ├─ http_server/            # mod.rs(URL 라우팅) + routes_core / routes_sync / routes_media
 │  │  └─ sync_worker/            # mod.rs(큐·배치 루프) + jobs_messages / jobs_meta / jobs_files
-│  ├─ finance.rs / window.rs / system.rs / util.rs
+│  ├─ finance.rs / window.rs / system.rs / util.rs / paths.rs
 │  └─ main.rs
 └─ docs/CODEMAP.md               # 코드 지도
 ```

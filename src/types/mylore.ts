@@ -1,3 +1,7 @@
+/**
+ * @file mylore.ts
+ * @description Rust 백엔드 DTO(`src-tauri/src/models.rs`, `settings.rs`)와 1:1 대응하는 인터페이스 및 프론트엔드 UI 공용 타입 정의.
+ */
 export type BaseFolderRole = 'data' | 'diary' | 'projects' | 'git';
 
 export interface BaseFolderConfig {
@@ -302,6 +306,69 @@ export interface MobileSyncProgressPayload {
   queuedJobs?: number;
   steps: MobileSyncStepSummary[];
 }
+
+export type ViewMode =
+  | 'split'
+  | 'editor'
+  | 'preview'
+  | 'dashboard_projects'
+  | 'dashboard_diary'
+  | 'dashboard_finance'
+  | 'dashboard_lifelog'
+  | 'dashboard_settings';
+
+export type RightSidebarTab = 'tree' | 'search' | 'toc' | 'backlinks' | 'lifelog';
+export type PaletteMode = 'closed' | 'files' | 'commands';
+export type FolderSectionMode = 'open' | 'summary' | 'closed';
+
+export interface ArchiveTreeFolder {
+  name: string;
+  pathKey: string;
+  folders: ArchiveTreeFolder[];
+  files: FileNode[];
+}
+
+export interface KeybindingConfig {
+  id: string;
+  category: string;
+  label: string;
+  shortcut: string;
+  secondaryShortcut: string;
+  condition: string;
+}
+
+export interface ContextMenuState {
+  x: number;
+  y: number;
+  targetPath: string;
+  targetUuid?: string;
+  targetName: string;
+}
+
+export interface MobileContextMenuState {
+  x: number;
+  y: number;
+  personName: string;
+  sourceKey: LifelogSourceType;
+  sourceLabel: string;
+  messageItem: LifelogMessage;
+}
+
+export interface DirectCallPlayInfo {
+  audioUrl: string;
+  fullPath: string;
+  fileName: string;
+  contactDisplay: string;
+  autoPlay?: boolean;
+}
+
+export interface CommandPaletteItem {
+  id: string;
+  label: string;
+  shortcut: string;
+  action: () => void;
+}
+
 
 
 

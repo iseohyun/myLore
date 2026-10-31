@@ -1,3 +1,7 @@
+/**
+ * @file markdownAutoFormat.ts
+ * @description 마크다운 YAML Frontmatter 분리/결합, 할 일(Task) 우선순위 자동 정렬, 헤딩 목차(TOC) 추출 및 구글 캘린더 색상 맵.
+ */
 import { ParsedTaskItem, TaskPriorityCode, TocHeading } from '../types/mylore';
 
 export interface SplitMarkdownResult {
