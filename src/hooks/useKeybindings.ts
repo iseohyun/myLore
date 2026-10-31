@@ -16,7 +16,7 @@ import {
 } from '../types/mylore';
 import { getVaultTemplates } from '../services/tauriClient';
 
-export const KEYBINDINGS_STORAGE_KEY = 'mylore_keybindings_v7';
+export const KEYBINDINGS_STORAGE_KEY = 'mylore_keybindings_v10';
 
 export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'open_shortcuts', category: 'Function', label: '단축키 설정', shortcut: 'F1', secondaryShortcut: '', condition: '전역' },
@@ -61,9 +61,11 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'view_detached_preview', category: '보기', label: '전용 독립 뷰어 창 모드', shortcut: '', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'toggle_fullscreen', category: '보기', label: '전체 화면', shortcut: 'Shift+F11', secondaryShortcut: '', condition: '전역' },
   { id: 'command_palette', category: '보기', label: '명령어 팔레트', shortcut: 'Ctrl+Shift+P', secondaryShortcut: '', condition: '전역' },
-  { id: 'quick_open', category: '보기', label: '빠른 문서 열기', shortcut: 'Ctrl+P', secondaryShortcut: 'Ctrl+E', condition: '전역' },
   { id: 'toggle_sidebar', category: '보기', label: '우측 사이드바 접기/펼치기', shortcut: 'Ctrl+B', secondaryShortcut: '', condition: '전역' },
-  { id: 'toggle_yaml', category: '보기', label: 'YAML 메타데이터 편집 토글', shortcut: 'Ctrl+;', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'sidebar_toc', category: '보기', label: '문서 내 목차(TOC) 사이드바 열기', shortcut: 'Ctrl+1', secondaryShortcut: '', condition: '전역' },
+  { id: 'sidebar_backlinks', category: '보기', label: '양방향 백링크 사이드바 열기', shortcut: 'Ctrl+2', secondaryShortcut: '', condition: '전역' },
+  { id: 'toggle_yaml', category: '보기', label: 'YAML 메타데이터 편집 토글', shortcut: 'Ctrl+=', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'toggle_log_terminal', category: '대쉬보드', label: '로그 대쉬보드 열기', shortcut: 'Ctrl+`', secondaryShortcut: '', condition: '전역' },
   { id: 'next_file', category: '이동', label: '다음 파일로 이동', shortcut: 'Ctrl+Tab', secondaryShortcut: 'Ctrl+PageDown', condition: '다중 탭 열람 시' },
   { id: 'prev_file', category: '이동', label: '이전 파일로 이동', shortcut: 'Ctrl+Shift+Tab', secondaryShortcut: 'Ctrl+PageUp', condition: '다중 탭 열람 시' },
   { id: 'next_edit_pos', category: '이동', label: '다음 편집점으로 이동', shortcut: 'Alt+ArrowRight', secondaryShortcut: '', condition: '편집모드에서' },
@@ -102,7 +104,7 @@ export interface UseKeybindingsParams {
   handleRunBatchUuidScan: () => Promise<void> | void;
   handleGotoRootMainMd: () => Promise<void> | void;
   openDashboardTab: (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings'
+    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
   ) => void;
   handleSyncAndOpenGoogleCalendar: () => Promise<void> | void;
   handleRunProgramPlaceholder: () => void;
@@ -133,6 +135,7 @@ export interface UseKeybindingsParams {
   handleGotoDiary: (mode: 'latest' | 'prev' | 'next') => Promise<void> | void;
   setVaultTemplates: React.Dispatch<React.SetStateAction<VaultTemplateItem[]>>;
   setTemplateModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setLogTerminalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   appSettings: MyLoreAppSettings;
 }
 
@@ -145,14 +148,36 @@ export function useKeybindings(params: UseKeybindingsParams) {
   } | null>(null);
   const [altPressed, setAltPressed] = useState(false);
   const [keybindings, setKeybindings] = useState<KeybindingConfig[]>(() => {
-    const saved = localStorage.getItem(KEYBINDINGS_STORAGE_KEY);
+    const saved =
+      localStorage.getItem(KEYBINDINGS_STORAGE_KEY) ||
+      localStorage.getItem('mylore_keybindings_v9') ||
+      localStorage.getItem('mylore_keybindings_v8') ||
+      localStorage.getItem('mylore_keybindings_v7');
     if (!saved) return DEFAULT_KEYBINDINGS;
     try {
       const parsed: KeybindingConfig[] = JSON.parse(saved);
-      const missing = DEFAULT_KEYBINDINGS.filter(
-        (def) => !parsed.some((p) => p.id === def.id)
-      );
-      return missing.length > 0 ? [...parsed, ...missing] : parsed;
+      const merged = DEFAULT_KEYBINDINGS.map((def) => {
+        const found = parsed.find((p) => p.id === def.id);
+        if (!found) return def;
+        if (def.id === 'toggle_log_terminal') {
+          return {
+            ...def,
+            shortcut: found.shortcut || 'Ctrl+`',
+            secondaryShortcut: found.secondaryShortcut || '',
+          };
+        }
+        if (def.id === 'toggle_yaml') {
+          return {
+            ...def,
+            shortcut:
+              !found.shortcut || found.shortcut === 'Ctrl+;'
+                ? 'Ctrl+='
+                : found.shortcut,
+          };
+        }
+        return found;
+      });
+      return merged;
     } catch {
       return DEFAULT_KEYBINDINGS;
     }
@@ -191,7 +216,15 @@ export function useKeybindings(params: UseKeybindingsParams) {
       if (e.ctrlKey) parts.push('Ctrl');
       if (e.altKey) parts.push('Alt');
       if (e.shiftKey) parts.push('Shift');
-      if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+      const isBackquoteKey =
+        e.code === 'Backquote' ||
+        e.key === '`' ||
+        e.key === '~' ||
+        e.key === '₩' ||
+        e.keyCode === 192;
+      if (isBackquoteKey) {
+        parts.push('`');
+      } else if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
         const k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
         parts.push(k);
       }
@@ -346,7 +379,8 @@ export function useKeybindings(params: UseKeybindingsParams) {
         }
       } else if (matchKb('open_file')) {
         e.preventDefault();
-        void ctx.handleOpenNativeFile();
+        ctx.setPaletteMode('files');
+        ctx.setPaletteQuery('');
       } else if (matchKb('open_folder')) {
         e.preventDefault();
         void ctx.handleOpenNativeFolder();
@@ -400,14 +434,39 @@ export function useKeybindings(params: UseKeybindingsParams) {
         e.preventDefault();
         ctx.setPaletteMode('commands');
         ctx.setPaletteQuery('');
-      } else if (matchKb('quick_open')) {
-        e.preventDefault();
-        ctx.setPaletteMode('files');
-        ctx.setPaletteQuery('');
       } else if (matchKb('toggle_sidebar')) {
         e.preventDefault();
         ctx.setRightSidebarOpen((v) => !v);
-      } else if (matchKb('toggle_yaml')) {
+      } else if (
+        matchKb('sidebar_toc') ||
+        (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === '1' || e.code === 'Digit1'))
+      ) {
+        e.preventDefault();
+        ctx.setRightSidebarOpen(true);
+        ctx.setRightTab((prev) =>
+          ctx.rightSidebarOpen && prev === 'toc' ? 'tree' : 'toc'
+        );
+      } else if (
+        matchKb('sidebar_backlinks') ||
+        (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === '2' || e.code === 'Digit2'))
+      ) {
+        e.preventDefault();
+        ctx.setRightSidebarOpen(true);
+        ctx.setRightTab((prev) =>
+          ctx.rightSidebarOpen && prev === 'backlinks' ? 'tree' : 'backlinks'
+        );
+      } else if (
+        matchKb('toggle_log_terminal') ||
+        (e.ctrlKey &&
+          !e.altKey &&
+          (e.key === '`' || e.key === '~' || e.code === 'Backquote'))
+      ) {
+        e.preventDefault();
+        ctx.openDashboardTab('logs');
+      } else if (
+        matchKb('toggle_yaml') ||
+        (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === '=' || e.code === 'Equal'))
+      ) {
         e.preventDefault();
         ctx.setIsYamlVisible((v) => !v);
       } else if (matchKb('next_file')) {
@@ -506,6 +565,15 @@ export function useKeybindings(params: UseKeybindingsParams) {
       action: () => setShortcutsModalOpen(true),
     },
     {
+      id: 'cmd-open-file',
+      label: '파일: 파일 열기 (빠른 문서 검색 모달 열기)',
+      shortcut: getShortcutLabel('open_file'),
+      action: () => {
+        params.setPaletteMode('files');
+        params.setPaletteQuery('');
+      },
+    },
+    {
       id: 'cmd-f2-rename',
       label: '파일: 현재 문서 제목 변경 (UUID 유지)',
       shortcut: getShortcutLabel('rename_doc'),
@@ -544,8 +612,26 @@ export function useKeybindings(params: UseKeybindingsParams) {
       },
     },
     {
+      id: 'cmd-sidebar-toc',
+      label: '보기: 문서 내 목차(TOC) 사이드바 열기',
+      shortcut: getShortcutLabel('sidebar_toc') || 'Ctrl+1',
+      action: () => {
+        params.setRightSidebarOpen(true);
+        params.setRightTab('toc');
+      },
+    },
+    {
+      id: 'cmd-sidebar-backlinks',
+      label: '보기: 양방향 백링크 사이드바 열기',
+      shortcut: getShortcutLabel('sidebar_backlinks') || 'Ctrl+2',
+      action: () => {
+        params.setRightSidebarOpen(true);
+        params.setRightTab('backlinks');
+      },
+    },
+    {
       id: 'cmd-goto-main',
-      label: '이동: main.md로 이동 (루트 Projects/main.md)',
+      label: '이동: ⭐ main.md로 이동 (루트 Projects/main.md)',
       shortcut: getShortcutLabel('goto_main_md'),
       action: () => void params.handleGotoRootMainMd(),
     },
@@ -612,6 +698,12 @@ export function useKeybindings(params: UseKeybindingsParams) {
       label: '대쉬보드: 설정 대쉬보드 탭 열기 (.myLore/setting.json)',
       shortcut: getShortcutLabel('open_settings'),
       action: () => params.openDashboardTab('settings'),
+    },
+    {
+      id: 'cmd-toggle-log-terminal',
+      label: '대쉬보드: 로그 기록 조회 대시보드 탭 열기 (log/{분야}_YYYYMMDD.log)',
+      shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
+      action: () => params.openDashboardTab('logs'),
     },
     {
       id: 'cmd-f11-viewer',

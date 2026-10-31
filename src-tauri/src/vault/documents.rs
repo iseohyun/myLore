@@ -191,6 +191,37 @@ pub(crate) fn save_document(
         }
     }
 
+    let cat = payload.frontmatter.get("category").map(|s| s.as_str()).unwrap_or("");
+    if cat == "mobile/calls" || cat == "mobile/recordings" {
+        if let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_string()) {
+            let safe_stem = sanitize_filename_stem(&stem);
+            let status = payload.frontmatter.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
+            let req = payload.frontmatter.get("user_requirement").cloned().unwrap_or_default();
+            let stage = match status {
+                "verified" | "stage4" => 4u8,
+                "needs_revision" | "stage3" => 3u8,
+                "unverified" | "completed" | "stage2" => 2u8,
+                "pending" | "pending_quota" | "stage1" => 1u8,
+                _ => if !req.trim().is_empty() { 3u8 } else { 2u8 },
+            };
+            upsert_call_transcript_meta(&conn, &safe_stem, stage, &req);
+            let attach_tag = if stage == 1 || stage == 3 {
+                format!("pending_transcript:{}", safe_stem)
+            } else {
+                format!("transcribed:{}", safe_stem)
+            };
+            let _ = conn.execute(
+                "UPDATE lifelog_messages SET attachment_uuid = ?1 WHERE room_or_sender = ?2 OR attachment_uuid IN (?3, ?4)",
+                params![
+                    attach_tag,
+                    safe_stem,
+                    format!("transcribed:{}", safe_stem),
+                    format!("pending_transcript:{}", safe_stem)
+                ],
+            );
+        }
+    }
+
     build_document_payload(&conn, path)
 }
 
@@ -257,9 +288,18 @@ pub(crate) fn create_new_document(
             }
             p
         } else if params.role == "diary" {
+            let clean_title = if params.title.trim().is_empty() {
+                "새 일정".to_string()
+            } else {
+                params.title.trim().to_string()
+            };
             let cal_cat = params
                 .calendar_category
-                .unwrap_or_else(|| "개발".to_string());
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("개발")
+                .to_string();
             let color_id = match cal_cat.as_str() {
                 "개발" => "11",
                 "이벤트" => "6",
@@ -270,28 +310,108 @@ pub(crate) fn create_new_document(
                 "알림" => "1",
                 _ => "8",
             };
-            let loc = params.location.unwrap_or_else(|| "거제집".to_string());
 
-            let mut filename = format!("{} {}.md", date_str, params.title);
+            let include_loc = params.include_location.unwrap_or(true);
+            let loc_line = if !include_loc {
+                String::new()
+            } else {
+                let raw_loc = params.location.as_deref().unwrap_or("").trim();
+                let eff_loc = if raw_loc.is_empty() { "거제집" } else { raw_loc };
+                format!("location: \"{}\"\n", eff_loc.replace('"', "\\\""))
+            };
+
+            let transparency_val = params
+                .transparency
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("transparent");
+            let visibility_val = params
+                .visibility
+                .as_deref()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("default");
+            let desc_mode = params
+                .description_mode
+                .as_deref()
+                .map(|s| s.trim())
+                .unwrap_or("File");
+            let desc_line = if desc_mode.eq_ignore_ascii_case("File") {
+                "description: \"File\"\n".to_string()
+            } else {
+                String::new()
+            };
+
+            let email_trimmed = params
+                .attendee_email
+                .as_deref()
+                .map(|s| s.trim())
+                .unwrap_or("");
+            let (attendees_block, status_val) = if !email_trimmed.is_empty() {
+                let resp_status = params
+                    .attendee_response_status
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("needsAction");
+                let st_choice = params
+                    .event_status
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("confirmed");
+                (
+                    format!(
+                        "attendees:\n  - email: \"{}\"\n    responseStatus: \"{}\"\n",
+                        email_trimmed.replace('"', "\\\""),
+                        resp_status
+                    ),
+                    st_choice,
+                )
+            } else {
+                (String::new(), "confirmed")
+            };
+
+            let mut filename = format!("{} {}.md", date_str, clean_title);
             let mut p = base_path.join(&filename);
             let mut idx = 1;
             while p.exists() {
-                filename = format!("{} {}-{}.md", date_str, params.title, idx);
+                filename = format!("{} {}-{}.md", date_str, clean_title, idx);
                 p = base_path.join(&filename);
                 idx += 1;
             }
 
-            let tpl_name = params
-                .template_file
-                .as_deref()
-                .unwrap_or("diary_default.md");
-            let body = load_template_body(tpl_name).unwrap_or_default();
+            let tpl_name = params.template_file.as_deref().unwrap_or("");
+            let body = if tpl_name.is_empty() || tpl_name == "none" {
+                String::new()
+            } else {
+                load_template_body(tpl_name).unwrap_or_default()
+            };
 
             let content = format!(
-                "---\nuuid: \"{}\"\nsummary: \"{}\"\nstart:\n  date: \"{}\"\nend:\n  date: \"{}\"\ncalendar: \"{}\"\nlocation: \"{}\"\ntransparency: \"transparent\"\nvisibility: \"default\"\ncolorId: \"{}\"\ndescription: \"File\"\nstatus: \"confirmed\"\n---\n{}",
-                new_uuid, params.title, date_str, date_str, cal_cat, loc, color_id, body
+                "---\nuuid: \"{}\"\nsummary: \"{}\"\nstart:\n  date: \"{}\"\nend:\n  date: \"{}\"\ncalendar: \"{}\"\n{}transparency: \"{}\"\nvisibility: \"{}\"\ncolorId: \"{}\"\n{}{}status: \"{}\"\n---\n{}",
+                new_uuid,
+                clean_title.replace('"', "\\\""),
+                date_str,
+                date_str,
+                cal_cat,
+                loc_line,
+                transparency_val,
+                visibility_val,
+                color_id,
+                desc_line,
+                attendees_block,
+                status_val,
+                body
             );
             fs::write(&p, content).map_err(|e| e.to_string())?;
+            if let Err(e) = try_upload_diary_markdown_to_gcal(&p) {
+                log_comm(
+                    "WARN",
+                    &format!("[GoogleCalendar] 신규 일정 업로드 보류 ({}): {}", filename, e),
+                );
+            }
             p
         } else {
             let target_dir = if let Some(sf) = &params.sub_folder {
@@ -350,6 +470,74 @@ pub(crate) fn create_temp_memo(state: State<AppState>, title: Option<String>) ->
     build_document_payload(&conn, &file_path)
 }
 
+/// 폴더 우클릭 메뉴 > "새 문서 생성": 해당 폴더에 빈 `.md` 문서(UUID 미주입)를 생성하여 반환하고,
+/// 프론트엔드에서 제목 수정창(`F2` 모달)을 통해 제목을 입력받으면 `rename_current_document`에서 UUID를 주입합니다.
+#[tauri::command]
+pub(crate) fn create_empty_document_in_folder(
+    state: State<AppState>,
+    role: String,
+    sub_dir: Option<String>,
+) -> Result<DocumentPayload, String> {
+    let _guard = state.lock.lock().map_err(|e| e.to_string())?;
+    let conn = open_db(&state.db_path)?;
+
+    let base_path_str: String = conn
+        .query_row(
+            "SELECT path FROM base_folders WHERE role = ?1 AND enabled = 1 LIMIT 1",
+            params![role],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("역할({})에 해당하는 베이스 폴더가 설정되어 있지 않습니다.", role))?;
+
+    let clean_sub_dir = sub_dir
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("git:")
+        .trim_matches(|c| c == '/' || c == '\\')
+        .replace('/', "\\");
+
+    let base_path = Path::new(&base_path_str);
+    let target_dir = if clean_sub_dir.is_empty() {
+        base_path.to_path_buf()
+    } else {
+        base_path.join(&clean_sub_dir)
+    };
+    fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+
+    let mut file_name = "새 문서.md".to_string();
+    let mut file_path = target_dir.join(&file_name);
+    let mut idx = 1usize;
+    while file_path.exists() {
+        file_name = format!("새 문서-{}.md", idx);
+        file_path = target_dir.join(&file_name);
+        idx += 1;
+    }
+
+    // 빈 md 문서 생성 (제목 입력 후 rename_current_document에서 UUID 주입)
+    fs::write(&file_path, "").map_err(|e| e.to_string())?;
+
+    let full_path_str = file_path.to_string_lossy().to_string();
+    let rel_path_str = file_path
+        .strip_prefix(base_path)
+        .unwrap_or(&file_path)
+        .to_string_lossy()
+        .to_string();
+    let content_hash = blake3::hash(b"").to_hex().to_string();
+
+    Ok(DocumentPayload {
+        uuid: String::new(),
+        full_path: full_path_str,
+        relative_path: rel_path_str,
+        role,
+        raw_content: String::new(),
+        yaml_raw: String::new(),
+        body_content: String::new(),
+        frontmatter: HashMap::new(),
+        content_hash,
+        backlinks: Vec::new(),
+    })
+}
+
 /// 루트 Projects/main.md 로 즉시 이동 (파일이 없으면 생성)
 #[tauri::command]
 pub(crate) fn open_root_main_md(state: State<AppState>) -> Result<DocumentPayload, String> {
@@ -395,7 +583,13 @@ pub(crate) fn rename_current_document(
     let (uuid_val, raw_content, _) = ensure_uuid_in_markdown_file(src_path, None)?;
     let (yaml_raw, body, _) = parse_markdown_yaml(&raw_content);
 
-    // YAML 내부의 summary 또는 title 값도 새 제목으로 동기화
+    let file_name_only = src_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let is_main_md = file_name_only.eq_ignore_ascii_case("main.md");
+
+    // YAML 내부에 이미 summary 또는 title이 있거나 main.md인 경우 새 제목으로 동기화
     let mut updated_yaml_lines: Vec<String> = Vec::new();
     let mut title_updated_in_yaml = false;
     for line in yaml_raw.lines() {
@@ -410,7 +604,7 @@ pub(crate) fn rename_current_document(
             updated_yaml_lines.push(line.to_string());
         }
     }
-    if !title_updated_in_yaml && !yaml_raw.is_empty() {
+    if !title_updated_in_yaml && is_main_md && !yaml_raw.is_empty() {
         updated_yaml_lines.push(format!("title: \"{}\"", clean_title));
     }
     let new_raw = if updated_yaml_lines.is_empty() {
@@ -420,12 +614,7 @@ pub(crate) fn rename_current_document(
     };
     let _ = fs::write(src_path, &new_raw);
 
-    let file_name_only = src_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-
-    let target_path = if file_name_only.eq_ignore_ascii_case("main.md") {
+    let target_path = if is_main_md {
         // 프로젝트 하위 폴더의 main.md인 경우 부모 프로젝트 폴더 이름을 변경
         if let Some(parent_dir) = src_path.parent() {
             if let Some(grand_parent) = parent_dir.parent() {
@@ -691,6 +880,7 @@ pub(crate) fn move_document_to_role(
     source_full_path: String,
     target_role: String,
     new_file_name: Option<String>,
+    target_sub_dir: Option<String>,
 ) -> Result<DocumentPayload, String> {
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
@@ -717,17 +907,45 @@ pub(crate) fn move_document_to_role(
             .to_string()
     });
 
-    let target_dir = Path::new(&target_base);
-    let _ = fs::create_dir_all(target_dir);
+    let clean_sub_dir = target_sub_dir
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("git:")
+        .trim_matches(|c| c == '/' || c == '\\')
+        .replace('/', "\\");
+
+    let base_dir_path = Path::new(&target_base);
+    let target_dir = if clean_sub_dir.is_empty() {
+        base_dir_path.to_path_buf()
+    } else {
+        base_dir_path.join(&clean_sub_dir)
+    };
+    let _ = fs::create_dir_all(&target_dir);
     let target_file = target_dir.join(&file_name);
 
+    if target_file == src_path {
+        return build_document_payload(&conn, &target_file);
+    }
+    if target_file.exists() {
+        return Err(format!(
+            "대상 폴더에 동일한 이름의 파일('{}')이 이미 존재합니다.",
+            file_name
+        ));
+    }
+
     fs::rename(src_path, &target_file).map_err(|e| e.to_string())?;
+
+    let rel_path = target_file
+        .strip_prefix(base_dir_path)
+        .unwrap_or(&target_file)
+        .to_string_lossy()
+        .to_string();
 
     let _ = conn.execute(
         "UPDATE files SET full_path = ?1, relative_path = ?2, role = ?3 WHERE uuid = ?4",
         params![
             target_file.to_string_lossy().to_string(),
-            file_name,
+            rel_path,
             target_role,
             uuid_val
         ],

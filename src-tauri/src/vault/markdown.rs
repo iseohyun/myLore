@@ -30,36 +30,39 @@ pub(crate) fn ensure_projects_mylore_templates(conn: &Connection) -> PathBuf {
             "project_main.md",
             r#"---
 title: "{{title}}"
-description: "프로젝트 기본 main.md 템플릿 (표, 구분선, 서브미션 포함)"
+description: "프로젝트 기본 main.md 템플릿 (개론 및 서브미션 진행율 표 포함)"
 status: "진행중"
 milestone: "초기 설계 및 목표 수립"
 ---
-# 📁 {{title}}
-
-| 항목 | 내용 | 비고 |
-| :--- | :--- | :--- |
-| **프로젝트 상태** | `진행중` | 우선순위 관리 대상 |
-| **핵심 목표** | 프로젝트의 최종 산출물 및 목적 정의 | 1줄 요약 |
-| **관련 볼트** | `Projects/{{title}}/main.md` | 서브 문서는 현 폴더 하위 배치 |
-
----
-
-## 🎯 서브 미션 (Tasks — `Alt+Shift+F` 자동 정렬 지원)
-- [!] 가장 먼저 처리할 핵심/내일 할 일 과제
-- [/] 현재 진행 중인 구현 또는 조사 작업
-- [ ] 대기 중인 백로그 항목
-- [-] 보류 중인 아이디어
-- [x] 초기 프로젝트 폴더(`main.md`) 생성 완료
+## 개론
+- **{{title}}**: 프로젝트의 의미 및 한 줄 정의
+- **핵심과제**:
+  1. 첫 번째 핵심 목표 및 해결하고자 하는 과제
+  2. 두 번째 핵심 목표 및 산출물 정의
+- **구현**:
+  - 기술 스택 / 실행 환경 요약 (`Projects/{{title}}/main.md`)
 
 ---
 
-## 📝 아키텍처 & 상세 노트
-여기에 프로젝트 관련 상세 설계나 메모를 자유롭게 작성하세요.
-
-<details>
-<summary>💡 참고 자료 및 접기/펼치기 섹션 (HTML 태그 호환 예시)</summary>
-<p>마크다운 표준에 따라 <code>&lt;details&gt;</code>, <code>&lt;hr&gt;</code>, <code>&lt;kbd&gt;</code> 등 HTML 태그도 스타일이 적용된 상태로 렌더링됩니다.</p>
-</details>
+## 🎯 서브 미션
+|미션|진행율|비고|링크|
+| :--- | :--- | :--- | :--- |
+|초기 설계 및 구현|0%(0/1)|핵심 기능 정의 및 세부 과제 관리|[설계.md]|
+|버그수정|0%(0/1)|사용중 발생한 버그를 개선|[bugs.md]|
+---
+"#,
+        ),
+        (
+            "project_submission.md",
+            r#"---
+title: "{{title}}"
+description: "프로젝트 하위 서브미션({submission}.md) 상세 태스크 관리 표 템플릿"
+category: "서브미션"
+---
+<!-- 진행 사항: [대기중 | 수정중 | 수정 후 확인 대기 | YYYY-MM-DD hh:mm:ss] -->
+|task ID|진행 사항|내용|개선내용|
+| :--- | :--- | :--- | :--- |
+|1|대기중|상세 요구사항 또는 해결할 내용을 서술하세요||
 "#,
         ),
         (
@@ -133,7 +136,7 @@ description: "구글 캘린더 양방향 연동 호환 일기(Diary) 기본 템�
 }
 
 pub(crate) fn parse_markdown_yaml(raw: &str) -> (String, String, HashMap<String, String>) {
-    let normalized = raw.replace("\r\n", "\n");
+    let normalized = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
     let mut map = HashMap::new();
     if !normalized.starts_with("---\n") {
         return (String::new(), normalized, map);
@@ -159,7 +162,27 @@ pub(crate) fn parse_markdown_yaml(raw: &str) -> (String, String, HashMap<String,
         for line in yaml_raw.lines() {
             if let Some(colon) = line.find(':') {
                 let k = line[..colon].trim().to_string();
-                let v = line[colon + 1..].trim().trim_matches('"').to_string();
+                let raw_v = line[colon + 1..].trim();
+                let v = if let Some(rest) = raw_v.strip_prefix('"') {
+                    rest.find('"')
+                        .map(|idx| rest[..idx].trim().to_string())
+                        .unwrap_or_else(|| rest.trim_matches('"').trim().to_string())
+                } else if let Some(rest) = raw_v.strip_prefix('\'') {
+                    rest.find('\'')
+                        .map(|idx| rest[..idx].trim().to_string())
+                        .unwrap_or_else(|| rest.trim_matches('\'').trim().to_string())
+                } else {
+                    let without_comment = match raw_v.find('#') {
+                        Some(idx) => &raw_v[..idx],
+                        None => raw_v,
+                    };
+                    without_comment
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .trim()
+                        .to_string()
+                };
                 if !k.is_empty() {
                     map.insert(k, v);
                 }
@@ -188,7 +211,8 @@ pub(crate) fn ensure_uuid_in_markdown_file(
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let new_raw = if yaml_raw.is_empty() && !raw.replace("\r\n", "\n").starts_with("---\n") {
+    let stripped = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let new_raw = if yaml_raw.is_empty() && !stripped.starts_with("---\n") {
         format!("---\nuuid: \"{}\"\n---\n{}", assigned_uuid, body)
     } else {
         format!("---\nuuid: \"{}\"\n{}\n---\n{}", assigned_uuid, yaml_raw, body)
@@ -196,6 +220,36 @@ pub(crate) fn ensure_uuid_in_markdown_file(
 
     fs::write(path, &new_raw).map_err(|e| e.to_string())?;
     Ok((assigned_uuid, new_raw, true))
+}
+
+/// 복사된 마크다운 문서의 중복 UUID 충돌을 해결하기 위해 YAML 내 `uuid` 값을 새 UUID로 교체합니다.
+pub(crate) fn replace_uuid_in_markdown_file(
+    path: &Path,
+    new_uuid: &str,
+) -> Result<String, String> {
+    let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let (yaml_raw, body, _) = parse_markdown_yaml(&raw);
+    let mut replaced = false;
+    let mut next_yaml_lines: Vec<String> = Vec::new();
+    for line in yaml_raw.lines() {
+        if let Some(colon) = line.find(':') {
+            let k = line[..colon].trim();
+            if k.eq_ignore_ascii_case("uuid") {
+                if !replaced {
+                    next_yaml_lines.push(format!("uuid: \"{}\"", new_uuid));
+                    replaced = true;
+                }
+                continue;
+            }
+        }
+        next_yaml_lines.push(line.to_string());
+    }
+    if !replaced {
+        next_yaml_lines.insert(0, format!("uuid: \"{}\"", new_uuid));
+    }
+    let new_raw = format!("---\n{}\n---\n{}", next_yaml_lines.join("\n"), body);
+    fs::write(path, &new_raw).map_err(|e| e.to_string())?;
+    Ok(new_raw)
 }
 
 pub(crate) fn parse_frontmatter_and_body_simple(raw: &str) -> (HashMap<String, String>, String) {

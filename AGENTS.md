@@ -14,27 +14,29 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 
 | 영역 | 파일 | 줄 수 | 비고 |
 |---|---|---|---|
-| Rust 백엔드 | 44 | 약 12,100 | 파일당 최대 약 740줄 (단위 테스트 23개 / 3개 파일 포함) |
-| TSX/TS 프론트엔드 | 40 | 약 14,100 | `App.tsx` (267줄) + 컴포넌트 24개(`src/components/**`) + 훅 9개(`src/hooks/**`) — 모든 파일 ≤ 840줄 |
+| Rust 백엔드 | 46 | 약 13,700 | 파일당 최대 약 880줄 (단위 테스트 26개 / 3개 파일 포함) |
+| TSX/TS 프론트엔드 | 42 | 약 15,200 | `App.tsx` (279줄) + 컴포넌트 26개(`src/components/**`) + 훅 9개(`src/hooks/**`) — 모든 파일 ≤ 920줄 |
 | CSS | 1 | 약 1,600 | `src/styles/app.css` |
 
 ## 3. 진입점과 데이터 흐름
 
 ```
-[UI] src/main.tsx → src/App.tsx (267줄: DetachedPreviewWindowView 분기 + MainApp 조합)
+[UI] src/main.tsx → src/App.tsx (279줄: DetachedPreviewWindowView 분기 + MainApp 조합)
         ├─ hooks/      useFileTree · useLifelogAudio · useDocuments · useDocumentActions ·
         │              useLifelogAndFinance · useEditorCommands · useDetachedPreviewAndSettings ·
         │              useAppStartup · useKeybindings
-        ├─ components/ header/ · dashboards/ · editor/ · sidebar/ · footer/ · modals/ · window/
+        ├─ components/ header/ · dashboards/(Diary, Finance, Lifelog, Settings, LogDashboard) · editor/ · sidebar/ · footer/ · modals/ · window/
         │  invoke("snake_case_command")      (래퍼: src/services/tauriClient.ts, 타입: src/types/mylore.ts)
         ▼
-[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 56개 등록)
+[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 67개 등록)
         ├─ vault/      문서·스캔·마크다운·휴지통
-        ├─ lifelog/    연락처·파서·녹음·카톡·백필·조회 (+ parse_tests.rs)
+        ├─ calendar_sync.rs Google Calendar API v3 양방향 동기화(OAuth 2.0 PKCE 로컬 콜백, 신규 일정 업로드, 시작 시/F5 일정 다운로드)
+        ├─ lifelog/    연락처(인물 서술 AI 프로필·소속 모임 컨텍스트 포함)·파서·녹음·카톡·백필·조회·pc_activity(ActivityWatch 연동) (+ parse_tests.rs)
         ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화
-        ├─ mobile/     페어링(현재 Wi-Fi SSID·비밀번호 자동 탐지)·인증·저장소·진행률·헬스 (+ pairing_tests.rs)
-        │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media
+        ├─ mobile/     페어링(현재 Wi-Fi SSID·비밀번호 자동 탐지)·인증·저장소·진행률·헬스·ack_state (+ pairing_tests.rs)
+        │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media (session-plan, complete, ack 포함)
         │   └─ sync_worker/  큐·배치 루프(mod.rs) → jobs_messages / jobs_meta / jobs_files
+        ├─ logger.rs   4대 분야 로그 수집(%APPDATA%\com.iseohyun.mylore\logs\{분야}_YYYYMMDD.log · comm/version/system/ai) 및 보관일(통신 7일 / 기타 30일) 자동 정리
         ├─ paths.rs    메타 DB(%APPDATA%\com.iseohyun.mylore)·기본 폴더 해석·레거시 DB 이전 (+ paths_tests.rs)
         ├─ settings.rs · window.rs · system.rs · finance.rs · util.rs (cached_regex!)
         ├─ models.rs (공용 DTO) · state.rs (AppState)
@@ -58,6 +60,9 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 - **파일당 1,000줄 이하.** 새 기능을 `App.tsx`에 덧붙이지 말고 새 컴포넌트/모듈 파일로 분리합니다.
 - 파일·모듈·커맨드를 추가하거나 옮기면 `docs/CODEMAP.md`와 이 파일의 3장을 함께 갱신합니다.
 - 검색할 때 `node_modules/`, `dist/`, `src-tauri/target/`(약 5 GB), 루트 `mylore.exe`는 제외합니다.
+- **프로젝트 볼트 문서 규약 (`Projects/프로젝트_문서_규약.md`)**:
+  - `Projects/main.md`(전역 현황) → `Projects/{project}/main.md`(`## 개론` + `|미션|진행율|비고|링크|`) → `Projects/{project}/{submission}.md`(`|task ID|진행 사항|내용|개선내용|`) 3계층 구조를 준수합니다.
+  - 서브미션 표의 `진행 사항`은 `[대기중 | 수정중 | 수정 후 확인 대기 | YYYY-MM-DD hh:mm:ss]` 4단계로 관리하며, AI가 작업을 완료했을 때는 `수정 후 확인 대기`로 표기하고 `개선내용`을 작성합니다(사용자 최종 확인 시에만 시각 기입).
 
 ## 6. 검증 명령 (Windows PowerShell)
 

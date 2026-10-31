@@ -1,6 +1,6 @@
 /**
  * @file LifelogMobileDataTab.tsx
- * @description 라이프로그 대시보드 [휴대폰데이터] 탭: 수집된 카톡·문자·통화·녹음·알림 메시지 필터링 및 테이블 조회.
+ * @description 라이프로그 대시보드 [💬 대화] 탭(카톡·문자·통화 3탭) 및 [📊 모니터링] 하위(M로그·헬스) 테이블 뷰.
  */
 import React, { useMemo } from 'react';
 import {
@@ -8,6 +8,7 @@ import {
   LifelogSourceType,
   MobileContextMenuState,
 } from '../../types/mylore';
+import { formatLifelogEventTime } from '../sidebar/MobileLifelogSidebar';
 
 export interface LifelogMobileDataTabProps {
   mobilePersonFilter: string;
@@ -16,6 +17,9 @@ export interface LifelogMobileDataTabProps {
   setMobileSourceFilter: React.Dispatch<
     React.SetStateAction<'all' | LifelogSourceType>
   >;
+  mobileSidebarTab?: LifelogSourceType;
+  setMobileSidebarTab?: React.Dispatch<React.SetStateAction<LifelogSourceType>>;
+  fixedSource?: 'notification' | 'health';
   allLifelogMessages: LifelogMessage[];
   handleSelectLifelogSidebarItem: (m: LifelogMessage) => void;
   setMobileContextMenu: React.Dispatch<
@@ -26,27 +30,54 @@ export interface LifelogMobileDataTabProps {
 
 const SOURCE_LABEL_MAP: Record<string, string> = {
   kakaotalk: '카톡',
-  notification: '알림',
+  notification: 'M로그',
   sms: '문자',
   call: '통화',
   recording: '녹음',
   health: '헬스',
+  media: '사진/영상',
+  contacts: '연락처',
+  pc_log: 'PC로그',
 };
+
+const CHAT_SOURCES = new Set<LifelogSourceType>(['kakaotalk', 'sms', 'call']);
 
 export function LifelogMobileDataTab({
   mobilePersonFilter,
   setMobilePersonFilter,
   mobileSourceFilter,
   setMobileSourceFilter,
+  mobileSidebarTab,
+  setMobileSidebarTab,
+  fixedSource,
   allLifelogMessages,
   handleSelectLifelogSidebarItem,
   setMobileContextMenu,
   resolveContactName,
 }: LifelogMobileDataTabProps) {
+  const effectiveSource: 'all' | LifelogSourceType = fixedSource
+    ? fixedSource
+    : mobileSourceFilter === 'all' || CHAT_SOURCES.has(mobileSourceFilter)
+      ? mobileSourceFilter
+      : mobileSidebarTab && CHAT_SOURCES.has(mobileSidebarTab)
+        ? mobileSidebarTab
+        : 'kakaotalk';
+
+  const baseMessages = useMemo(() => {
+    if (fixedSource) {
+      return allLifelogMessages.filter((m) => m.source === fixedSource);
+    }
+    return allLifelogMessages.filter((m) => CHAT_SOURCES.has(m.source));
+  }, [allLifelogMessages, fixedSource]);
+
   const filteredMsgs = useMemo(() => {
     const q = mobilePersonFilter.trim().toLowerCase();
-    return allLifelogMessages.filter((m) => {
-      if (mobileSourceFilter !== 'all' && m.source !== mobileSourceFilter) {
+    return baseMessages.filter((m) => {
+      if (
+        !fixedSource &&
+        effectiveSource !== 'all' &&
+        m.source !== effectiveSource
+      ) {
         return false;
       }
       if (!q) return true;
@@ -56,7 +87,7 @@ export function LifelogMobileDataTab({
         (m.message || '').toLowerCase().includes(q)
       );
     });
-  }, [allLifelogMessages, mobilePersonFilter, mobileSourceFilter]);
+  }, [baseMessages, mobilePersonFilter, effectiveSource, fixedSource]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -81,7 +112,37 @@ export function LifelogMobileDataTab({
             flexWrap: 'wrap',
           }}
         >
-          <span style={{ fontWeight: 700, fontSize: '13px' }}>
+          {!fixedSource && (
+            <div style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
+              {(
+                [
+                  { key: 'kakaotalk', label: '💬 카톡' },
+                  { key: 'sms', label: '✉️ 문자' },
+                  { key: 'call', label: '📞 통화' },
+                ] as const
+              ).map((cat) => (
+                <button
+                  key={cat.key}
+                  className={`toolbar-btn ${
+                    effectiveSource === cat.key ? 'primary' : ''
+                  }`}
+                  style={{
+                    padding: '5px 14px',
+                    fontSize: '12.5px',
+                    fontWeight: 700,
+                  }}
+                  onClick={() => {
+                    setMobileSourceFilter(cat.key);
+                    setMobileSidebarTab?.(cat.key);
+                  }}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <span style={{ fontWeight: 700, fontSize: '13px', marginLeft: fixedSource ? '0' : '6px' }}>
             🔍 인물/키워드 검색:
           </span>
           <input
@@ -91,40 +152,15 @@ export function LifelogMobileDataTab({
             onChange={(e) => setMobilePersonFilter(e.target.value)}
             placeholder="예: 임현정, 캠핑..."
           />
-          <div style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
-            {(
-              [
-                { key: 'all', label: '전체 기록' },
-                { key: 'kakaotalk', label: '카톡' },
-                { key: 'notification', label: '알림' },
-                { key: 'sms', label: '문자' },
-                { key: 'call', label: '통화' },
-                { key: 'recording', label: '녹음' },
-                { key: 'health', label: '헬스' },
-              ] as const
-            ).map((cat) => (
-              <button
-                key={cat.key}
-                className={`toolbar-btn ${
-                  mobileSourceFilter === cat.key ? 'primary' : ''
-                }`}
-                style={{ padding: '4px 10px', fontSize: '12px' }}
-                onClick={() => setMobileSourceFilter(cat.key)}
-              >
-                {cat.label}
-              </button>
-            ))}
-          </div>
-          {(mobilePersonFilter || mobileSourceFilter !== 'all') && (
+          {mobilePersonFilter && (
             <button
               className="toolbar-btn"
               style={{ padding: '4px 10px', fontSize: '12px' }}
               onClick={() => {
                 setMobilePersonFilter('');
-                setMobileSourceFilter('all');
               }}
             >
-              ✕ 필터 해제
+              ✕ 검색어 해제
             </button>
           )}
         </div>
@@ -144,19 +180,9 @@ export function LifelogMobileDataTab({
         >
           <span style={{ fontWeight: 700, color: '#c7d2fe' }}>
             📌 &lsquo;{mobilePersonFilter}&rsquo;님과의{' '}
-            {mobileSourceFilter === 'all'
-              ? '모든기록 (카톡·알림·문자·통화·녹음·헬스)'
-              : mobileSourceFilter === 'kakaotalk'
-                ? "'카톡'"
-                : mobileSourceFilter === 'notification'
-                  ? "'알림'"
-                  : mobileSourceFilter === 'sms'
-                    ? "'문자'"
-                    : mobileSourceFilter === 'call'
-                      ? "'통화'"
-                      : mobileSourceFilter === 'recording'
-                        ? "'녹음'"
-                        : "'헬스'"}{' '}
+            {effectiveSource === 'all'
+              ? '모든 대화 (카톡·문자·통화)'
+              : `'${SOURCE_LABEL_MAP[effectiveSource] || effectiveSource}'`}{' '}
             검색 결과
           </span>
           <button
@@ -164,7 +190,6 @@ export function LifelogMobileDataTab({
             style={{ padding: '2px 8px', fontSize: '11.5px' }}
             onClick={() => {
               setMobilePersonFilter('');
-              setMobileSourceFilter('all');
             }}
           >
             전체 보기로 복귀
@@ -181,8 +206,8 @@ export function LifelogMobileDataTab({
             color: 'var(--text-secondary)',
           }}
         >
-          조회된 휴대폰 라이프로그 ({filteredMsgs.length}건 / 전체{' '}
-          {allLifelogMessages.length}건)
+          조회된 기록 ({filteredMsgs.length}건 / 해당 분류 전체{' '}
+          {baseMessages.length}건)
         </div>
         <table className="data-table">
           <thead>
@@ -206,7 +231,7 @@ export function LifelogMobileDataTab({
                     color: 'var(--text-muted)',
                   }}
                 >
-                  조건에 해당하는 휴대폰 데이터가 없습니다.
+                  조건에 해당하는 데이터가 없습니다.
                 </td>
               </tr>
             ) : (
@@ -270,30 +295,47 @@ export function LifelogMobileDataTab({
                     }}
                     title="좌클릭: 에디터 영역에서 열기 | 우클릭: 이 인물과의 기록 검색 메뉴 열기"
                   >
-                    <td>
-                      <span className="role-badge projects">
-                        {SOURCE_LABEL_MAP[m.source] || m.source}
-                      </span>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {SOURCE_LABEL_MAP[m.source] || m.source}
                     </td>
                     <td
                       style={{
                         fontFamily: 'var(--font-mono)',
                         fontSize: '12px',
+                        whiteSpace: 'nowrap',
                       }}
                     >
-                      {m.sentDate} {m.sentTime}
+                      {formatLifelogEventTime(
+                        m.sentDate,
+                        m.sentTime,
+                        'YYYYMMDD(ddd) hh:mm:ss'
+                      )}
                     </td>
-                    <td style={{ fontWeight: 700 }}>
+                    <td style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
                       {m.source === 'sms'
                         ? resolveContactName(m.roomOrSender)
                         : m.roomOrSender}
                     </td>
-                    <td>{m.sender}</td>
-                    <td style={{ whiteSpace: 'pre-wrap' }}>{m.message}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{m.sender}</td>
+                    <td
+                      style={{ whiteSpace: 'nowrap' }}
+                      title={(m.message || '').replace(/<br\s*\/?>/gi, '\n')}
+                    >
+                      {(() => {
+                        const clean = (m.message || '')
+                          .replace(/<br\s*\/?>/gi, ' ')
+                          .replace(/\s+/g, ' ')
+                          .trim();
+                        return clean.length > 10
+                          ? `${clean.slice(0, 10)}...`
+                          : clean;
+                      })()}
+                    </td>
                     <td
                       style={{
                         fontSize: '11.5px',
                         color: 'var(--text-secondary)',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       {m.deviceName || m.deviceId || '기본 기기'}

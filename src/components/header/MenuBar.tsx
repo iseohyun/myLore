@@ -37,7 +37,7 @@ export interface MenuBarProps {
   autoSaveEnabled: boolean;
   handleUpdateAppSettings: (patch: Partial<MyLoreAppSettings>) => Promise<void>;
   openDashboardTab: (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings'
+    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
   ) => void;
   setShortcutsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   handleEditorUndo: () => void;
@@ -193,7 +193,10 @@ export function MenuBar({
     {
       label: '파일 열기',
       shortcut: getShortcutLabel('open_file'),
-      action: handleOpenNativeFile,
+      action: () => {
+        setPaletteMode('files');
+        setPaletteQuery('');
+      },
     },
     {
       label: '폴더 열기',
@@ -328,14 +331,6 @@ export function MenuBar({
         setPaletteQuery('');
       },
     },
-    {
-      label: '빠른 문서 열기',
-      shortcut: getShortcutLabel('quick_open'),
-      action: () => {
-        setPaletteMode('files');
-        setPaletteQuery('');
-      },
-    },
     { type: 'divider' },
     {
       label:
@@ -377,6 +372,27 @@ export function MenuBar({
       label: '우측 사이드바 접기/펼치기',
       shortcut: getShortcutLabel('toggle_sidebar'),
       action: () => setRightSidebarOpen((v) => !v),
+    },
+    {
+      label: '📑 문서 내 목차(TOC) 사이드바',
+      shortcut: getShortcutLabel('sidebar_toc') || 'Ctrl+1',
+      action: () => {
+        setRightSidebarOpen(true);
+        setRightTab('toc');
+      },
+    },
+    {
+      label: '🔗 양방향 백링크 사이드바',
+      shortcut: getShortcutLabel('sidebar_backlinks') || 'Ctrl+2',
+      action: () => {
+        setRightSidebarOpen(true);
+        setRightTab('backlinks');
+      },
+    },
+    {
+      label: '📋 로그 대쉬보드 열기',
+      shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
+      action: () => openDashboardTab('logs'),
     },
     {
       label: '전체 화면',
@@ -521,25 +537,30 @@ export function MenuBar({
       },
     },
     {
-      label: '프로젝트(Projects) 폴더로 이동',
+      label: '⭐ 프로젝트(Projects) 폴더로 이동',
       shortcut: 'Move',
       action: () => handleMoveRole('projects'),
     },
     {
-      label: '일기(Diary) 폴더로 이동',
+      label: '📅 일기(Diary) 폴더로 이동',
       shortcut: 'Move',
       action: () => handleMoveRole('diary'),
     },
     {
-      label: '데이터(Archive) 폴더로 이동',
+      label: '🗄️ 데이터(Archive) 폴더로 이동',
       shortcut: 'Move',
       action: () => handleMoveRole('data'),
+    },
+    {
+      label: '💻 Git 폴더로 이동',
+      shortcut: 'Move',
+      action: () => handleMoveRole('git'),
     },
   ];
 
   const dashboardEntries: MenuEntry[] = [
     {
-      label: '📁 프로젝트 (Projects/main.md)',
+      label: '⭐ 프로젝트 (Projects/main.md)',
       shortcut: getShortcutLabel('dashboard_projects'),
       action: handleGotoRootMainMd,
     },
@@ -557,6 +578,11 @@ export function MenuBar({
       label: '📅 일정 대쉬보드',
       shortcut: getShortcutLabel('dashboard_diary'),
       action: () => openDashboardTab('diary'),
+    },
+    {
+      label: '📋 로그 대쉬보드',
+      shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
+      action: () => openDashboardTab('logs'),
     },
     { type: 'divider' },
     {

@@ -38,6 +38,7 @@ export interface UseDetachedPreviewAndSettingsParams {
   viewMode: ViewMode;
   setViewMode: React.Dispatch<React.SetStateAction<ViewMode>>;
   previewPaneRef: React.MutableRefObject<HTMLDivElement | null>;
+  lastProgrammaticAudioScrollMsRef?: React.MutableRefObject<number>;
   applyLoadedDocument: (
     doc: DocumentPayload,
     jumpTo?: {
@@ -61,6 +62,7 @@ export function useDetachedPreviewAndSettings({
   viewMode,
   setViewMode,
   previewPaneRef,
+  lastProgrammaticAudioScrollMsRef,
   applyLoadedDocument,
   handleSaveCurrentDoc,
   setAutoSaveEnabled,
@@ -164,6 +166,7 @@ export function useDetachedPreviewAndSettings({
 
   const handleEditorScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
     if (!appSettings.scrollSyncEnabled) return;
+    if (lastProgrammaticAudioScrollMsRef && Date.now() - lastProgrammaticAudioScrollMsRef.current < 750) return;
     const el = e.currentTarget;
     const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
     const scrollRatio = maxScroll > 0 ? el.scrollTop / maxScroll : 0;

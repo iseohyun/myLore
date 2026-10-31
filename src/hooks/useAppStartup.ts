@@ -1,12 +1,13 @@
 /**
  * @file useAppStartup.ts
- * @description 앱 최초 기동 시 설정·베이스 폴더·파일 트리·페어링·세션 복원 및 Tauri 실시간 이벤트(`uuid-scan-progress`, `cli-open-files`, `mobile-sync-*`) 구독 훅.
+ * @description 앱 최초 기동 시 설정·베이스 폴더·파일 트리·페어링·세션 복원 및 Tauri 실시간 이벤트(`uuid-scan-progress`, `cli-open-files`, `mobile-sync-*`, `google-calendar-sync-event`) 구독 훅.
  */
 import React, { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   BaseFolderConfig,
   DocumentPayload,
+  GoogleCalendarSyncResult,
   MobileSyncProgressPayload,
   MyLoreAppSettings,
   OpenDocumentTab,
@@ -21,6 +22,7 @@ import {
   getVaultTemplates,
   openRootMainMd,
   readDocument,
+  syncGoogleCalendarEvents,
   takePendingCliFiles,
 } from '../services/tauriClient';
 import { splitYamlFrontmatter } from '../utils/markdownAutoFormat';
@@ -34,9 +36,9 @@ export interface UseAppStartupParams {
   activeTabPath: string | null;
   setActiveTabPath: React.Dispatch<React.SetStateAction<string | null>>;
   isSessionRestoredRef: React.MutableRefObject<boolean>;
-  lifelogDashboardTab: 'settings' | 'mobile';
+  lifelogDashboardTab: 'settings' | 'chat' | 'records' | 'pc_activity';
   setLifelogDashboardTab: React.Dispatch<
-    React.SetStateAction<'settings' | 'mobile'>
+    React.SetStateAction<'settings' | 'chat' | 'records' | 'pc_activity'>
   >;
   selectedDate: string;
   setScanProgress: React.Dispatch<
@@ -139,9 +141,19 @@ export function useAppStartup({
     let unlistenCliOpenFn: (() => void) | null = null;
     let unlistenMobileSyncFn: (() => void) | null = null;
     let unlistenMobileProgFn: (() => void) | null = null;
+    let unlistenGcalSyncFn: (() => void) | null = null;
     (async () => {
       try {
         if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+          unlistenGcalSyncFn = await listen<GoogleCalendarSyncResult>(
+            'google-calendar-sync-event',
+            (event) => {
+              const p = event.payload;
+              setStatusMessage(p.message);
+              void refreshTree();
+            }
+          );
+
           unlistenScanFn = await listen<ScanProgressPayload>(
             'uuid-scan-progress',
             (event) => {
@@ -177,14 +189,16 @@ export function useAppStartup({
             count?: number;
           }>('mobile-sync-event', (event) => {
             const p = event.payload;
+            // 동기화 완료 알림 등은 오직 하단 상태창(StatusBar)에만 표시
             setStatusMessage(p.message);
-            setReconcileResultMsg(p.message);
             // 백그라운드 워커 스레드에서 동기화 사이클이 완전히 종료되었을 때만 메인 데이터/DB 조회를 1회 실행
             const evType = p.type || p.eventType || '';
             if (
               evType === 'sync_cycle_complete' ||
               evType === 'paired' ||
-              evType === 'call_transcript_completed'
+              evType === 'call_transcript_completed' ||
+              evType === 'call_transcript_retry' ||
+              evType === 'call_transcript_progress'
             ) {
               if (syncRefreshTimer) clearTimeout(syncRefreshTimer);
               syncRefreshTimer = setTimeout(() => {
@@ -266,13 +280,19 @@ export function useAppStartup({
                 openTabPaths?: string[];
                 tabAccessHistory?: string[];
                 activeTabPath?: string | null;
-                lifelogDashboardTab?: 'settings' | 'mobile';
+                lifelogDashboardTab?: 'settings' | 'chat' | 'records' | 'mobile';
               };
               if (
                 parsed.lifelogDashboardTab === 'settings' ||
+                parsed.lifelogDashboardTab === 'chat' ||
+                parsed.lifelogDashboardTab === 'records' ||
                 parsed.lifelogDashboardTab === 'mobile'
               ) {
-                setLifelogDashboardTab(parsed.lifelogDashboardTab);
+                setLifelogDashboardTab(
+                  parsed.lifelogDashboardTab === 'mobile'
+                    ? 'chat'
+                    : parsed.lifelogDashboardTab
+                );
               }
               const pathsToOpen = Array.isArray(parsed.openTabPaths)
                 ? parsed.openTabPaths
@@ -340,6 +360,20 @@ export function useAppStartup({
           }
         }
         isSessionRestoredRef.current = true;
+
+        // 프로그램 시작 시 백그라운드로 구글 캘린더 일정 자동 다운로드/동기화 수행
+        void syncGoogleCalendarEvents()
+          .then((res) => {
+            if (
+              res.downloadedCount > 0 ||
+              res.uploadedCount > 0 ||
+              res.updatedCount > 0
+            ) {
+              setStatusMessage(res.message);
+              void refreshTree();
+            }
+          })
+          .catch(() => {});
       } catch (err) {
         isSessionRestoredRef.current = true;
         console.error(err);
@@ -350,6 +384,7 @@ export function useAppStartup({
       if (unlistenCliOpenFn) unlistenCliOpenFn();
       if (unlistenMobileSyncFn) unlistenMobileSyncFn();
       if (unlistenMobileProgFn) unlistenMobileProgFn();
+      if (unlistenGcalSyncFn) unlistenGcalSyncFn();
     };
   }, []);
 }

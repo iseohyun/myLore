@@ -569,6 +569,10 @@ export function SettingsAppearanceSection({
               { key: 'tableHeaderBg', label: '표 헤더 배경색' },
               { key: 'tableHeaderColor', label: '표 헤더 글자색' },
               { key: 'borderColor', label: '구분선/테두리 색상' },
+              {
+                key: 'failedCallTextColor',
+                label: '통화 실패 수신/발신자 글자색',
+              },
             ] as Array<{ key: keyof MyLoreAppSettings; label: string }>
           ).map((item) => {
             const colorVal = String(appSettings[item.key] || '#000000');
@@ -630,6 +634,132 @@ export function SettingsAppearanceSection({
               </div>
             );
           })}
+        </div>
+      </div>
+
+      <div
+        style={{
+          padding: '18px',
+          backgroundColor: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '10px',
+          marginBottom: '20px',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '10px',
+            flexWrap: 'wrap',
+            gap: '8px',
+          }}
+        >
+          <div>
+            <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
+              👤 AI 개인화 참고 설정 (`aiUserProfile`) 및 일일 예상 토큰 한도 (`aiDailyTokenLimit`)
+            </h3>
+            <p
+              style={{
+                fontSize: '12.5px',
+                color: 'var(--text-secondary)',
+                marginTop: '2px',
+              }}
+            >
+              통화·음성녹음 스크립트화 등 AI 분석 시 사용자 본인(<code>나</code>)의 이름·출생년도·거주지·취미를 프롬프트에 자동 첨부하여 인명 오인식(예: 서현→대원)을 방지합니다.
+            </p>
+          </div>
+          <button
+            className="toolbar-btn"
+            onClick={() =>
+              handleUpdateAppSettings({
+                aiUserProfile: DEFAULT_APP_SETTINGS.aiUserProfile,
+                aiDailyTokenLimit: DEFAULT_APP_SETTINGS.aiDailyTokenLimit,
+                callPlaybackSpeed: DEFAULT_APP_SETTINGS.callPlaybackSpeed,
+              })
+            }
+          >
+            ↺ AI 개인화 기본값 복원
+          </button>
+        </div>
+
+        <textarea
+          className="ai-profile-textarea"
+          value={
+            appSettings.aiUserProfile || DEFAULT_APP_SETTINGS.aiUserProfile
+          }
+          onChange={(e) =>
+            handleUpdateAppSettings({ aiUserProfile: e.target.value })
+          }
+          placeholder="이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영"
+        />
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            flexWrap: 'wrap',
+            marginTop: '10px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                일일 예상 AI 토큰 한도 (상태창 <code>AI: XX.X%</code> 계산 기준):
+              </span>
+              <input
+                type="number"
+                className="input-field"
+                style={{
+                  width: '130px',
+                  padding: '4px 8px',
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-mono)',
+                }}
+                min={10000}
+                step={100000}
+                value={appSettings.aiDailyTokenLimit || 1000000}
+                onChange={(e) =>
+                  handleUpdateAppSettings({
+                    aiDailyTokenLimit: Math.max(
+                      10000,
+                      Number(e.target.value) || 1000000
+                    ),
+                  })
+                }
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                ⏩ 통화 녹음 기본 재생 속도 (`callPlaybackSpeed`):
+              </span>
+              <select
+                className="task-status-select"
+                style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 700 }}
+                value={String(appSettings.callPlaybackSpeed || 1.75)}
+                onChange={(e) =>
+                  handleUpdateAppSettings({
+                    callPlaybackSpeed: parseFloat(e.target.value) || 1.75,
+                  })
+                }
+              >
+                <option value="0.75">0.75x</option>
+                <option value="1">1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x (기본)</option>
+                <option value="2">2.0x</option>
+                <option value="2.5">2.5x</option>
+              </select>
+            </div>
+          </div>
+          <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+            * 추후 마일스톤(Phase 3)에서 연락처 및 연락처 메모가 AI 분석 참고 데이터로 함께 연동됩니다.
+          </span>
         </div>
       </div>
     </>

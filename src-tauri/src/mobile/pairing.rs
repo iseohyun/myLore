@@ -64,7 +64,8 @@ pub(crate) fn send_mobile_udp_wake_broadcast() -> Result<String, String> {
     Ok("UDP 255.255.255.255:18444 로 MYLORE_PC_ONLINE 브로드캐스트 송출 완료".to_string())
 }
 
-/// PC가 현재 연결된 Wi-Fi SSID 목록을 `netsh wlan show interfaces`로 조회합니다. (무선 어댑터가 없거나 미연결이면 빈 목록)
+/// PC가 현재 연결된 NAT의 Wi-Fi SSID 목록을 `netsh wlan show interfaces`로 조회합니다.
+/// 무선 인터페이스에서 SSID가 감지되지 않는 경우(유선 LAN 연결 등) Windows 네트워크 프로필 이름을 보조로 확인합니다.
 ///
 /// 출력 인코딩 문제(한글 SSID)를 피하기 위해 `chcp 65001`(UTF-8) 상태에서 실행합니다.
 pub(crate) fn detect_current_wifi_ssids() -> Vec<String> {
@@ -72,10 +73,63 @@ pub(crate) fn detect_current_wifi_ssids() -> Vec<String> {
         .args(["/C", "chcp 65001 >nul && netsh wlan show interfaces"])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
-    match output {
+    let mut ssids = match output {
         Ok(out) => parse_netsh_wlan_ssids(&String::from_utf8_lossy(&out.stdout)),
         Err(_) => Vec::new(),
+    };
+    if ssids.is_empty() {
+        if let Ok(out) = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetConnectionProfile | Where-Object { $_.IPv4Connectivity -eq 'Internet' -or $_.IPv4Connectivity -eq 'LocalNetwork' } | Select-Object -ExpandProperty Name",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let name = line.trim().to_string();
+                if !name.is_empty()
+                    && name != "네트워크"
+                    && !name.starts_with("네트워크 ")
+                    && !name.eq_ignore_ascii_case("Network")
+                    && !name.starts_with("Network ")
+                    && !name.contains("식별되지 않은")
+                    && !name.to_ascii_lowercase().contains("unidentified")
+                    && !ssids.contains(&name)
+                {
+                    ssids.push(name);
+                }
+            }
+        }
     }
+    ssids
+}
+
+/// 서버 기동 시 또는 페어링 정보 갱신 시 현재 NAT의 Wi-Fi SSID를 검색하여
+/// `mobile_sync_meta`의 `allowed_ssids`를 해당 내용으로 덮어씁니다.
+pub(crate) fn refresh_server_nat_wifi_ssids(conn: &Connection) -> Vec<String> {
+    let detected = detect_current_wifi_ssids();
+    let ssids_json = serde_json::to_string(&detected).unwrap_or_else(|_| "[]".to_string());
+    let prev_json: String = conn
+        .query_row(
+            "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let _ = conn.execute(
+        "INSERT INTO mobile_sync_meta (key, value) VALUES ('allowed_ssids', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![ssids_json],
+    );
+    if prev_json != ssids_json {
+        log_system(
+            "INFO",
+            &format!("서버 NAT Wi-Fi SSID 자동 탐지 및 갱신 완료: {:?}", detected),
+        );
+    }
+    detected
 }
 
 /// `netsh wlan show interfaces` 출력에서 `SSID : 이름` 줄만 추출합니다. (`BSSID` 줄은 제외)
@@ -98,6 +152,7 @@ pub(crate) fn parse_netsh_wlan_ssids(text: &str) -> Vec<String> {
 }
 
 /// 현재 Wi-Fi(`current`)를 앞에 두고 저장된 SSID(`saved`)를 중복 없이 뒤에 붙입니다.
+#[allow(dead_code)]
 pub(crate) fn merge_ssids(current: Vec<String>, saved: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in current.into_iter().chain(saved) {
@@ -201,17 +256,8 @@ pub(crate) fn build_mobile_pairing_payload(conn: &Connection) -> Result<MobilePa
             t
         });
 
-    let saved_ssids: Vec<String> = conn
-        .query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'allowed_ssids'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
-        .unwrap_or_default();
-    // PC가 지금 연결된 Wi-Fi를 맨 앞에 넣고, 사용자가 저장한 SSID를 뒤에 붙입니다.
-    let ssids = merge_ssids(detect_current_wifi_ssids(), saved_ssids);
+    // 고정된 SSID를 유지하지 않고, 현재 서버의 NAT이 가지고 있는 Wi-Fi SSID를 검색하여 즉시 갱신합니다.
+    let ssids = refresh_server_nat_wifi_ssids(conn);
     let primary_ssid = ssids.first().cloned().unwrap_or_default();
     let (wifi_pw, wifi_auth) = if !primary_ssid.is_empty() {
         detect_wifi_profile_credentials(&primary_ssid)

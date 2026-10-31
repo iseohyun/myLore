@@ -28,6 +28,8 @@ export function useFileTree({
     useState<BaseFolderConfig[]>(DEFAULT_BASE_FOLDERS);
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [treeFilter, setTreeFilter] = useState('');
+  const [activeTreeRoleTab, setActiveTreeRoleTab] =
+    useState<BaseFolderRole>('projects');
 
   // 폴더 목록 섹션별 토글 상태 (프로젝트: 열기/요약/닫기, 일기: 열기/요약/닫기, 아카이브: 요약/닫기, Git: 열기/요약/닫기)
   const [sectionModes, setSectionModes] = useState<
@@ -113,39 +115,55 @@ export function useFileTree({
     return { start: fmt(monday), end: fmt(sunday) };
   }, []);
 
-  // 아카이브(data) 문서가 엑세스(열람)되었을 때, 해당 파일까지의 상위 폴더 경로만 자동으로 열어줌
+  // 아카이브(data) 문서가 엑세스(열람)되었을 때, 해당 파일까지의 상위 폴더 경로를 열어줌
   useEffect(() => {
     if (!currentDoc || currentDoc.role !== 'data') return;
     const parts = currentDoc.relativePath.split(/[\\/]+/).filter(Boolean);
-    if (parts.length <= 1) {
-      setOpenArchiveFolders(new Set());
-      return;
-    }
-    const nextOpen = new Set<string>();
-    let acc = '';
-    for (let i = 0; i < parts.length - 1; i++) {
-      acc = acc ? `${acc}/${parts[i]}` : parts[i];
-      nextOpen.add(acc);
-    }
-    setOpenArchiveFolders(nextOpen);
+    if (parts.length <= 1) return;
+    setOpenArchiveFolders((prev) => {
+      const next = new Set(prev);
+      let acc = '';
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc ? `${acc}/${parts[i]}` : parts[i];
+        next.add(acc);
+      }
+      return next;
+    });
   }, [currentDoc?.fullPath, currentDoc?.role, currentDoc?.relativePath]);
 
-  // 프로젝트(projects) 문서가 열렸을 때, 폴더 뷰어에서 해당 프로젝트 폴더 경로만 집중해서 자동으로 열어줌
+  // 프로젝트/일기/Git 문서가 열렸을 때, 폴더 뷰어에서 해당 상위 폴더 경로를 열어줌
   useEffect(() => {
     setSubDocFilter('');
-    if (!currentDoc || currentDoc.role !== 'projects') return;
+    if (
+      currentDoc?.role &&
+      (['projects', 'diary', 'data', 'git'] as string[]).includes(
+        currentDoc.role
+      )
+    ) {
+      setActiveTreeRoleTab(currentDoc.role as BaseFolderRole);
+    }
+    if (!currentDoc || currentDoc.role === 'data') return;
     const parts = currentDoc.relativePath.split(/[\\/]+/).filter(Boolean);
-    if (parts.length <= 1) {
-      setOpenProjectFolders(new Set());
-      return;
-    }
-    const nextOpen = new Set<string>();
-    let acc = '';
-    for (let i = 0; i < parts.length - 1; i++) {
-      acc = acc ? `${acc}/${parts[i]}` : parts[i];
-      nextOpen.add(acc);
-    }
-    setOpenProjectFolders(nextOpen);
+    if (parts.length <= 1) return;
+    const prefix =
+      currentDoc.role === 'git'
+        ? 'git:'
+        : currentDoc.role === 'diary'
+          ? 'diary:'
+          : '';
+    setOpenProjectFolders((prev) => {
+      const next = new Set(prev);
+      let acc = prefix;
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc
+          ? acc.endsWith(':')
+            ? `${acc}/${parts[i]}`
+            : `${acc}/${parts[i]}`
+          : parts[i];
+        next.add(acc);
+      }
+      return next;
+    });
   }, [currentDoc?.fullPath, currentDoc?.role, currentDoc?.relativePath]);
 
   // 프로젝트 파일이 '최우선 프로젝트'인지 판별 (루트 main.md, YAML 최우선 상태, 또는 본문 내 - [!] 포함 여부)
@@ -343,6 +361,61 @@ export function useFileTree({
     return root;
   }, [flattenedFiles, treeFilter]);
 
+  // 일기(diary) 파일 목록으로 폴더 계층형 트리 구성
+  const diaryRootTree = useMemo<ArchiveTreeFolder>(() => {
+    const root: ArchiveTreeFolder = {
+      name: '일기',
+      pathKey: 'diary:',
+      folders: [],
+      files: [],
+    };
+    const filterLower = treeFilter.trim().toLowerCase();
+    const diaryFiles = flattenedFiles.filter(
+      (f) =>
+        f.role === 'diary' &&
+        (filterLower === '' ||
+          f.name.toLowerCase().includes(filterLower) ||
+          f.relativePath.toLowerCase().includes(filterLower) ||
+          (f.title || '').toLowerCase().includes(filterLower))
+    );
+
+    for (const file of diaryFiles) {
+      const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
+      if (parts.length <= 1) {
+        root.files.push(file);
+        continue;
+      }
+      let curr = root;
+      let accKey = 'diary:';
+      for (let i = 0; i < parts.length - 1; i++) {
+        const folderName = parts[i];
+        accKey = `${accKey}/${folderName}`;
+        let nextFolder = curr.folders.find((fd) => fd.pathKey === accKey);
+        if (!nextFolder) {
+          nextFolder = {
+            name: folderName,
+            pathKey: accKey,
+            folders: [],
+            files: [],
+          };
+          curr.folders.push(nextFolder);
+        }
+        curr = nextFolder;
+      }
+      curr.files.push(file);
+    }
+
+    const sortDiaryTree = (folder: ArchiveTreeFolder) => {
+      folder.folders.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+      folder.files.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+      for (const sub of folder.folders) {
+        sortDiaryTree(sub);
+      }
+    };
+    sortDiaryTree(root);
+    return root;
+  }, [flattenedFiles, treeFilter]);
+
   // 현재 열람 중인 프로젝트 main.md의 하위 문서(Sub-MD) 목록 자동 추출
   const currentProjectSubDocs = useMemo<FileNode[]>(() => {
     if (!currentDoc || currentDoc.role !== 'projects') return [];
@@ -408,6 +481,8 @@ export function useFileTree({
     setFileTree,
     treeFilter,
     setTreeFilter,
+    activeTreeRoleTab,
+    setActiveTreeRoleTab,
     sectionModes,
     setSectionModes,
     openArchiveFolders,
@@ -431,6 +506,7 @@ export function useFileTree({
     archiveRootTree,
     projectRootTree,
     gitRootTree,
+    diaryRootTree,
     currentProjectSubDocs,
     calendarDays,
   };

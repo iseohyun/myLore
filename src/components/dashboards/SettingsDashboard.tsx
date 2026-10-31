@@ -12,7 +12,9 @@ import {
 } from '../../types/mylore';
 import {
   DEFAULT_APP_SETTINGS,
+  getServiceLogs,
   openNativeFolderDialog,
+  pruneExpiredServiceLogs,
   saveBaseFolders,
   setAutoCallTranscription,
   showInExplorer,
@@ -32,6 +34,9 @@ export interface SettingsDashboardProps {
   setBaseFolders: React.Dispatch<React.SetStateAction<BaseFolderConfig[]>>;
   refreshTree: () => Promise<void>;
   setStatusMessage: React.Dispatch<React.SetStateAction<string>>;
+  openDashboardTab?: (
+    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
+  ) => void;
 }
 
 export function SettingsDashboard({
@@ -45,6 +50,7 @@ export function SettingsDashboard({
   setBaseFolders,
   refreshTree,
   setStatusMessage,
+  openDashboardTab,
 }: SettingsDashboardProps) {
   return (
     <div className="finance-workspace">
@@ -182,6 +188,154 @@ export function SettingsDashboard({
             >
               자동 스크립트 추출: No
             </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            paddingBottom: '16px',
+            marginBottom: '16px',
+            borderBottom: '1px solid var(--border-color)',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div>
+            <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
+              🕒 통화·라이프로그 시간 표시 형식 (`lifelogTimeFormat`) 및 실패 통화 글자색 (`failedCallTextColor`)
+            </h3>
+            <p
+              style={{
+                fontSize: '12.5px',
+                color: 'var(--text-secondary)',
+                marginTop: '2px',
+              }}
+            >
+              우측 사이드바(<kbd>Ctrl+B</kbd>) 통화 탭의 이벤트 시간 표시 형식(기본: <code>MM-DD(ddd) hh:mm</code>, 예: <code>10-30(금) 16:52</code>)과 통화 실패(부재중·거절·0초) 시 수신자/발신자 글자색(기본: 어두운 붉은색 <code>#b91c1c</code>)을 설정합니다.
+            </p>
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <select
+              className="task-status-select"
+              style={{ padding: '6px 10px', fontSize: '12px' }}
+              value={
+                [
+                  'MM-DD(ddd) hh:mm',
+                  'MM-DD hh:mm',
+                  'YYYY-MM-DD(ddd) hh:mm',
+                  'MM-DD(ddd) A hh:mm',
+                  'MM/DD(ddd) hh:mm',
+                ].includes(appSettings.lifelogTimeFormat || 'MM-DD(ddd) hh:mm')
+                  ? appSettings.lifelogTimeFormat || 'MM-DD(ddd) hh:mm'
+                  : '__custom__'
+              }
+              onChange={(e) => {
+                if (e.target.value !== '__custom__') {
+                  handleUpdateAppSettings({
+                    lifelogTimeFormat: e.target.value,
+                  });
+                }
+              }}
+            >
+              <option value="MM-DD(ddd) hh:mm">
+                MM-DD(ddd) hh:mm (예: 10-30(금) 16:52 — 기본)
+              </option>
+              <option value="MM-DD hh:mm">MM-DD hh:mm (예: 10-30 16:52)</option>
+              <option value="YYYY-MM-DD(ddd) hh:mm">
+                YYYY-MM-DD(ddd) hh:mm (예: 2026-10-30(금) 16:52)
+              </option>
+              <option value="MM-DD(ddd) A hh:mm">
+                MM-DD(ddd) A hh:mm (예: 10-30(금) 오후 04:52)
+              </option>
+              <option value="MM/DD(ddd) hh:mm">
+                MM/DD(ddd) hh:mm (예: 10/30(금) 16:52)
+              </option>
+              <option value="__custom__">직접 입력 (커스텀 포맷)</option>
+            </select>
+            <input
+              className="input-field"
+              style={{
+                width: '165px',
+                fontSize: '12px',
+                fontFamily: 'var(--font-mono)',
+              }}
+              value={appSettings.lifelogTimeFormat || 'MM-DD(ddd) hh:mm'}
+              onChange={(e) =>
+                handleUpdateAppSettings({ lifelogTimeFormat: e.target.value })
+              }
+              placeholder="MM-DD(ddd) hh:mm"
+              title="포맷 토큰: YYYY, YY, MM, DD, ddd(월~일), HH/hh, mm, ss, A(오전/오후)"
+            />
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-primary)',
+              }}
+              title="통화 실패(부재중·수신거절·0초) 시 수신자/발신자 표시 글자색"
+            >
+              <span
+                style={{
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  color: appSettings.failedCallTextColor || '#b91c1c',
+                }}
+              >
+                실패 통화 글자색
+              </span>
+              <input
+                type="color"
+                value={
+                  /^#[0-9a-fA-F]{6}$/.test(
+                    appSettings.failedCallTextColor || '#b91c1c'
+                  )
+                    ? appSettings.failedCallTextColor || '#b91c1c'
+                    : '#b91c1c'
+                }
+                onChange={(e) =>
+                  handleUpdateAppSettings({
+                    failedCallTextColor: e.target.value,
+                  })
+                }
+                style={{
+                  width: '26px',
+                  height: '24px',
+                  border: 'none',
+                  padding: 0,
+                  background: 'transparent',
+                  cursor: 'pointer',
+                }}
+              />
+              <input
+                className="input-field"
+                style={{
+                  width: '78px',
+                  padding: '3px 6px',
+                  fontSize: '11.5px',
+                  fontFamily: 'var(--font-mono)',
+                }}
+                value={appSettings.failedCallTextColor || '#b91c1c'}
+                onChange={(e) =>
+                  handleUpdateAppSettings({
+                    failedCallTextColor: e.target.value,
+                  })
+                }
+              />
+            </div>
           </div>
         </div>
 
@@ -513,6 +667,172 @@ export function SettingsDashboard({
               뷰어 전용 (`preview`)
             </button>
           </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          padding: '18px',
+          backgroundColor: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '10px',
+          marginBottom: '20px',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '12px',
+            flexWrap: 'wrap',
+            gap: '8px',
+          }}
+        >
+          <div>
+            <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
+              📋 분야별 로그 수집 및 기본 보관일 설정 (<kbd>Ctrl+`</kbd>)
+            </h3>
+            <p
+              style={{
+                fontSize: '12px',
+                color: 'var(--text-secondary)',
+                marginTop: '2px',
+              }}
+            >
+              로그는 통신/버전/시스템/AI 4대 분야별로 <code>Projects/.myLore/log/&#123;분야&#125;_YYYYMMDD.log</code> 형식으로 수집되며, <kbd>Ctrl+`</kbd>를 눌러 로그 기록 조회 대시보드에서 실시간 확인할 수 있습니다.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {openDashboardTab && (
+              <button
+                className="toolbar-btn primary"
+                onClick={() => openDashboardTab('logs')}
+              >
+                📋 로그 조회 대시보드 열기 (Ctrl+`)
+              </button>
+            )}
+            <button
+              className="toolbar-btn"
+              onClick={async () => {
+                const removed = await pruneExpiredServiceLogs();
+                setStatusMessage(
+                  `🗑️ 보관 주기가 만료된 로그 파일 ${removed}개를 정리했습니다.`
+                );
+              }}
+            >
+              🗑️ 만료 로그 즉시 정리
+            </button>
+            <button
+              className="toolbar-btn"
+              onClick={async () => {
+                const info = await getServiceLogs({ limit: 1 });
+                if (info.logDirPath) {
+                  await showInExplorer(info.logDirPath);
+                }
+              }}
+            >
+              📂 log 폴더 열기
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            gap: '12px',
+          }}
+        >
+          {(
+            [
+              {
+                key: 'logRetentionCommDays',
+                title: '📡 통신 로그 (`comm_YYYYMMDD.log`)',
+                color: '#38bdf8',
+                desc: '모바일 HTTP/UDP 통신, 세션 플랜, 파일/메시지 수신 및 ACK (기본 7일)',
+                defVal: 7,
+              },
+              {
+                key: 'logRetentionVersionDays',
+                title: '🏷️ 버전 로그 (`version_YYYYMMDD.log`)',
+                color: '#4ade80',
+                desc: '앱/프로토콜 버전, 대화방·도메인 워터마크 백필 및 정합성 (기본 30일)',
+                defVal: 30,
+              },
+              {
+                key: 'logRetentionSystemDays',
+                title: '🖥️ 시스템 로그 (`system_YYYYMMDD.log`)',
+                color: '#a78bfa',
+                desc: '서버 기동, NAT Wi-Fi SSID 탐지, DB/설정/볼트 (기본 30일)',
+                defVal: 30,
+              },
+              {
+                key: 'logRetentionAiDays',
+                title: '🤖 AI 로그 (`ai_YYYYMMDD.log`)',
+                color: '#fbbf24',
+                desc: 'Gemini 통화/음성 녹음 스크립트 변환 및 쿼터 (기본 30일)',
+                defVal: 30,
+              },
+            ] as Array<{
+              key:
+                | 'logRetentionCommDays'
+                | 'logRetentionVersionDays'
+                | 'logRetentionSystemDays'
+                | 'logRetentionAiDays';
+              title: string;
+              color: string;
+              desc: string;
+              defVal: number;
+            }>
+          ).map((item) => (
+            <div
+              key={item.key}
+              style={{
+                padding: '12px',
+                backgroundColor: 'var(--bg-primary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: '13px', color: item.color }}>
+                {item.title}
+              </div>
+              <div
+                style={{
+                  fontSize: '11.5px',
+                  color: 'var(--text-secondary)',
+                  margin: '4px 0 8px',
+                }}
+              >
+                {item.desc}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  className="input-field"
+                  style={{ width: '80px' }}
+                  value={appSettings[item.key] ?? item.defVal}
+                  onChange={(e) =>
+                    handleUpdateAppSettings({
+                      [item.key]: Math.max(
+                        1,
+                        Math.min(
+                          365,
+                          parseInt(e.target.value || String(item.defVal), 10)
+                        )
+                      ),
+                    })
+                  }
+                />
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  일 보관
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

@@ -2,6 +2,24 @@
 
 use crate::*;
 
+pub(crate) fn upsert_call_transcript_meta(
+    conn: &Connection,
+    safe_stem: &str,
+    stage: u8,
+    user_requirement: &str,
+) {
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _ = conn.execute(
+        "INSERT INTO call_transcript_meta (safe_stem, stage, user_requirement, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(safe_stem) DO UPDATE SET
+            stage = excluded.stage,
+            user_requirement = excluded.user_requirement,
+            updated_at = excluded.updated_at",
+        params![safe_stem, stage as i64, user_requirement, now_str],
+    );
+}
+
 /// 통화 녹음 파일과 동일한 파일명(`mobile/calls/{audio_file_stem}.md`)으로
 /// 1) 요약부(`## 💡 요약`)와 2) 스크립트(`## 📜 스크립트`) 2부분 구조의 마크다운 파일을 생성/갱신합니다.
 pub(crate) fn write_call_recording_markdown(
@@ -22,31 +40,42 @@ pub(crate) fn write_call_recording_markdown(
     let md_path = calls_dir.join(format!("{}.md", safe_stem));
     let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // 기존 파일에 UUID가 있으면 유지
-    let existing_uuid = if md_path.exists() {
+    // 기존 파일에 UUID 및 추가 요구사항이 있으면 유지
+    let (existing_uuid, existing_status, existing_req) = if md_path.exists() {
         fs::read_to_string(&md_path)
             .ok()
-            .and_then(|c| {
+            .map(|c| {
                 let (_, _, fm) = parse_markdown_yaml(&c);
-                fm.get("uuid").cloned()
+                (
+                    fm.get("uuid").cloned().filter(|u| !u.is_empty()),
+                    fm.get("transcript_status").cloned().unwrap_or_default(),
+                    fm.get("user_requirement").cloned().unwrap_or_default(),
+                )
             })
-            .filter(|u| !u.is_empty())
+            .unwrap_or((None, String::new(), String::new()))
     } else {
-        None
+        (None, String::new(), String::new())
     };
     let doc_uuid = existing_uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let (status_str, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
+    let (status_str, target_stage, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
         let (sum_s, scr_s) = split_summary_and_transcript(tr);
         let norm_scr = normalize_script_lines_with_timestamps_and_clean_name(
             &scr_s,
             contact_display,
             &raw_stem,
         );
-        ("completed", sum_s, norm_scr)
+        // 스크립팅이 완료(또는 3단계 재스크립팅 완료)되면 2단계(사용자 확인 전: unverified)로 진입/회귀
+        ("unverified", 2u8, sum_s, norm_scr)
     } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
+        let st = if existing_status == "needs_revision" {
+            ("needs_revision", 3u8)
+        } else {
+            ("pending_quota", 1u8)
+        };
         (
-            "pending_quota",
+            st.0,
+            st.1,
             format!(
                 "> ⚠️ **LLM 토큰 부족/한도 초과로 인해 아직 요약이 생성되지 않았습니다.**\n\
                  > - **토큰 고갈 감지 시점**: `{}`\n\
@@ -61,11 +90,30 @@ pub(crate) fn write_call_recording_markdown(
             ),
         )
     } else {
+        let st = if existing_status == "needs_revision" {
+            ("needs_revision", 3u8)
+        } else {
+            ("pending_quota", 1u8)
+        };
         (
-            "pending_quota",
+            st.0,
+            st.1,
             "> ⏳ **LLM 통화 요약 생성 대기 중입니다.** (자동 변환 스케줄러가 순차 처리하거나 5시간 후 자동 재시도합니다.)".to_string(),
             "> ⏳ **LLM 화자 분리 스크립트 생성 대기 중입니다.**".to_string(),
         )
+    };
+
+    upsert_call_transcript_meta(conn, &safe_stem, target_stage, &existing_req);
+
+    let req_fm_line = if !existing_req.trim().is_empty() {
+        format!("user_requirement: \"{}\"\n", existing_req.replace('"', "\\\"").replace('\n', " "))
+    } else {
+        String::new()
+    };
+    let req_body_block = if !existing_req.trim().is_empty() {
+        format!("\n> 📌 **사용자 추가 요구사항**: {}\n", existing_req.trim())
+    } else {
+        String::new()
     };
 
     let md_content = format!(
@@ -78,12 +126,13 @@ pub(crate) fn write_call_recording_markdown(
          recorded_date: \"{}\"\n\
          recorded_time: \"{}\"\n\
          transcript_status: \"{}\"\n\
+         {}\
          device_aliases: [\"핸드폰\", \"휴대폰\", \"스마트폰\", \"갤럭시\", \"모바일\"]\n\
          source_aliases: [\"통화\", \"통화내역\", \"통화녹음\", \"통화스크립트\", \"전화\"]\n\
          last_synced: \"{}\"\n\
          ---\n\n\
          # 📞 {}\n\n\
-         > **통화 상대방**: {} | **통화 일시**: {} {} | **원본 녹음파일**: `audio/{}`\n\n\
+         > **통화 상대방**: {} | **통화 일시**: {} {} | **원본 녹음파일**: `audio/{}`{}\n\n\
          ## 💡 요약\n\n\
          {}\n\n\
          ---\n\n\
@@ -96,12 +145,14 @@ pub(crate) fn write_call_recording_markdown(
         recorded_date,
         recorded_time,
         status_str,
+        req_fm_line,
         now_str,
         contact_display,
         contact_display,
         recorded_date,
         recorded_time,
         audio_file_name,
+        req_body_block,
         summary_body,
         script_body
     );
@@ -131,30 +182,40 @@ pub(crate) fn write_voice_recording_markdown(
     let md_path = rec_dir.join(format!("{}.md", safe_stem));
     let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let existing_uuid = if md_path.exists() {
+    let (existing_uuid, existing_status, existing_req) = if md_path.exists() {
         fs::read_to_string(&md_path)
             .ok()
-            .and_then(|c| {
+            .map(|c| {
                 let (_, _, fm) = parse_markdown_yaml(&c);
-                fm.get("uuid").cloned()
+                (
+                    fm.get("uuid").cloned().filter(|u| !u.is_empty()),
+                    fm.get("transcript_status").cloned().unwrap_or_default(),
+                    fm.get("user_requirement").cloned().unwrap_or_default(),
+                )
             })
-            .filter(|u| !u.is_empty())
+            .unwrap_or((None, String::new(), String::new()))
     } else {
-        None
+        (None, String::new(), String::new())
     };
     let doc_uuid = existing_uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let (status_str, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
+    let (status_str, target_stage, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
         let (sum_s, scr_s) = split_summary_and_transcript(tr);
         let norm_scr = normalize_script_lines_with_timestamps_and_clean_name(
             &scr_s,
             recording_source,
             &raw_stem,
         );
-        ("completed", sum_s, norm_scr)
+        ("unverified", 2u8, sum_s, norm_scr)
     } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
+        let st = if existing_status == "needs_revision" {
+            ("needs_revision", 3u8)
+        } else {
+            ("pending_quota", 1u8)
+        };
         (
-            "pending_quota",
+            st.0,
+            st.1,
             format!(
                 "> ⚠️ **LLM 토큰 부족/한도 초과로 인해 아직 음성메모·회의 요약이 생성되지 않았습니다.**\n\
                  > - **토큰 고갈 감지 시점**: `{}`\n\
@@ -168,11 +229,30 @@ pub(crate) fn write_voice_recording_markdown(
             ),
         )
     } else {
+        let st = if existing_status == "needs_revision" {
+            ("needs_revision", 3u8)
+        } else {
+            ("pending_quota", 1u8)
+        };
         (
-            "pending_quota",
+            st.0,
+            st.1,
             "> ⏳ **음성메모/회의록 핵심 요약 및 Action Items 추출 대기 중입니다.** (우클릭 메뉴에서 '스크립트 추출 및 요약'을 실행하거나 자동 추출을 기다려 주세요.)".to_string(),
             "> ⏳ **음성메모/회의 전체 스크립트 생성 대기 중입니다.**".to_string(),
         )
+    };
+
+    upsert_call_transcript_meta(conn, &safe_stem, target_stage, &existing_req);
+
+    let req_fm_line = if !existing_req.trim().is_empty() {
+        format!("user_requirement: \"{}\"\n", existing_req.replace('"', "\\\"").replace('\n', " "))
+    } else {
+        String::new()
+    };
+    let req_body_block = if !existing_req.trim().is_empty() {
+        format!("\n> 📌 **사용자 추가 요구사항**: {}\n", existing_req.trim())
+    } else {
+        String::new()
     };
 
     let icon = if recording_source.contains("워치") {
@@ -191,12 +271,13 @@ pub(crate) fn write_voice_recording_markdown(
          recorded_date: \"{}\"\n\
          recorded_time: \"{}\"\n\
          transcript_status: \"{}\"\n\
+         {}\
          device_aliases: [\"핸드폰\", \"휴대폰\", \"갤럭시\", \"워치\", \"갤럭시워치\", \"음성메모\"]\n\
          source_aliases: [\"녹음\", \"음성녹음\", \"음성메모\", \"회의녹음\", \"독백녹음\"]\n\
          last_synced: \"{}\"\n\
          ---\n\n\
          # {} [{}] {}\n\n\
-         > **녹음 출처**: `{}` | **녹음 일시**: {} {} | **원본 녹음파일**: `audio/{}`\n\n\
+         > **녹음 출처**: `{}` | **녹음 일시**: {} {} | **원본 녹음파일**: `audio/{}`{}\n\n\
          ## 💡 요약\n\n\
          {}\n\n\
          ---\n\n\
@@ -209,6 +290,7 @@ pub(crate) fn write_voice_recording_markdown(
         recorded_date,
         recorded_time,
         status_str,
+        req_fm_line,
         now_str,
         icon,
         recording_source,
@@ -217,6 +299,7 @@ pub(crate) fn write_voice_recording_markdown(
         recorded_date,
         recorded_time,
         audio_file_name,
+        req_body_block,
         summary_body,
         script_body
     );
@@ -443,11 +526,17 @@ pub(crate) fn find_call_audio_and_md_ext(
     let rec_audio_dir = rec_dir.join("audio");
 
     let explicit_stem = attachment_uuid
-        .and_then(|a| {
-            a.strip_prefix("transcribed:")
+        .map(|a| {
+            let stripped = a
+                .strip_prefix("transcribed:")
                 .or_else(|| a.strip_prefix("pending_transcript:"))
+                .unwrap_or(a)
+                .trim();
+            Path::new(stripped)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| stripped.to_string())
         })
-        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
     let clean_room = room_or_sender

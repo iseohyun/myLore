@@ -47,7 +47,9 @@ mod window;
 mod lifelog;
 mod finance;
 mod gemini;
+mod logger;
 mod mobile;
+mod calendar_sync;
 
 pub(crate) use util::*;
 pub(crate) use paths::*;
@@ -61,7 +63,9 @@ pub(crate) use window::*;
 pub(crate) use lifelog::*;
 pub(crate) use finance::*;
 pub(crate) use gemini::*;
+pub(crate) use logger::*;
 pub(crate) use mobile::*;
+pub(crate) use calendar_sync::*;
 
 const _FRONTEND_DIST_INDEX_SYNC: &str = include_str!("../../dist/index.html");
 
@@ -112,6 +116,8 @@ pub fn run() {
             detached_preview: Arc::new(Mutex::new(DetachedPreviewState::default())),
         })
         .setup(move |app| {
+            init_logger_and_prune(app.handle(), &db_path_for_server);
+            log_system("INFO", "myLore 데스크톱 서버 기동 및 백그라운드 워커 초기화 시작");
             spawn_mobile_sync_worker_thread(
                 app.handle().clone(),
                 db_path_for_server.clone(),
@@ -138,6 +144,7 @@ pub fn run() {
             read_document_by_uuid,
             save_document,
             create_new_document,
+            create_empty_document_in_folder,
             create_temp_memo,
             open_root_main_md,
             show_in_explorer,
@@ -176,14 +183,24 @@ pub fn run() {
             get_mobile_sync_progress_state,
             get_all_lifelog_messages,
             get_mobile_contacts_map,
+            get_contact_ai_profiles,
+            save_contact_ai_profile,
             open_lifelog_item_document,
             retry_pending_call_transcriptions,
             get_gemini_api_key_status,
             set_auto_call_transcription,
             get_call_recording_play_info,
             transcribe_single_call_item,
+            update_call_transcript_stage,
             save_and_verify_gemini_api_key,
-            transcribe_local_audio_file
+            transcribe_local_audio_file,
+            get_service_logs,
+            clear_service_logs,
+            prune_expired_service_logs,
+            get_pc_activity_summary,
+            get_google_calendar_sync_status,
+            sync_google_calendar_events,
+            start_google_calendar_oauth_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

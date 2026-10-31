@@ -158,6 +158,10 @@ pub struct LifelogMessage {
     pub device_name: Option<String>,
     #[serde(default)]
     pub has_audio_recording: bool,
+    #[serde(default)]
+    pub transcript_stage: u8,
+    #[serde(default)]
+    pub transcript_requirement: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +201,13 @@ pub struct CreateDocParams {
     pub date_str: Option<String>,
     pub calendar_category: Option<String>,
     pub location: Option<String>,
+    pub include_location: Option<bool>,
+    pub description_mode: Option<String>,
+    pub transparency: Option<String>,
+    pub visibility: Option<String>,
+    pub attendee_email: Option<String>,
+    pub attendee_response_status: Option<String>,
+    pub event_status: Option<String>,
     pub is_project_folder: Option<bool>,
     pub template_file: Option<String>,
     pub sub_folder: Option<String>,
@@ -333,4 +344,27 @@ pub struct CallPlayInfoPayload {
     pub audio_base64: String,
     #[serde(default)]
     pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleCalendarSyncStatus {
+    pub is_connected: bool,
+    pub client_id: String,
+    pub default_calendar_id: String,
+    pub last_sync_at: String,
+    pub last_error: String,
+    pub storage_location: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoogleCalendarSyncResult {
+    pub uploaded_count: usize,
+    pub downloaded_count: usize,
+    pub updated_count: usize,
+    pub skipped_count: usize,
+    pub needs_auth: bool,
+    pub message: String,
+    pub last_sync_at: String,
 }

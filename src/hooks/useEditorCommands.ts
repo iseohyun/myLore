@@ -2,7 +2,7 @@
  * @file useEditorCommands.ts
  * @description 에디터 텍스트 편집·줄 이동·다중 커서, 편집점 히스토리 이동(`Alt+←/→`), 괄호/북마크/일기 점프, 문서 내 찾기 및 볼트 전체 검색/치환 훅.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   DocumentPayload,
   FileNode,
@@ -86,6 +86,11 @@ export function useEditorCommands({
   );
   const [docFindQuery, setDocFindQuery] = useState('');
   const [docReplaceText, setDocReplaceText] = useState('');
+  const [docFindMatchRange, setDocFindMatchRange] = useState<{
+    start: number;
+    end: number;
+    seq?: number;
+  } | null>(null);
 
   // 전체 파일에서 찾기/바꾸기 상태 (우측 사이드바 🔍 연동)
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
@@ -399,6 +404,7 @@ export function useEditorCommands({
 
   const handleGotoRootMainMd = async () => {
     try {
+      setRightTab('tree');
       const doc = await openRootMainMd();
       await refreshTree();
       applyLoadedDocument(doc);
@@ -452,8 +458,54 @@ export function useEditorCommands({
     }
   };
 
+  const selectMatchInEditor = (start: number, end: number) => {
+    setDocFindMatchRange({ start, end, seq: Date.now() + Math.random() });
+    const el = editorRef.current;
+    if (!el) return;
+    const activeEl = document.activeElement;
+    const isFocusInFindBar =
+      activeEl instanceof HTMLElement &&
+      Boolean(activeEl.closest('.find-replace-bar'));
+    if (!isFocusInFindBar && findBarMode === 'closed') {
+      el.focus();
+    }
+    try {
+      el.setSelectionRange(start, end);
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    if (findBarMode === 'closed') {
+      setDocFindMatchRange(null);
+      return;
+    }
+    const ta = editorRef.current;
+    if (ta && ta.selectionStart !== ta.selectionEnd) {
+      const sel = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+      if (sel && !sel.includes('\n') && sel !== docFindQuery) {
+        setDocFindQuery(sel);
+        return;
+      }
+    }
+  }, [findBarMode]);
+
+  useEffect(() => {
+    if (findBarMode === 'closed' || !docFindQuery) {
+      setDocFindMatchRange(null);
+      return;
+    }
+    const idx = bodyText.toLowerCase().indexOf(docFindQuery.toLowerCase());
+    if (idx >= 0) {
+      selectMatchInEditor(idx, idx + docFindQuery.length);
+    } else {
+      setDocFindMatchRange(null);
+    }
+  }, [findBarMode, docFindQuery, currentDoc?.fullPath]);
+
   const handleJumpSearchMatch = async (dir: 1 | -1) => {
-    if (globalSearchResults.length > 0) {
+    if (findBarMode === 'closed' && globalSearchResults.length > 0) {
       const nextIdx =
         (activeSearchIdx + dir + globalSearchResults.length) %
         globalSearchResults.length;
@@ -467,21 +519,133 @@ export function useEditorCommands({
       });
       return;
     }
-    if (docFindQuery && editorRef.current) {
+    if (docFindQuery) {
       const el = editorRef.current;
-      const startPos =
-        dir === 1 ? el.selectionEnd : Math.max(0, el.selectionStart - 1);
-      const idx =
+      const lowerBody = bodyText.toLowerCase();
+      const lowerQuery = docFindQuery.toLowerCase();
+      const curStart = docFindMatchRange
+        ? docFindMatchRange.start
+        : el
+          ? el.selectionStart
+          : 0;
+      const curEnd = docFindMatchRange
+        ? docFindMatchRange.end
+        : el
+          ? el.selectionEnd
+          : 0;
+      const startPos = dir === 1 ? curEnd : Math.max(0, curStart - 1);
+      let idx =
         dir === 1
-          ? bodyText.toLowerCase().indexOf(docFindQuery.toLowerCase(), startPos)
-          : bodyText
-              .toLowerCase()
-              .lastIndexOf(docFindQuery.toLowerCase(), startPos);
+          ? lowerBody.indexOf(lowerQuery, startPos)
+          : curStart > 0
+          ? lowerBody.lastIndexOf(lowerQuery, startPos)
+          : -1;
+      if (idx < 0) {
+        idx =
+          dir === 1
+            ? lowerBody.indexOf(lowerQuery, 0)
+            : lowerBody.lastIndexOf(lowerQuery, lowerBody.length);
+      }
       if (idx >= 0) {
-        el.focus();
-        el.setSelectionRange(idx, idx + docFindQuery.length);
+        selectMatchInEditor(idx, idx + docFindQuery.length);
+      } else {
+        setDocFindMatchRange(null);
       }
     }
+  };
+
+  const handleReplaceCurrentInDoc = () => {
+    if (!docFindQuery) return;
+    const lowerBody = bodyText.toLowerCase();
+    const lowerQuery = docFindQuery.toLowerCase();
+    const el = editorRef.current;
+
+    let targetStart = -1;
+    let targetEnd = -1;
+
+    if (
+      docFindMatchRange &&
+      bodyText
+        .slice(docFindMatchRange.start, docFindMatchRange.end)
+        .toLowerCase() === lowerQuery
+    ) {
+      targetStart = docFindMatchRange.start;
+      targetEnd = docFindMatchRange.end;
+    } else if (
+      el &&
+      el.selectionStart !== el.selectionEnd &&
+      bodyText.slice(el.selectionStart, el.selectionEnd).toLowerCase() ===
+        lowerQuery
+    ) {
+      targetStart = el.selectionStart;
+      targetEnd = el.selectionEnd;
+    } else {
+      const firstIdx = lowerBody.indexOf(lowerQuery);
+      if (firstIdx >= 0) {
+        targetStart = firstIdx;
+        targetEnd = firstIdx + docFindQuery.length;
+      }
+    }
+
+    if (targetStart < 0) {
+      setDocFindMatchRange(null);
+      setStatusMessage(`🔍 '${docFindQuery}' 일치 항목이 없습니다.`);
+      return;
+    }
+
+    const nextBody =
+      bodyText.slice(0, targetStart) +
+      docReplaceText +
+      bodyText.slice(targetEnd);
+    setBodyText(nextBody);
+
+    const searchFrom = targetStart + docReplaceText.length;
+    const nextLower = nextBody.toLowerCase();
+    let nextIdx = nextLower.indexOf(lowerQuery, searchFrom);
+    if (nextIdx < 0 && lowerQuery !== docReplaceText.toLowerCase()) {
+      nextIdx = nextLower.indexOf(lowerQuery, 0);
+    }
+
+    if (nextIdx >= 0) {
+      const nextEnd = nextIdx + docFindQuery.length;
+      setDocFindMatchRange({
+        start: nextIdx,
+        end: nextEnd,
+        seq: Date.now() + Math.random(),
+      });
+      setTimeout(() => {
+        if (editorRef.current) {
+          try {
+            editorRef.current.setSelectionRange(nextIdx, nextEnd);
+          } catch {
+            // ignore
+          }
+        }
+      }, 0);
+    } else {
+      setDocFindMatchRange(null);
+    }
+    setStatusMessage(
+      `✏️ 선택된 '${docFindQuery}' → '${docReplaceText}' 변경 완료`
+    );
+  };
+
+  const handleReplaceAllInDoc = () => {
+    if (!docFindQuery) return;
+    const escaped = docFindQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escaped, 'gi');
+    const matches = bodyText.match(regex);
+    const count = matches ? matches.length : 0;
+    if (count === 0) {
+      setStatusMessage(`🔍 '${docFindQuery}' 일치 항목이 없습니다.`);
+      return;
+    }
+    const nextBody = bodyText.replace(regex, () => docReplaceText);
+    setBodyText(nextBody);
+    setDocFindMatchRange(null);
+    setStatusMessage(
+      `✏️ '${docFindQuery}' → '${docReplaceText}' 총 ${count}건 모두 바꾸기 완료`
+    );
   };
 
   const handleListSelectPrevOrNext = async (dir: 1 | -1) => {
@@ -531,6 +695,10 @@ export function useEditorCommands({
     setDocFindQuery,
     docReplaceText,
     setDocReplaceText,
+    docFindMatchRange,
+    setDocFindMatchRange,
+    handleReplaceCurrentInDoc,
+    handleReplaceAllInDoc,
     globalSearchQuery,
     setGlobalSearchQuery,
     globalReplaceText,

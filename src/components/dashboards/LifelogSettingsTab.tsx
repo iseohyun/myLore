@@ -1,22 +1,26 @@
 /**
  * @file LifelogSettingsTab.tsx
- * @description 라이프로그 대시보드 [설정] 탭: Wi-Fi 자격 증명 포함 QR 페어링, 항목별 동기화 워터마크 표, Gemini API 키 검증 및 쿼터 표시.
+ * @description 라이프로그 대시보드 [설정] 탭: Wi-Fi 자격 증명 포함 QR 페어링, 항목별 동기화 워터마크 표,
+ * Gemini API 키 검증, AI 개인화 참고 설정(`aiUserProfile`) 및 일일 예상 사용량 기반 AI 잔여 백분율(`AI: 93.1%`) 표시.
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   GeminiApiKeyStatus,
   MobilePairingPayload,
   MyLoreAppSettings,
 } from '../../types/mylore';
 import {
+  DEFAULT_APP_SETTINGS,
+  getGeminiApiKeyStatus,
   openExternalUrlInChrome,
   removePairedMobileDevice,
   saveAndVerifyGeminiApiKey,
+  saveAppSettings,
   sendMobileUdpWakeBroadcast,
   setAutoCallTranscription,
   triggerFullMobileResync,
-  updateMobilePairingConfig,
 } from '../../services/tauriClient';
+import { calculateAiRemainingPercent } from '../../utils/appearancePresets';
 
 export interface LifelogSettingsTabProps {
   mobilePairing: MobilePairingPayload;
@@ -36,14 +40,13 @@ export interface LifelogSettingsTabProps {
   tryRegisterGeminiKeyString: (rawKey: string) => Promise<boolean>;
   appSettings: MyLoreAppSettings;
   setAppSettings: React.Dispatch<React.SetStateAction<MyLoreAppSettings>>;
+  handleUpdateAppSettings?: (patch: Partial<MyLoreAppSettings>) => Promise<void>;
 }
 
 export function LifelogSettingsTab({
   mobilePairing,
   setMobilePairing,
   qrDataUrl,
-  ssidInputText,
-  setSsidInputText,
   refreshMobilePairingInfo,
   setStatusMessage,
   setReconcileResultMsg,
@@ -56,7 +59,43 @@ export function LifelogSettingsTab({
   tryRegisterGeminiKeyString,
   appSettings,
   setAppSettings,
+  handleUpdateAppSettings,
 }: LifelogSettingsTabProps) {
+  const [profileDraft, setProfileDraft] = useState(
+    appSettings.aiUserProfile || DEFAULT_APP_SETTINGS.aiUserProfile
+  );
+  const [limitDraft, setLimitDraft] = useState(
+    String(appSettings.aiDailyTokenLimit || 1000000)
+  );
+
+  useEffect(() => {
+    setProfileDraft(
+      appSettings.aiUserProfile || DEFAULT_APP_SETTINGS.aiUserProfile
+    );
+  }, [appSettings.aiUserProfile]);
+
+  useEffect(() => {
+    setLimitDraft(String(appSettings.aiDailyTokenLimit || 1000000));
+  }, [appSettings.aiDailyTokenLimit]);
+
+  const applySettingsPatch = async (patch: Partial<MyLoreAppSettings>) => {
+    if (handleUpdateAppSettings) {
+      await handleUpdateAppSettings(patch);
+    } else {
+      const next = { ...appSettings, ...patch };
+      const saved = await saveAppSettings(next);
+      setAppSettings(saved);
+    }
+  };
+
+  const dailyLimit = appSettings.aiDailyTokenLimit || 1000000;
+  const todayUsed = geminiStatus?.todayUsedTokens ?? 0;
+  const aiRemainingPct = calculateAiRemainingPercent(
+    todayUsed,
+    dailyLimit,
+    geminiStatus?.retryAfterAt
+  );
+
   return (
     <div
       style={{
@@ -203,64 +242,58 @@ export function LifelogSettingsTab({
             </tr>
 
             <tr>
-              <td style={{ fontWeight: 700 }}>SSID</td>
+              <td style={{ fontWeight: 700 }}>현재 NAT Wi-Fi (SSID)</td>
               <td>
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px',
+                    gap: '10px',
                     flexWrap: 'wrap',
                   }}
                 >
-                  <input
-                    className="input-field"
+                  <code
                     style={{
-                      flex: 1,
-                      minWidth: '200px',
-                      maxWidth: '340px',
                       fontFamily: 'var(--font-mono)',
-                    }}
-                    value={ssidInputText}
-                    onChange={(e) => setSsidInputText(e.target.value)}
-                    placeholder="비워 두면 PC의 현재 Wi-Fi가 QR에 자동 포함 (예: MyHomeWiFi, MyHomeWiFi_5G)"
-                  />
-                  <button
-                    className="toolbar-btn primary"
-                    onClick={async () => {
-                      const parsed = ssidInputText
-                        .split(',')
-                        .map((s) => s.trim())
-                        .filter(Boolean);
-                      const updated = await updateMobilePairingConfig(
-                        parsed,
-                        false
-                      );
-                      setMobilePairing(updated);
-                      setSsidInputText(updated.ssids.join(', '));
-                      const msg = `✅ 허용 Wi-Fi SSID가 [${updated.ssids.join(', ')}](으)로 변경되어 QR 코드에 반영되었습니다.`;
-                      setStatusMessage(msg);
-                      setReconcileResultMsg(msg);
+                      fontSize: '12.5px',
+                      fontWeight: 700,
+                      padding: '3px 10px',
+                      backgroundColor: 'var(--bg-primary)',
+                      borderRadius: '6px',
+                      border: '1px solid var(--border-color)',
+                      color: mobilePairing.ssid ? '#4ade80' : 'var(--text-muted)',
                     }}
                   >
-                    SSID 변경
-                  </button>
+                    {mobilePairing.ssid
+                      ? `📶 ${mobilePairing.ssids.join(', ')}`
+                      : '감지된 Wi-Fi 없음'}
+                  </code>
                   {mobilePairing.ssid && (
                     <span
                       style={{
-                        fontSize: '11px',
+                        fontSize: '11.5px',
                         color: 'var(--text-secondary)',
                       }}
                     >
-                      📶 현재 QR 포함:{' '}
-                      <strong>{mobilePairing.ssid}</strong> (
-                      {mobilePairing.wifiAuth || 'WPA2'}
+                      ({mobilePairing.wifiAuth || 'WPA2'}
                       {mobilePairing.hasWifiPassword
-                        ? ' · 접속 키 자동 포함됨'
+                        ? ' · 접속 키 QR 자동 포함됨'
                         : ' · 접속 키 없음'}
                       )
                     </span>
                   )}
+                  <button
+                    className="toolbar-btn"
+                    onClick={async () => {
+                      await refreshMobilePairingInfo();
+                      const msg = '🔄 서버의 현재 NAT Wi-Fi SSID 및 QR 코드를 다시 검색하여 갱신했습니다.';
+                      setStatusMessage(msg);
+                      setReconcileResultMsg(msg);
+                    }}
+                    title="서버가 현재 연결된 NAT의 Wi-Fi SSID와 접속 키를 다시 검색하여 QR 코드에 갱신합니다"
+                  >
+                    🔄 Wi-Fi 재검색
+                  </button>
                 </div>
               </td>
             </tr>
@@ -482,6 +515,66 @@ export function LifelogSettingsTab({
             </tr>
 
             <tr>
+              <td style={{ fontWeight: 700 }}>AI 개인화 참고 설정</td>
+              <td>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <textarea
+                    className="ai-profile-textarea"
+                    value={profileDraft}
+                    onChange={(e) => setProfileDraft(e.target.value)}
+                    placeholder="이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영"
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '8px',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: '11.5px',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      통화·음성녹음 AI 분석 시 사용자 본인(<code>나</code>)의 이름·배경 정보를 프롬프트에 자동 첨부하여 인명 오인식(예: 서현→대원)을 방지합니다. (추후 마일스톤에서 연락처·연락처 메모 연동 확장)
+                    </span>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        className="toolbar-btn primary"
+                        onClick={async () => {
+                          await applySettingsPatch({
+                            aiUserProfile: profileDraft.trim(),
+                          });
+                          setStatusMessage(
+                            '✅ AI 개인화 참고 설정이 저장되었습니다.'
+                          );
+                        }}
+                      >
+                        💾 개인화 설정 저장
+                      </button>
+                      <button
+                        className="toolbar-btn"
+                        onClick={async () => {
+                          const defVal = DEFAULT_APP_SETTINGS.aiUserProfile;
+                          setProfileDraft(defVal);
+                          await applySettingsPatch({ aiUserProfile: defVal });
+                          setStatusMessage(
+                            '↺ AI 개인화 참고 설정을 기본값으로 복원했습니다.'
+                          );
+                        }}
+                      >
+                        ↺ 기본값 복원
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+
+            <tr>
               <td style={{ fontWeight: 700 }}>자동 스크립트 추출</td>
               <td>
                 <div
@@ -542,6 +635,31 @@ export function LifelogSettingsTab({
                       No (수동만)
                     </button>
                   </div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700 }}>
+                      ⏩ 통화 기본 재생 속도:
+                    </span>
+                    <select
+                      className="task-status-select"
+                      style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 700 }}
+                      value={String(appSettings.callPlaybackSpeed || 1.75)}
+                      onChange={async (e) => {
+                        const spd = parseFloat(e.target.value) || 1.75;
+                        await applySettingsPatch({ callPlaybackSpeed: spd });
+                        setStatusMessage(
+                          `✅ 통화 녹음 기본 재생 속도가 ${spd}x로 설정되었습니다.`
+                        );
+                      }}
+                    >
+                      <option value="0.75">0.75x</option>
+                      <option value="1">1.0x</option>
+                      <option value="1.25">1.25x</option>
+                      <option value="1.5">1.5x</option>
+                      <option value="1.75">1.75x (기본)</option>
+                      <option value="2">2.0x</option>
+                      <option value="2.5">2.5x</option>
+                    </select>
+                  </div>
                   <span
                     style={{
                       fontSize: '11.5px',
@@ -555,13 +673,13 @@ export function LifelogSettingsTab({
             </tr>
 
             <tr>
-              <td style={{ fontWeight: 700 }}>토큰 사용량 / 상태</td>
+              <td style={{ fontWeight: 700 }}>AI 잔여량 / 토큰 상태</td>
               <td>
                 <div
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '6px',
+                    gap: '8px',
                   }}
                 >
                   <div
@@ -574,26 +692,34 @@ export function LifelogSettingsTab({
                       fontFamily: 'var(--font-mono)',
                     }}
                   >
+                    <span className="ai-quota-pct-badge">
+                      AI: {aiRemainingPct}
+                    </span>
                     <span>
                       📊 오늘 사용:{' '}
                       <strong style={{ color: '#4ade80' }}>
-                        {(geminiStatus?.todayUsedTokens ?? 0).toLocaleString()}{' '}
-                        토큰
+                        {todayUsed.toLocaleString('ko-KR')} 토큰
                       </strong>{' '}
+                      / 일일 예상 한도:{' '}
+                      <strong>{dailyLimit.toLocaleString('ko-KR')} 토큰</strong>{' '}
                       ({geminiStatus?.todayRequestCount ?? 0}회 요청)
                     </span>
                     <span style={{ color: 'var(--border-color)' }}>|</span>
                     <span>
                       누적 사용:{' '}
                       <strong>
-                        {(geminiStatus?.totalUsedTokens ?? 0).toLocaleString()}{' '}
+                        {(geminiStatus?.totalUsedTokens ?? 0).toLocaleString(
+                          'ko-KR'
+                        )}{' '}
                         토큰
                       </strong>
                     </span>
                     <span style={{ color: 'var(--border-color)' }}>|</span>
                     <span>
                       직전 요청:{' '}
-                      {(geminiStatus?.lastRequestTokens ?? 0).toLocaleString()}{' '}
+                      {(geminiStatus?.lastRequestTokens ?? 0).toLocaleString(
+                        'ko-KR'
+                      )}{' '}
                       토큰
                     </span>
                     <span style={{ color: 'var(--border-color)' }}>|</span>
@@ -610,19 +736,75 @@ export function LifelogSettingsTab({
                         {geminiStatus?.pendingCallCount ?? 0}건
                       </strong>
                     </span>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      flexWrap: 'wrap',
+                      fontSize: '12px',
+                    }}
+                  >
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      일일 예상 사용 한도(토큰):
+                    </span>
+                    <input
+                      type="number"
+                      className="input-field"
+                      style={{
+                        width: '130px',
+                        padding: '3px 8px',
+                        fontSize: '12px',
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                      min={10000}
+                      step={100000}
+                      value={limitDraft}
+                      onChange={(e) => setLimitDraft(e.target.value)}
+                    />
                     <button
                       className="toolbar-btn"
-                      style={{ padding: '2px 8px', fontSize: '11px' }}
-                      onClick={() =>
-                        openExternalUrlInChrome(
-                          'https://aistudio.google.com/app/plan_information'
-                        )
-                      }
-                      title="Google AI Studio 공식 플랜 및 잔여 할당량(Rate Limit) 대시보드 열기"
+                      style={{ padding: '3px 10px', fontSize: '11.5px' }}
+                      onClick={async () => {
+                        const parsed = Math.max(
+                          10000,
+                          parseInt(limitDraft || '1000000', 10) || 1000000
+                        );
+                        setLimitDraft(String(parsed));
+                        await applySettingsPatch({ aiDailyTokenLimit: parsed });
+                        setStatusMessage(
+                          `✅ 일일 예상 AI 토큰 한도가 ${parsed.toLocaleString('ko-KR')} 토큰으로 설정되었습니다.`
+                        );
+                      }}
                     >
-                      📈 AI Studio 잔여 한도 조회
+                      한도 적용
                     </button>
+                    <button
+                      className="toolbar-btn"
+                      style={{ padding: '3px 10px', fontSize: '11.5px' }}
+                      onClick={async () => {
+                        const stat = await getGeminiApiKeyStatus();
+                        setGeminiStatus(stat);
+                        setStatusMessage(
+                          `🔄 AI 잔여량 상태가 갱신되었습니다 (AI: ${calculateAiRemainingPercent(stat.todayUsedTokens, dailyLimit, stat.retryAfterAt)}).`
+                        );
+                      }}
+                      title="서버 시작 시 및 AI 의뢰 완료 시 자동 갱신되며, 수동으로도 즉시 갱신할 수 있습니다"
+                    >
+                      🔄 잔여량 새로고침
+                    </button>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      * 서버 시작 시 및 AI 의뢰 완료 시 자동 업데이트됨
+                    </span>
                   </div>
+
                   {geminiStatus?.quotaExhaustedAt && (
                     <div
                       style={{
@@ -631,7 +813,7 @@ export function LifelogSettingsTab({
                         fontWeight: 600,
                       }}
                     >
-                      ⚠️ 마지막 토큰 부족 실패시각:{' '}
+                      ⚠️ 마지막 토큰 부족/오류 실패시각:{' '}
                       <code>{geminiStatus.quotaExhaustedAt}</code> → 5시간 대기 후 재시도 예정:{' '}
                       <code>{geminiStatus.retryAfterAt || '5시간 후'}</code>
                     </div>

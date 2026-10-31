@@ -30,6 +30,8 @@ pub(crate) fn get_lifelog_for_date(
                 device_id: r.get::<_, String>(8).ok().filter(|s| !s.is_empty()),
                 device_name: r.get::<_, String>(9).ok().filter(|s| !s.is_empty()),
                 has_audio_recording: false,
+                transcript_stage: 0,
+                transcript_requirement: None,
             })
         })
         .map_err(|e| e.to_string())?
@@ -263,37 +265,48 @@ pub(crate) async fn open_lifelog_item_document(
             md_path
         } else if src == "call" {
             let calls_dir = get_archive_mobile_dir(&conn, "calls");
-            if let Some((_, file_name, file_stem, rec_md_path, _)) =
-                find_call_audio_and_md(&conn, &room_or_sender, attachment_uuid.as_deref())
-            {
-                if !rec_md_path.exists() {
-                    let (c_disp, r_date, r_time) =
-                        parse_call_audio_filename_meta(&file_stem, &contacts_map);
-                    write_call_recording_markdown(
-                        &conn, &file_name, &c_disp, &r_date, &r_time, None, None,
-                    );
-                }
-                rec_md_path
-            } else {
-                let target_stem = sanitize_filename_stem(&room_or_sender);
-                let md_path = calls_dir.join(format!("{}.md", target_stem));
-                if !md_path.exists() {
-                    let display_name = resolve_contact_display(&room_or_sender, &contacts_map);
-                    let sdate = sent_date.unwrap_or_else(|| {
-                        chrono::Local::now().format("%Y-%m-%d").to_string()
-                    });
-                    append_line_to_mobile_md(
+            let has_explicit_audio = attachment_uuid
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if has_explicit_audio {
+                if let Some((_, file_name, file_stem, rec_md_path, _)) =
+                    find_call_audio_and_md_ext(
                         &conn,
-                        "calls",
-                        &target_stem,
-                        &format!("[통화내역 스크립트] {}", display_name),
-                        "[\"통화\", \"통화내역\", \"통화내용\", \"전화\"]",
-                        &sdate,
-                        &format!("- 📞 **{}** 통화 기록", display_name),
-                    );
+                        &room_or_sender,
+                        attachment_uuid.as_deref(),
+                        sent_date.as_deref(),
+                        true,
+                    )
+                {
+                    if !rec_md_path.exists() {
+                        let (c_disp, r_date, r_time) =
+                            parse_call_audio_filename_meta(&file_stem, &contacts_map);
+                        write_call_recording_markdown(
+                            &conn, &file_name, &c_disp, &r_date, &r_time, None, None,
+                        );
+                    }
+                    return build_document_payload(&conn, &rec_md_path);
                 }
-                md_path
             }
+            let target_stem = sanitize_filename_stem(&room_or_sender);
+            let md_path = calls_dir.join(format!("{}.md", target_stem));
+            if !md_path.exists() {
+                let display_name = resolve_contact_display(&room_or_sender, &contacts_map);
+                let sdate = sent_date.unwrap_or_else(|| {
+                    chrono::Local::now().format("%Y-%m-%d").to_string()
+                });
+                append_line_to_mobile_md(
+                    &conn,
+                    "calls",
+                    &target_stem,
+                    &format!("[통화내역 스크립트] {}", display_name),
+                    "[\"통화\", \"통화내역\", \"통화내용\", \"전화\"]",
+                    &sdate,
+                    &format!("- 📞 **{}** 통화 기록", display_name),
+                );
+            }
+            md_path
         } else if src == "recording" {
             let rec_dir = get_archive_mobile_dir(&conn, "recordings");
             if let Some((_, file_name, file_stem, rec_md_path, _)) =
@@ -389,6 +402,14 @@ pub(crate) async fn get_all_lifelog_messages(
             .prepare(
                 "SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
                  FROM (
+                     SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
+                     FROM lifelog_messages
+                     WHERE id IN (
+                         SELECT MAX(id) FROM lifelog_messages
+                         WHERE source IN ('kakaotalk', 'sms')
+                         GROUP BY source, room_or_sender
+                     )
+                     UNION
                      SELECT * FROM (
                          SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
                          FROM lifelog_messages WHERE source = 'kakaotalk'
@@ -400,7 +421,7 @@ pub(crate) async fn get_all_lifelog_messages(
                          FROM lifelog_messages WHERE source = 'notification'
                          ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
                      )
-                     UNION ALL
+                     UNION
                      SELECT * FROM (
                          SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
                          FROM lifelog_messages WHERE source = 'sms'
@@ -442,11 +463,111 @@ pub(crate) async fn get_all_lifelog_messages(
                     device_id: r.get::<_, String>(8).ok().filter(|s| !s.is_empty()),
                     device_name: r.get::<_, String>(9).ok().filter(|s| !s.is_empty()),
                     has_audio_recording: false,
+                    transcript_stage: 0,
+                    transcript_requirement: None,
                 })
             })
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
+
+        // 사진첩(`media_inbox WHERE status = 'device_photo'` 및 `Picture\extern\*`)에서 동기화된 실제 사진/동영상 항목 로드
+        let re_media_dt = cached_regex!(
+            r"((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_-]([01]\d|2[0-3])([0-5]\d)([0-5]\d)"
+        );
+        if let Ok(mut m_stmt) = conn.prepare(
+            "SELECT file_name, full_path, taken_date, taken_time, file_size
+             FROM media_inbox
+             WHERE status = 'device_photo'
+             ORDER BY taken_date DESC, taken_time DESC, rowid DESC
+             LIMIT ?1",
+        ) {
+            if let Ok(m_iter) = m_stmt.query_map(params![per_source_limit], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            }) {
+                let mut media_rows: Vec<LifelogMessage> = Vec::new();
+                for (m_idx, item) in m_iter.flatten().enumerate() {
+                    let (fname, fpath, t_date, t_time, fsize) = item;
+                    let lower = fname.to_lowercase();
+                    let is_vid = lower.ends_with(".mp4")
+                        || lower.ends_with(".mov")
+                        || lower.ends_with(".webm")
+                        || lower.ends_with(".mkv")
+                        || lower.ends_with(".m4v")
+                        || lower.ends_with(".3gp")
+                        || lower.ends_with(".avi");
+                    let is_img = lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg")
+                        || lower.ends_with(".png")
+                        || lower.ends_with(".webp")
+                        || lower.ends_with(".gif")
+                        || lower.ends_with(".bmp")
+                        || lower.ends_with(".heic");
+                    if !is_vid && !is_img {
+                        continue;
+                    }
+                    let (eff_date, eff_time) = if let Some(cap) = re_media_dt.captures(&fname) {
+                        (
+                            format!("{}-{}-{}", &cap[1], &cap[2], &cap[3]),
+                            format!("{}:{}:{}", &cap[4], &cap[5], &cap[6]),
+                        )
+                    } else {
+                        (t_date, t_time)
+                    };
+                    let dev_folder = Path::new(&fpath)
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("SM-S901N")
+                        .to_string();
+                    let kind_label = if is_vid {
+                        if lower.starts_with("screen_recording") {
+                            "화면녹화"
+                        } else {
+                            "동영상"
+                        }
+                    } else if lower.starts_with("screenshot") {
+                        "스크린샷"
+                    } else {
+                        "사진"
+                    };
+                    let icon = if is_vid { "🎬" } else { "🖼️" };
+                    let msg_txt = format!(
+                        "{} `{}` ({})",
+                        icon,
+                        fname,
+                        format_bytes_human(fsize.max(0) as u64)
+                    );
+                    media_rows.push(LifelogMessage {
+                        id: -100_000 - (m_idx as i64),
+                        source: "media".to_string(),
+                        room_or_sender: dev_folder.clone(),
+                        sender: kind_label.to_string(),
+                        message: msg_txt,
+                        sent_date: eff_date,
+                        sent_time: eff_time,
+                        attachment_uuid: Some(fname),
+                        device_id: None,
+                        device_name: Some(dev_folder),
+                        has_audio_recording: false,
+                        transcript_stage: 0,
+                        transcript_requirement: None,
+                    });
+                }
+                media_rows.sort_by(|a, b| {
+                    b.sent_date
+                        .cmp(&a.sent_date)
+                        .then_with(|| b.sent_time.cmp(&a.sent_time))
+                });
+                rows.extend(media_rows);
+            }
+        }
 
         // 통화/녹음 오디오 파일 디렉터리를 단 1회만 스캔하여 인메모리 인덱스를 구축함으로써
         // 수천 건 조회 시에도 디스크 반복 I/O 및 정규식 재컴파일이 전혀 발생하지 않도록 최적화
@@ -454,13 +575,25 @@ pub(crate) async fn get_all_lifelog_messages(
         let calls_audio_dir = get_archive_mobile_dir(&conn, "calls").join("audio");
         let rec_audio_dir = get_archive_mobile_dir(&conn, "recordings").join("audio");
 
+        fn hms_to_seconds(t: &str) -> Option<i64> {
+            let parts: Vec<&str> = t.trim().split(':').collect();
+            if parts.len() >= 2 {
+                let h: i64 = parts[0].parse().ok()?;
+                let m: i64 = parts[1].parse().ok()?;
+                let s: i64 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
+                Some(h * 3600 + m * 60 + s)
+            } else {
+                None
+            }
+        }
+
         struct CachedAudioFile {
             file_name: String,
-            safe_stem: String,
             c_disp: String,
             c_key: String,
             stem_digits: String,
             r_d: String,
+            r_t_sec: Option<i64>,
             sort_key: String,
         }
 
@@ -504,20 +637,249 @@ pub(crate) async fn get_all_lifelog_messages(
                     let (c_disp, r_d, r_t) = parse_call_audio_filename_meta(&stem, &contacts_map);
                     let c_key = normalize_call_contact_key(&c_disp);
                     let stem_digits = normalize_phone_digits(&stem);
+                    let r_t_sec = hms_to_seconds(&r_t);
                     let sort_key = format!("{}_{}_{}", r_d, r_t, stem);
                     cached_audios.push(CachedAudioFile {
                         file_name,
-                        safe_stem,
                         c_disp,
                         c_key,
                         stem_digits,
                         r_d,
+                        r_t_sec,
                         sort_key,
                     });
                 }
             }
         }
         cached_audios.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+
+        // 1단계: `call_rec` 행(통화녹음 파일 기반)과 `call_log` 행(통화이력 기반)이 동일 통화(동일 일자·연락처·600초 이내)인 경우 병합
+        let mut merged_rec_indices: HashSet<usize> = HashSet::new();
+        let mut claimed_log_indices: HashSet<usize> = HashSet::new();
+        let re_strip_rec_ts = cached_regex!(r"[_-]?(?:19|20)?\d{6}[_-]?\d{6}$");
+
+        // `lifelog_call_logs` 테이블에서 발신/수신 방향 역추적용 인메모리 캐시 로드
+        struct CallLogDirEntry {
+            phone_digits: String,
+            contact_key: String,
+            call_type: String,
+            call_date: String,
+            call_sec: Option<i64>,
+        }
+        let mut call_logs_dir_cache: Vec<CallLogDirEntry> = Vec::new();
+        if let Ok(mut cl_stmt) = conn.prepare(
+            "SELECT phone_number, contact_name, call_type, call_date, call_time
+             FROM lifelog_call_logs ORDER BY call_date DESC, call_time DESC LIMIT 3000",
+        ) {
+            if let Ok(iter) = cl_stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            }) {
+                for (ph, cname, ctype, cdate, ctime) in iter.flatten() {
+                    let ph_digits = normalize_phone_digits(&ph);
+                    let c_disp = if !cname.trim().is_empty() {
+                        cname
+                    } else {
+                        resolve_contact_display(&ph, &contacts_map)
+                    };
+                    call_logs_dir_cache.push(CallLogDirEntry {
+                        phone_digits: ph_digits,
+                        contact_key: normalize_call_contact_key(&c_disp),
+                        call_type: ctype,
+                        call_date: cdate,
+                        call_sec: hms_to_seconds(&ctime),
+                    });
+                }
+            }
+        }
+
+        // `call_transcript_meta` 4단계 상태 맵 로드
+        let mut transcript_meta_map: HashMap<String, (u8, String)> = HashMap::new();
+        if let Ok(mut tm_stmt) = conn.prepare(
+            "SELECT safe_stem, stage, user_requirement FROM call_transcript_meta",
+        ) {
+            if let Ok(iter) = tm_stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            }) {
+                for (stem_k, st_i, req_s) in iter.flatten() {
+                    transcript_meta_map.insert(stem_k, (st_i.clamp(1, 4) as u8, req_s));
+                }
+            }
+        }
+
+        // 원본 행이 `call_rec` 행인지 미리 기록해 두어, 병합 후 `call_log` 행이 다시 `call_rec`로 오인되어 연쇄 병합되는 버그를 방지
+        let is_original_rec_row: Vec<bool> = rows
+            .iter()
+            .map(|r| {
+                r.source == "call"
+                    && r.attachment_uuid
+                        .as_deref()
+                        .map(|a| {
+                            a.starts_with("transcribed:") || a.starts_with("pending_transcript:")
+                        })
+                        .unwrap_or(false)
+            })
+            .collect();
+
+        // `call_rec` 행과 `call_log` 행의 모든 후보 쌍을 수집한 뒤 시간차(`diff_sec`) 오름차순으로 1:1 매칭
+        let mut candidate_pairs: Vec<(i64, usize, usize)> = Vec::new();
+        for i in 0..rows.len() {
+            if !is_original_rec_row[i] {
+                continue;
+            }
+            let rec_date = rows[i].sent_date.clone();
+            let rec_sec = hms_to_seconds(&rows[i].sent_time);
+            let rec_clean = rows[i].room_or_sender.trim().to_string();
+            let rec_no_ts = re_strip_rec_ts.replace(&rec_clean, "").to_string();
+            let (rec_parsed_disp, _, _) = parse_call_audio_filename_meta(&rec_clean, &contacts_map);
+            let rec_norm = normalize_phone_digits(&rec_no_ts);
+            let rec_disp = resolve_contact_display(&rec_no_ts, &contacts_map);
+            let rec_key_a = normalize_call_contact_key(&rec_parsed_disp);
+            let rec_key_b = normalize_call_contact_key(&rec_disp);
+            let rec_key_s = normalize_call_contact_key(&rows[i].sender);
+
+            for j in 0..rows.len() {
+                if i == j || rows[j].source != "call" || is_original_rec_row[j] {
+                    continue;
+                }
+                if rows[j].sent_date != rec_date || !rows[j].message.contains("통화시간") {
+                    continue;
+                }
+                let log_sec = hms_to_seconds(&rows[j].sent_time);
+                let diff_sec = match (rec_sec, log_sec) {
+                    (Some(rs), Some(ls)) => (rs - ls).abs(),
+                    _ => 999_999,
+                };
+                if diff_sec > 300 {
+                    continue;
+                }
+                let log_clean = rows[j].room_or_sender.trim();
+                let log_norm = normalize_phone_digits(log_clean);
+                let log_disp = resolve_contact_display(log_clean, &contacts_map);
+                let log_key_a = normalize_call_contact_key(log_clean);
+                let log_key_b = normalize_call_contact_key(&log_disp);
+
+                let contact_matched = (!rec_norm.is_empty()
+                    && rec_norm.len() >= 8
+                    && log_norm == rec_norm)
+                    || (!log_key_a.is_empty()
+                        && (log_key_a == rec_key_a
+                            || log_key_a == rec_key_b
+                            || log_key_a == rec_key_s))
+                    || (!log_key_b.is_empty()
+                        && (log_key_b == rec_key_a
+                            || log_key_b == rec_key_b
+                            || log_key_b == rec_key_s));
+                if contact_matched {
+                    candidate_pairs.push((diff_sec, i, j));
+                }
+            }
+        }
+        candidate_pairs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        for (_, rec_idx, log_idx) in candidate_pairs {
+            if merged_rec_indices.contains(&rec_idx) || claimed_log_indices.contains(&log_idx) {
+                continue;
+            }
+            let rec_att = rows[rec_idx].attachment_uuid.clone();
+            rows[log_idx].attachment_uuid = rec_att;
+            rows[log_idx].has_audio_recording = true;
+            claimed_log_indices.insert(log_idx);
+            merged_rec_indices.insert(rec_idx);
+        }
+
+        for i in 0..rows.len() {
+            if !is_original_rec_row[i] || merged_rec_indices.contains(&i) {
+                continue;
+            }
+            let rec_date = rows[i].sent_date.clone();
+            let rec_sec = hms_to_seconds(&rows[i].sent_time);
+            let rec_clean = rows[i].room_or_sender.trim().to_string();
+            let rec_no_ts = re_strip_rec_ts.replace(&rec_clean, "").to_string();
+            let (rec_parsed_disp, _, _) = parse_call_audio_filename_meta(&rec_clean, &contacts_map);
+            let rec_norm = normalize_phone_digits(&rec_no_ts);
+            let rec_disp = resolve_contact_display(&rec_no_ts, &contacts_map);
+            let rec_key_a = normalize_call_contact_key(&rec_parsed_disp);
+            let rec_key_b = normalize_call_contact_key(&rec_disp);
+            let rec_key_s = normalize_call_contact_key(&rows[i].sender);
+
+            // `lifelog_call_logs`에서 발신/수신 방향을 찾아 `call_rec` 행의 `sender`를 보정
+            let mut best_dir: Option<(i64, &str)> = None;
+            for cl in &call_logs_dir_cache {
+                if cl.call_date != rec_date {
+                    continue;
+                }
+                let diff_sec = match (rec_sec, cl.call_sec) {
+                    (Some(rs), Some(ls)) => (rs - ls).abs(),
+                    _ => 999_999,
+                };
+                if diff_sec > 300 {
+                    continue;
+                }
+                let matched = (!rec_norm.is_empty()
+                    && rec_norm.len() >= 8
+                    && cl.phone_digits == rec_norm)
+                    || (!cl.contact_key.is_empty()
+                        && (cl.contact_key == rec_key_a
+                            || cl.contact_key == rec_key_b
+                            || cl.contact_key == rec_key_s));
+                if matched {
+                    if best_dir.map(|(bd, _)| diff_sec < bd).unwrap_or(true) {
+                        best_dir = Some((diff_sec, cl.call_type.as_str()));
+                    }
+                }
+            }
+            if let Some((_, ctype)) = best_dir {
+                rows[i].sender = match ctype {
+                    "outgoing" => "발신통화".to_string(),
+                    "missed" => "부재중통화".to_string(),
+                    "rejected" => "수신거절".to_string(),
+                    _ => "수신통화".to_string(),
+                };
+            }
+        }
+
+        if !merged_rec_indices.is_empty() {
+            let mut idx = 0usize;
+            rows.retain(|_| {
+                let keep = !merged_rec_indices.contains(&idx);
+                idx += 1;
+                keep
+            });
+        }
+
+        // 이미 명시적 `attachment_uuid`로 매칭된 오디오 파일명을 추적하여 다른 통화 행에 중복 연결되는 것을 방지
+        let mut claimed_audio_filenames: HashSet<String> = HashSet::new();
+        for row in rows.iter() {
+            if row.source == "call" || row.source == "recording" {
+                if let Some(ex) = row
+                    .attachment_uuid
+                    .as_deref()
+                    .and_then(|a| {
+                        a.strip_prefix("transcribed:")
+                            .or_else(|| a.strip_prefix("pending_transcript:"))
+                    })
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Some(f) = stem_to_filename
+                        .get(ex)
+                        .or_else(|| stem_to_filename.get(&sanitize_filename_stem(ex)))
+                    {
+                        claimed_audio_filenames.insert(f.clone());
+                    }
+                }
+            }
+        }
 
         for row in rows.iter_mut() {
             if row.source == "call" || row.source == "recording" {
@@ -554,43 +916,125 @@ pub(crate) async fn get_all_lifelog_messages(
                     if let Some(f) = stem_to_filename.get(&s1).or_else(|| stem_to_filename.get(&s2))
                     {
                         matched_fname = Some(f.clone());
+                        claimed_audio_filenames.insert(f.clone());
                     }
                 }
 
                 if matched_fname.is_none() {
-                    let target_norm = normalize_phone_digits(clean_room);
-                    let target_disp = resolve_contact_display(clean_room, &contacts_map);
-                    let target_key_a = normalize_call_contact_key(clean_room);
-                    let target_key_b = normalize_call_contact_key(&target_disp);
-                    let allow_any_date = row.source == "recording";
-                    let mut any_date_fallback: Option<String> = None;
+                    let is_eligible_call = row.source == "recording"
+                        || explicit_stem.is_some()
+                        || row.message.contains("통화시간");
+                    if is_eligible_call {
+                        let target_norm = normalize_phone_digits(clean_room);
+                        let target_disp = resolve_contact_display(clean_room, &contacts_map);
+                        let target_key_a = normalize_call_contact_key(clean_room);
+                        let target_key_b = normalize_call_contact_key(&target_disp);
+                        let allow_any_date = row.source == "recording";
+                        let row_sec = hms_to_seconds(&row.sent_time);
+                        let mut best_same_date: Option<(i64, String)> = None;
+                        let mut any_date_fallback: Option<String> = None;
 
-                    for ca in &cached_audios {
-                        let is_contact_match = ca.c_disp == target_disp
-                            || ca.c_disp == clean_room
-                            || (!ca.c_key.is_empty()
-                                && (ca.c_key == target_key_a || ca.c_key == target_key_b))
-                            || (!target_norm.is_empty()
-                                && target_norm.len() >= 8
-                                && ca.stem_digits.contains(&target_norm));
-                        if is_contact_match {
-                            if ca.r_d == row.sent_date {
-                                matched_fname = Some(ca.file_name.clone());
-                                break;
-                            } else if allow_any_date && any_date_fallback.is_none() {
-                                any_date_fallback = Some(ca.file_name.clone());
+                        for ca in &cached_audios {
+                            if row.source == "call"
+                                && claimed_audio_filenames.contains(&ca.file_name)
+                            {
+                                continue;
+                            }
+                            let is_contact_match = ca.c_disp == target_disp
+                                || ca.c_disp == clean_room
+                                || (!ca.c_key.is_empty()
+                                    && (ca.c_key == target_key_a || ca.c_key == target_key_b))
+                                || (!target_norm.is_empty()
+                                    && target_norm.len() >= 8
+                                    && ca.stem_digits.contains(&target_norm));
+                            if is_contact_match {
+                                if ca.r_d == row.sent_date {
+                                    if row.source == "call" {
+                                        if let (Some(rs), Some(cs)) = (row_sec, ca.r_t_sec) {
+                                            let diff = (cs - rs).abs();
+                                            if diff <= 120
+                                                && best_same_date
+                                                    .as_ref()
+                                                    .map(|(bd, _)| diff < *bd)
+                                                    .unwrap_or(true)
+                                            {
+                                                best_same_date = Some((diff, ca.file_name.clone()));
+                                            }
+                                        }
+                                    } else {
+                                        matched_fname = Some(ca.file_name.clone());
+                                        break;
+                                    }
+                                } else if allow_any_date && any_date_fallback.is_none() {
+                                    any_date_fallback = Some(ca.file_name.clone());
+                                }
+                            }
+                        }
+                        if matched_fname.is_none() {
+                            if let Some((_, f)) = best_same_date {
+                                claimed_audio_filenames.insert(f.clone());
+                                matched_fname = Some(f);
+                            } else {
+                                matched_fname = any_date_fallback;
                             }
                         }
                     }
-                    if matched_fname.is_none() {
-                        matched_fname = any_date_fallback;
+                }
+
+                let matched_file_stem = matched_fname.as_deref().and_then(|fn_s| {
+                    Path::new(fn_s)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .filter(|s| !s.is_empty())
+                });
+
+                if let Some(ref fname) = matched_fname {
+                    row.has_audio_recording = true;
+                    if row.attachment_uuid.as_deref().unwrap_or("").trim().is_empty() {
+                        row.attachment_uuid = Some(fname.clone());
                     }
                 }
 
-                if let Some(fname) = matched_fname {
-                    row.has_audio_recording = true;
-                    if row.attachment_uuid.as_deref().unwrap_or("").trim().is_empty() {
-                        row.attachment_uuid = Some(fname);
+                // 4단계 스크립트 진행 상태(`transcript_stage`) 및 추가 요구사항(`transcript_requirement`) 결정
+                if !row.has_audio_recording {
+                    row.transcript_stage = 0;
+                    row.transcript_requirement = None;
+                } else {
+                    let att_str = row.attachment_uuid.as_deref().unwrap_or("").trim();
+                    let raw_stem_cand = matched_file_stem
+                        .clone()
+                        .or_else(|| explicit_stem.clone())
+                        .unwrap_or_else(|| {
+                            Path::new(att_str)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| row.room_or_sender.clone())
+                        });
+                    let safe_stem_cand = sanitize_filename_stem(&raw_stem_cand);
+                    let meta_hit = transcript_meta_map
+                        .get(&safe_stem_cand)
+                        .or_else(|| transcript_meta_map.get(&raw_stem_cand))
+                        .or_else(|| {
+                            explicit_stem.as_ref().and_then(|ex| {
+                                transcript_meta_map
+                                    .get(&sanitize_filename_stem(ex))
+                                    .or_else(|| transcript_meta_map.get(ex))
+                            })
+                        });
+                    if let Some((st, req)) = meta_hit {
+                        row.transcript_stage = *st;
+                        if !req.trim().is_empty() {
+                            row.transcript_requirement = Some(req.clone());
+                        }
+                    } else if att_str.starts_with("transcribed:")
+                        || (row.message.starts_with("🎙️")
+                            && !row.message.contains("스크립트 미생성")
+                            && !row.message.contains("토큰 부족"))
+                    {
+                        row.transcript_stage = 2;
+                    } else {
+                        row.transcript_stage = 1;
                     }
                 }
             }

@@ -12,6 +12,7 @@ import {
   VaultTemplateItem,
 } from '../types/mylore';
 import {
+  createEmptyDocumentInFolder,
   createNewDocument,
   moveDocumentToRole,
   promoteToProjectFolder,
@@ -39,6 +40,8 @@ export interface UseDocumentActionsParams {
   isDirty: boolean;
   flattenedFiles: FileNode[];
   refreshTree: () => Promise<void>;
+  setOpenProjectFolders?: React.Dispatch<React.SetStateAction<Set<string>>>;
+  setOpenArchiveFolders?: React.Dispatch<React.SetStateAction<Set<string>>>;
   applyLoadedDocument: (
     doc: DocumentPayload,
     jumpTo?: {
@@ -64,6 +67,8 @@ export function useDocumentActions({
   isDirty,
   flattenedFiles,
   refreshTree,
+  setOpenProjectFolders,
+  setOpenArchiveFolders,
   applyLoadedDocument,
   closeTab,
   setStatusMessage,
@@ -83,7 +88,14 @@ export function useDocumentActions({
   );
   const [newDocCalendar, setNewDocCalendar] = useState('개발');
   const [newDocLocation, setNewDocLocation] = useState('거제집');
-  const [newDocTemplate, setNewDocTemplate] = useState('project_main.md');
+  const [newDocIncludeLocation, setNewDocIncludeLocation] = useState(true);
+  const [newDocDescriptionMode, setNewDocDescriptionMode] = useState<'File' | 'none'>('File');
+  const [newDocTransparency, setNewDocTransparency] = useState<'transparent' | 'opaque'>('transparent');
+  const [newDocVisibility, setNewDocVisibility] = useState<'default' | 'public' | 'private' | 'confidential'>('default');
+  const [newDocAttendeeEmail, setNewDocAttendeeEmail] = useState('');
+  const [newDocAttendeeResponseStatus, setNewDocAttendeeResponseStatus] = useState<'accepted' | 'declined' | 'tentative' | 'needsAction'>('needsAction');
+  const [newDocEventStatus, setNewDocEventStatus] = useState<'confirmed' | 'tentative' | 'cancelled'>('confirmed');
+  const [newDocTemplate, setNewDocTemplate] = useState('none');
   const [vaultTemplates, setVaultTemplates] = useState<VaultTemplateItem[]>([]);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
 
@@ -146,10 +158,52 @@ export function useDocumentActions({
       setRenameModalOpen(false);
       await refreshTree();
       setStatusMessage(
-        `✏️ [F2] 문서 제목 변경 완료 (UUID 유지): ${renamed.relativePath}`
+        `✏️ [F2] 문서 제목 변경 및 UUID 반영 완료 (${renamed.uuid.slice(0, 8)}): ${renamed.relativePath}`
       );
     } catch (err) {
       setStatusMessage(`문서 제목 변경 실패: ${String(err)}`);
+    }
+  };
+
+  // 폴더 우클릭 메뉴 > "새 문서 생성": 해당 폴더에 빈 md 문서 생성 -> 제목 수정창 표시 -> 제목 입력 시 UUID 주입
+  const handleCreateEmptyDocInFolder = async (
+    targetRole: BaseFolderRole,
+    targetSubDir?: string
+  ) => {
+    try {
+      const created = await createEmptyDocumentInFolder(
+        targetRole,
+        targetSubDir
+      );
+      if (targetSubDir) {
+        if (targetRole === 'data') {
+          setOpenArchiveFolders?.((prev) => {
+            const next = new Set(prev);
+            next.add(targetSubDir);
+            return next;
+          });
+        } else {
+          setOpenProjectFolders?.((prev) => {
+            const next = new Set(prev);
+            next.add(targetSubDir);
+            return next;
+          });
+        }
+      }
+      await refreshTree();
+      applyLoadedDocument(created);
+      const defaultStem =
+        created.relativePath
+          .split(/[\\/]/)
+          .pop()
+          ?.replace(/\.md$/i, '') || '새 문서';
+      setRenameTitleInput(defaultStem);
+      setRenameModalOpen(true);
+      setStatusMessage(
+        `📄 빈 마크다운 문서가 생성되었습니다 (${created.relativePath}) — 제목을 입력하면 고유 UUID가 주입됩니다.`
+      );
+    } catch (err) {
+      setStatusMessage(`새 문서 생성 실패: ${String(err)}`);
     }
   };
 
@@ -212,23 +266,44 @@ export function useDocumentActions({
   };
 
   const handleCreateNewDocSubmit = async () => {
-    if (!newDocTitle.trim()) return;
+    if (!newDocTitle.trim() && newDocRole !== 'diary') return;
     try {
       const created = await createNewDocument({
         role: newDocRole,
-        title: newDocTitle.trim(),
+        title: newDocTitle.trim() || '새 일정',
         dateStr: newDocDate,
         calendarCategory: newDocCalendar,
         location: newDocLocation,
+        includeLocation: newDocIncludeLocation,
+        descriptionMode: newDocDescriptionMode,
+        transparency: newDocTransparency,
+        visibility: newDocVisibility,
+        attendeeEmail: newDocAttendeeEmail,
+        attendeeResponseStatus: newDocAttendeeResponseStatus,
+        eventStatus: newDocEventStatus,
         isProjectFolder: newDocRole === 'projects',
         templateFile: newDocTemplate,
       });
       setNewDocModalOpen(false);
       setCalendarModalOpen(false);
       setNewDocTitle('');
+      setNewDocAttendeeEmail('');
       await refreshTree();
       applyLoadedDocument(created);
-      setStatusMessage(`새 문서 생성됨: ${created.relativePath}`);
+      if (newDocRole === 'diary') {
+        const evId = created.frontmatter['event-id'];
+        if (evId) {
+          setStatusMessage(
+            `📅 새 일정 생성 및 구글 캘린더 자동 업로드 완료 (event-id: ${evId}): ${created.relativePath}`
+          );
+        } else {
+          setStatusMessage(
+            `📅 새 일정 생성됨 (구글 캘린더 업로드 대기 — 연동 시 자동 업로드): ${created.relativePath}`
+          );
+        }
+      } else {
+        setStatusMessage(`새 문서 생성됨: ${created.relativePath}`);
+      }
     } catch (err) {
       setStatusMessage(`문서 생성 오류: ${String(err)}`);
     }
@@ -245,7 +320,7 @@ export function useDocumentActions({
       await refreshTree();
       applyLoadedDocument(promoted);
       setStatusMessage(
-        `📁 프로젝트 폴더로 승격 완료: Projects/${promoteProjectName.trim()}/main.md`
+        `⭐ 프로젝트 폴더로 승격 완료: Projects/${promoteProjectName.trim()}/main.md`
       );
     } catch (err) {
       setStatusMessage(`프로젝트 승격 실패: ${String(err)}`);
@@ -254,16 +329,57 @@ export function useDocumentActions({
 
   const handleMoveRole = async (
     targetRole: BaseFolderRole,
-    sourcePath?: string
+    sourcePath?: string,
+    targetSubDir?: string
   ) => {
     const pathToUse = sourcePath || currentDoc?.fullPath;
     if (!pathToUse) return;
     try {
-      const moved = await moveDocumentToRole(pathToUse, targetRole);
+      if (currentDoc?.fullPath === pathToUse && isDirty) {
+        const combined = combineYamlAndBody(yamlText, bodyText);
+        await saveDocument(pathToUse, combined);
+      }
+      const moved = await moveDocumentToRole(
+        pathToUse,
+        targetRole,
+        undefined,
+        targetSubDir
+      );
+      const split = splitYamlFrontmatter(moved.rawContent);
+      setOpenTabs((prev) =>
+        prev.map((t) =>
+          t.doc.fullPath === pathToUse
+            ? {
+                doc: moved,
+                yamlText: split.yamlRaw,
+                bodyText: split.body,
+                isDirty: false,
+              }
+            : t
+        )
+      );
+      setTabAccessHistory((prev) => {
+        const next = prev.map((p) => (p === pathToUse ? moved.fullPath : p));
+        tabAccessHistoryRef.current = next;
+        return next;
+      });
+      if (activeTabPath === pathToUse) {
+        setActiveTabPath(moved.fullPath);
+      }
       await refreshTree();
-      applyLoadedDocument(moved);
+      if (currentDoc?.fullPath === pathToUse) {
+        applyLoadedDocument(moved);
+      }
+      const roleName =
+        targetRole === 'projects'
+          ? '프로젝트'
+          : targetRole === 'diary'
+            ? '일기'
+            : targetRole === 'data'
+              ? '아카이브'
+              : 'Git';
       setStatusMessage(
-        `🚚 [${targetRole.toUpperCase()}] 폴더로 이동 완료: ${moved.relativePath}`
+        `🚚 [${roleName}${targetSubDir ? ` / ${targetSubDir}` : ''}] 폴더로 파일 이동 완료: ${moved.relativePath}`
       );
     } catch (err) {
       setStatusMessage(`문서 이동 오류: ${String(err)}`);
@@ -289,6 +405,20 @@ export function useDocumentActions({
     setNewDocCalendar,
     newDocLocation,
     setNewDocLocation,
+    newDocIncludeLocation,
+    setNewDocIncludeLocation,
+    newDocDescriptionMode,
+    setNewDocDescriptionMode,
+    newDocTransparency,
+    setNewDocTransparency,
+    newDocVisibility,
+    setNewDocVisibility,
+    newDocAttendeeEmail,
+    setNewDocAttendeeEmail,
+    newDocAttendeeResponseStatus,
+    setNewDocAttendeeResponseStatus,
+    newDocEventStatus,
+    setNewDocEventStatus,
     newDocTemplate,
     setNewDocTemplate,
     vaultTemplates,
@@ -303,6 +433,7 @@ export function useDocumentActions({
     setPromoteProjectName,
     handleOpenRenameDocModal,
     handleRenameCurrentDocSubmit,
+    handleCreateEmptyDocInFolder,
     handleTrashDocument,
     handleRestoreTrashedDocument,
     handleCreateNewDocSubmit,

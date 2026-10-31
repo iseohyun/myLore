@@ -78,4 +78,38 @@ fn default_paths_are_not_hardcoded_to_a_user() {
     assert!(p.ends_with(Path::new(APP_IDENTIFIER).join(META_DB_FILE_NAME)));
     assert!(default_data_base_dir().ends_with(Path::new("myLore").join("Data")));
     assert!(default_projects_base_dir().ends_with(Path::new("myLore").join("Projects")));
+    let resolved = resolve_meta_db_path();
+    assert!(resolved.ends_with(META_DB_FILE_NAME));
+}
+
+#[test]
+fn migrate_meta_db_replaces_existing_empty_target() {
+    let dir = temp_case_dir("replace_empty");
+    let legacy = dir.join("legacy").join(META_DB_FILE_NAME);
+    let target = dir.join("appdata").join(META_DB_FILE_NAME);
+    fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+
+    // target이 빈 시드 DB로 먼저 존재하는 상황 재현
+    let empty_dst = Connection::open(&target).unwrap();
+    empty_dst
+        .execute_batch("CREATE TABLE lifelog_messages (id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(empty_dst);
+    assert_eq!(count_meta_db_records(&target), 0);
+
+    // legacy에는 실데이터가 존재
+    let src = Connection::open(&legacy).unwrap();
+    src.execute_batch(
+        "CREATE TABLE lifelog_messages (id INTEGER PRIMARY KEY);
+         INSERT INTO lifelog_messages (id) VALUES (1), (2), (3);",
+    )
+    .unwrap();
+    drop(src);
+    assert_eq!(count_meta_db_records(&legacy), 3);
+
+    migrate_meta_db(&legacy, &target).unwrap();
+    assert_eq!(count_meta_db_records(&target), 3);
+
+    cleanup(&dir);
 }

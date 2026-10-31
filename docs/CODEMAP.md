@@ -86,7 +86,7 @@ Gemini API 클라이언트: `ureq` (`native-tls-no-default` + `PlatformVerifier`
 
 통화 녹음 자동 스크립트화 워커 및 Gemini 관련 Tauri 커맨드.
 
-- **커맨드**: `retry_pending_call_transcriptions`, `get_gemini_api_key_status`, `set_auto_call_transcription`, `transcribe_single_call_item`, `save_and_verify_gemini_api_key`, `transcribe_local_audio_file`
+- **커맨드**: `retry_pending_call_transcriptions`, `get_gemini_api_key_status`, `set_auto_call_transcription`, `transcribe_single_call_item`, `update_call_transcript_stage`, `save_and_verify_gemini_api_key`, `transcribe_local_audio_file`
 - **함수**: `process_pending_call_transcriptions`, `spawn_call_transcript_retry_worker`
 - **전역 상태**: `IS_TRANSCRIPTION_RUNNING`
 
@@ -108,12 +108,12 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **커맨드**: `get_lifelog_for_date`, `open_lifelog_item_document`, `get_all_lifelog_messages`
 
-### `src-tauri/src/lifelog/contacts.rs` (76줄)
+### `src-tauri/src/lifelog/contacts.rs` (226줄)
 
-휴대폰 연락처 매핑(전화번호 → 표시 이름).
+휴대폰 연락처 매핑(전화번호 → 표시 이름) 및 연락처별 인물 서술(호칭·소속 모임·특징) AI 배경지식 프로필 관리.
 
-- **커맨드**: `get_mobile_contacts_map`
-- **함수**: `normalize_phone_digits`, `load_mobile_contacts_map`, `resolve_contact_display`
+- **커맨드**: `get_mobile_contacts_map`, `get_contact_ai_profiles`, `save_contact_ai_profile`
+- **함수**: `normalize_phone_digits`, `load_mobile_contacts_map`, `resolve_contact_display`, `load_contact_ai_profiles_map`, `persist_contact_ai_profiles_to_vault`, `extract_groups_from_profile_text`, `build_contact_ai_context_for_target`
 
 ### `src-tauri/src/lifelog/kakao.rs` (443줄)
 
@@ -132,12 +132,25 @@ myLore Tauri 백엔드 크레이트 루트.
 
 `lifelog::parse` / `lifelog::contacts` 순수 함수 단위 테스트 (15개).
 
+### `src-tauri/src/lifelog/pc_activity.rs` (467줄)
+
+ActivityWatch(`aw-watcher-window`, `aw-watcher-afk`) 로컬 DB(`peewee-sqlite.v2.db`) 증분 수집 및 일간/주간 PC 활동 통계·타임라인 조회.
+
+- **커맨드**: `get_pc_activity_summary`
+- **함수**: `resolve_activitywatch_db_path`, `sync_activitywatch_events_to_mylore`
+
 ### `src-tauri/src/lifelog/recordings.rs` (666줄)
 
 통화/음성 녹음 마크다운 작성, 라이프로그 DB 반영, 녹음 파일 탐색·재생 정보.
 
 - **커맨드**: `get_call_recording_play_info`
 - **함수**: `write_call_recording_markdown`, `write_voice_recording_markdown`, `upsert_single_recording_into_lifelog_db`, `repair_multipart_audio_file_if_needed`, `normalize_call_contact_key`, `find_call_audio_and_md`, `find_call_audio_and_md_ext`
+
+### `src-tauri/src/mobile/ack_state.rs` (594줄)
+
+동기화 프로토콜 v2.0: `client_ack` 상태 머신(`kakao_room_sync_state`, `domain_sync_state`), 구 프로토콜 누락 카톡 대화방 자동 역추출(Backfill), 세션 플랜(`session-plan`), Background Check(`complete`) 및 클라이언트 수신 확인(`ack`) 핸들러.
+
+- **함수**: `normalize_sync_service_key`, `parse_korean_date_time_to_epoch_ms`, `backfill_sync_ack_states`, `upsert_kakao_room_sync_state_unacked`, `add_kakao_room_media_bytes_unacked`, `mark_domain_sync_state_unacked`, `query_unacked_sync_states`, `handle_session_plan`, `handle_sync_complete`, `handle_sync_ack`
 
 ### `src-tauri/src/mobile/auth.rs` (220줄)
 
@@ -158,11 +171,11 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `spawn_mobile_companion_http_server`
 
-### `src-tauri/src/mobile/http_server/routes_core.rs` (406줄)
+### `src-tauri/src/mobile/http_server/routes_core.rs` (652줄)
 
-동반 앱 HTTP 라우트: 파일 열기 전달, 상태/워터마크, 배치 시작, 페어링 확정, 해시 중복 확인.
+동반 앱 HTTP 라우트: 파일 열기 전달, 상태/워터마크(현재 NAT Wi-Fi SSID 포함), 동기화 매니페스트/유휴 정합성(`manifest` / `reconcile`), 배치 시작, 페어링 확정, 해시 중복 확인.
 
-- **함수**: `handle_open_files`, `handle_status_and_watermarks`, `handle_batch_init`, `handle_pair_confirm`, `handle_check_hashes`
+- **함수**: `handle_open_files`, `handle_status_and_watermarks`, `handle_sync_manifest_and_reconcile`, `handle_batch_init`, `handle_pair_confirm`, `handle_check_hashes`
 
 ### `src-tauri/src/mobile/http_server/routes_media.rs` (462줄)
 
@@ -176,25 +189,25 @@ myLore Tauri 백엔드 크레이트 루트.
 
 - **함수**: `handle_sync_notifications`, `handle_sync_sms`, `handle_sync_call_logs`, `handle_sync_kakao_chats`, `handle_sync_contacts`, `handle_sync_app_usage`
 
-### `src-tauri/src/mobile/pairing.rs` (413줄)
+### `src-tauri/src/mobile/pairing.rs` (446줄)
 
-모바일 동반 앱 페어링: 로컬 IP 탐지, 현재 연결된 Wi-Fi SSID/비밀번호/인증방식 자동 탐지(`netsh wlan show interfaces`, `netsh wlan show profile ... key=clear`), UDP 깨우기, 페어링 정보/설정 커맨드.
+모바일 동반 앱 페어링: 로컬 IP 탐지, 서버 시작 시 현재 NAT의 Wi-Fi SSID/비밀번호/인증방식 자동 탐지 및 갱신(`netsh wlan show interfaces`, `Get-NetConnectionProfile`, `netsh wlan show profile ... key=clear`), UDP 깨우기, 페어링 정보/설정 커맨드.
 
 - **커맨드**: `send_mobile_udp_wake_broadcast`, `get_mobile_pairing_info`, `remove_paired_mobile_device`, `trigger_full_mobile_resync`, `update_mobile_pairing_config`
-- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `detect_current_wifi_ssids`, `parse_netsh_wlan_ssids`, `merge_ssids`, `detect_wifi_profile_credentials`, `parse_netsh_wlan_profile_credentials`, `build_mobile_pairing_payload`
+- **함수**: `detect_local_ipv4_addresses`, `broadcast_udp_pc_online`, `detect_current_wifi_ssids`, `refresh_server_nat_wifi_ssids`, `parse_netsh_wlan_ssids`, `merge_ssids`, `detect_wifi_profile_credentials`, `parse_netsh_wlan_profile_credentials`, `build_mobile_pairing_payload`
 
 ### `src-tauri/src/mobile/pairing_tests.rs` (78줄)
 
 `mobile::pairing` 순수 함수 단위 테스트 (5개).
 
-### `src-tauri/src/mobile/progress.rs` (353줄)
+### `src-tauri/src/mobile/progress.rs` (420줄)
 
 모바일 동기화 진행률 상태(인메모리) 및 프론트엔드 이벤트 발행.
 
 - **커맨드**: `get_mobile_sync_progress_state`, `trigger_sequential_mobile_sync`
-- **함수**: `rebuild_step_segments`, `default_live_sync_progress`, `emit_live_service_sync_progress`, `complete_all_remaining_sync_steps`
+- **함수**: `rebuild_step_segments`, `default_live_sync_progress`, `emit_live_service_sync_progress`, `init_sync_progress_from_db`, `complete_all_remaining_sync_steps`
 - **타입**: `MobileSyncSegment`, `MobileSyncStepSummary`, `MobileSyncProgressPayload`
-- **전역 상태**: `LIVE_SYNC_PROGRESS`, `SYNC_QUEUE_DEPTH`, `IS_WORKER_ACTIVE`, `LAST_PROGRESS_EMIT_MS`, `INITIAL_SYNC_CHECKED`, `LAST_APP_USAGE_DIGEST`
+- **전역 상태**: `LIVE_SYNC_PROGRESS`, `SYNC_QUEUE_DEPTH`, `IS_WORKER_ACTIVE`, `LAST_PROGRESS_EMIT_MS`, `INITIAL_SYNC_CHECKED`, `RECONCILE_PENDING_COMPLETION`, `LAST_APP_USAGE_DIGEST`
 
 ### `src-tauri/src/mobile/storage.rs` (148줄)
 
@@ -277,7 +290,7 @@ OS 연동: 탐색기, 네이티브 파일 대화상자, Chrome/구글 캘린더 
 
 문서 읽기/저장/생성/이름변경, 파일 내 검색·치환, 템플릿, 역할 이동.
 
-- **커맨드**: `read_document`, `read_document_by_uuid`, `save_document`, `create_new_document`, `create_temp_memo`, `open_root_main_md`, `rename_current_document`, `search_in_files`, `replace_in_files`, `get_vault_templates`, `promote_to_project_folder`, `move_document_to_role`
+- **커맨드**: `read_document`, `read_document_by_uuid`, `save_document`, `create_new_document`, `create_empty_document_in_folder`, `create_temp_memo`, `open_root_main_md`, `rename_current_document`, `search_in_files`, `replace_in_files`, `get_vault_templates`, `promote_to_project_folder`, `move_document_to_role`
 - **함수**: `build_document_payload`
 
 ### `src-tauri/src/vault/markdown.rs` (204줄)
@@ -305,6 +318,14 @@ Windows 휴지통 이동 및 휴지통 복원.
 창 제어: 전체 화면 토글 및 분리(Detached) 미리보기 창 동기화.
 
 - **커맨드**: `toggle_window_fullscreen`, `sync_detached_preview_scroll`, `toggle_detached_preview_window`, `emit_detached_preview_action`, `sync_detached_preview_state`, `get_detached_preview_state`
+
+### `src-tauri/src/calendar_sync.rs` (760줄)
+
+Google Calendar API v3 양방향 동기화 모듈 (OAuth 2.0 PKCE 로컬 콜백 서버 `127.0.0.1:42813`, 신규 일정 생성 시 자동 업로드, 프로그램 시작 시 및 일정 대쉬보드 `F5` 요청 시 일정 다운로드).
+
+- **커맨드**: `get_google_calendar_sync_status`, `sync_google_calendar_events`, `start_google_calendar_oauth_login`
+- **함수**: `resolve_gcal_secret_path`, `load_or_init_gcal_config`, `save_gcal_config`, `ensure_valid_gcal_access_token`, `parse_diary_event_yaml`, `inject_event_id_into_markdown`, `mark_diary_markdown_upload_pending`, `try_upload_diary_markdown_to_gcal`, `sync_google_calendar_events_internal`
+- **타입**: `GoogleCalendarSecretConfig`, `ParsedDiaryEventYaml`
 
 ## 3. 프론트엔드 (`src/`)
 
@@ -337,7 +358,7 @@ Windows 휴지통 이동 및 휴지통 복원.
 | `hooks/useAppStartup.ts` | 355 | 초기 앱 설정/폴더/세션 복원 및 Tauri 실시간 이벤트(`uuid-scan-progress`, `cli-open-files`, `mobile-sync-*`) 구독 | 반환값 없음 (초기화 및 이벤트 리스너 등록 전용 사이드이펙트 훅) |
 | `hooks/useKeybindings.ts` | 643 | 전역 단축키 설정/녹음, `useRef` 기반 전역 `keydown`/`keyup` 리스너, 명령어 팔레트 항목 구성 | **State/Memo**: `shortcutsModalOpen`, `helpSearchQuery`, `recordingShortcutTarget`, `altPressed`, `keybindings`, `filteredKeybindings`, `commandItems`<br>**Fn/Const**: `getShortcutLabel`, `DEFAULT_KEYBINDINGS`, `KEYBINDINGS_STORAGE_KEY` |
 
-### 3.2 UI 컴포넌트 (`src/components/` — 24개 파일)
+### 3.2 UI 컴포넌트 (`src/components/` — 27개 파일)
 
 | 영역 | 파일 | 줄 수 | 역할 |
 |---|---|---:|---|
@@ -350,16 +371,19 @@ Windows 휴지통 이동 및 휴지통 복원.
 | | `components/dashboards/SyncProgressCard.tsx` | 255 | 모바일 동기화 진행률 카드 (단계별 스킵/신규 집계) |
 | | `components/dashboards/LifelogDashboard.tsx` | 230 | 라이프로그 대쉬보드 컨테이너 (`F7`) |
 | | `components/dashboards/LifelogSettingsTab.tsx` | 647 | 라이프로그 대쉬보드 — QR 페어링(Wi-Fi 자동 연결 포함)·SSID·Gemini API 키 설정 탭 |
-| | `components/dashboards/LifelogMobileDataTab.tsx` | 310 | 라이프로그 대쉬보드 — 휴대폰 수집 데이터 테이블 탭 |
-| | `components/dashboards/SettingsDashboard.tsx` | 674 | 설정 대쉬보드 컨테이너 및 4대 베이스 폴더 경로 관리 |
+| | `components/dashboards/LifelogMobileDataTab.tsx` | 310 | 라이프로그 대쉬보드 — [💬 대화] 탭 (휴대폰 대화·이벤트 데이터 테이블) |
+| | `components/dashboards/LifelogRecordsTab.tsx` | 414 | 라이프로그 대쉬보드 — [🗂️ 기록] 탭 (사진첩·동영상기록·음성녹음·연락처+명함 4개 하위 분류 뷰) |
+| | `components/dashboards/SettingsDashboard.tsx` | 916 | 설정 대쉬보드 컨테이너, 4대 분야 로그 보관일 설정 및 4대 베이스 폴더 경로 관리 |
 | | `components/dashboards/SettingsAppearanceSection.tsx` | 637 | 설정 대쉬보드 — 테마 프리셋·글꼴·크기·색상·F11 뷰어 설정 섹션 |
+| | `components/dashboards/LogDashboard.tsx` | 485 | 로그 기록 조회 대쉬보드 (`Ctrl+\``, `comm`/`version`/`system`/`ai` 4대 분야별 `{분야}_{YYYYMMDD}.log` 실시간 스트림·검색·보관일 관리) |
 | **에디터** | `components/editor/DocumentWorkspace.tsx` | 464 | 인라인 찾기/바꾸기 바, YAML 편집기, 마크다운 에디터/프리뷰 분할 워크스페이스 |
 | | `components/editor/SmsBubbleView.tsx` | 246 | 문자(SMS) 말풍선 대화형 뷰어(`SmsBubbleView`) 및 원문/대화형 전환 헤더(`SmsHeaderBar`) |
 | | `components/editor/ProjectSubDocsPanel.tsx` | 206 | 프로젝트 `main.md` 하위 문서(Sub-MD) 카드/테이블 패널 |
 | **우측 사이드바** | `components/sidebar/RightSidebar.tsx` | 386 | 우측 사이드바 컨테이너 (폴더 트리 / 전체 검색·바꾸기 / 목차(TOC) / 일자별 라이프로그 / 모바일 6탭) |
 | | `components/sidebar/FileTreePanel.tsx` | 712 | 우측 사이드바 폴더 트리 (프로젝트/이번주 일기/아카이브/Git 계층형 트리 렌더링) |
 | | `components/sidebar/MobileLifelogSidebar.tsx` | 596 | 우측 사이드바 모바일 라이프로그 6탭 뷰 (`useMemo` 최적화 적용) |
-| **하단 상태바** | `components/footer/StatusBar.tsx` | 188 | 하단 상태 표시줄, 통화 녹음 오디오 플레이어, UUID 스캔 진행률 바 |
+| **하단 상태바** | `components/footer/StatusBar.tsx` | 200 | 하단 상태 표시줄, 통화 녹음 오디오 플레이어, UUID 스캔 진행률 바, 통합 로그 토글 버튼 |
+| | `components/footer/LogTerminalDrawer.tsx` | 305 | 통합 로그 터미널 드로어 (`Ctrl+\``, `log/{service}_YYYYMMDD.log` 실시간 스트림·필터·만료 정리) |
 | **모달·메뉴** | `components/modals/ContextMenus.tsx` | 333 | 파일 트리/탭 우클릭 메뉴 및 모바일 라이프로그 우클릭 컨텍스트 메뉴 |
 | | `components/modals/CommandPaletteModal.tsx` | 103 | 명령어 팔레트(`Ctrl+Shift+P`) 및 빠른 파일 열기(`Ctrl+P`) 모달 |
 | | `components/modals/CalendarNewDocModal.tsx` | 199 | 달력 기반 새 일정 생성 모달 |

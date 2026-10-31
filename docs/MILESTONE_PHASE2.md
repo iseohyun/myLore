@@ -114,3 +114,26 @@ src/
 | **Step 2B: 4대 대시보드 분리** | 1) `SettingsDashboard` (1,128줄)<br>2) `FinanceDashboard` (238줄 + 엑셀 업로드)<br>3) `DiaryDashboard` (93줄)<br>4) `LifelogDashboard` + 하위 탭 2종 + 공용 `SyncProgressCard` | 약 2,640줄 | ~6,800줄 | **낮음** |
 | **Step 2C: 상단 메뉴바·사이드바·에디터 뷰 분리** | 1) 7개 메뉴 → 데이터 기반 `MenuBar` + `DocTabsBar` + `AppHeader`<br>2) `MobileLifelogSidebar` + `FileTreePanel` + `RightSidebar`<br>3) `DocumentWorkspace` (`SmsBubbleView`, `ProjectSubDocsPanel` 포함) | 약 4,150줄 | ~2,650줄 | **중간** |
 | **Step 2D: 커스텀 훅 분리** | 1) `useKeybindings`<br>2) `useFileTree`, `useLifelogAudio`, `useDocuments` 추출 | 약 2,200줄 | **~450줄** | **중간** |
+
+
+---
+
+## 4. Phase 3 향후 마일스톤 로드맵 (연락처 메모 AI 컨텍스트 연동 & 라이프로그 [설정/대화/기록] 아키텍처)
+
+### 4.1 AI 개인화 참고 설정(`aiUserProfile`) 및 연락처 + 연락처 메모 AI 컨텍스트 확장
+- **1단계 (구현 완료)**:
+  - `MyLoreAppSettings`에 `aiUserProfile`(기본값: `"이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영"`) 및 `aiDailyTokenLimit`(기본값: `1,000,000`)을 추가.
+  - 통화 녹음(`transcribe_call_audio_with_gemini`) 및 음성메모·회의 녹음(`transcribe_voice_recording_with_gemini`) 분석 시 프롬프트에 `[👤 사용자(통화/녹음 당사자 '나') 개인화 참고 정보]` 섹션을 자동 첨부하여 사용자 본인 이름(`정서현`, `서현`)이 상대방 이름(예: `대원`)이나 유사 발음 인명으로 오인식되는 오류를 방지.
+- **2단계 (Phase 3 예정 — 연락처 및 연락처 메모 AI 연동)**:
+  - `연락처_주소록.md` 및 연락처 DB 스키마를 확장하여 각 연락처별 **관계·호칭·직책·소속·특이사항 메모(`contact_memo`)** 및 **명함 OCR 정보**를 저장.
+  - 특정 인물과의 통화 녹음 스크립트화, 카톡/문자 요약, 일정 추출 시 **사용자 개인화 프로필(`aiUserProfile`) + 해당 통화 상대방의 연락처 정보 및 메모(`contact_memo`)**를 함께 Gemini 프롬프트에 주입하여 맥락 기반 고정밀 AI 분석을 수행.
+
+### 4.2 라이프로그 대시보드 `설정 / 대화 / 기록` 3단 탭 구조 및 미디어·명함 아카이브 고도화
+- **현재 UI 구조 (`LifelogDashboard.tsx` + `LifelogRecordsTab.tsx` 반영 완료)**:
+  - `⚙️ 설정` (`LifelogSettingsTab.tsx`): QR 페어링, NAT Wi-Fi 자격 증명, Gemini API 키, AI 개인화 참고 설정(`aiUserProfile`), 일일 예상 토큰 한도 및 `AI: XX.X%` 잔여 백분율 표시.
+  - `💬 대화` (`LifelogMobileDataTab.tsx`): 카카오톡, 문자(SMS/MMS), 통화 이력, 앱 알림, 삼성 헬스 등 시계열 대화·이벤트 로그 통합 조회.
+  - `🗂️ 기록` (`LifelogRecordsTab.tsx`):
+    1. **🖼️ 사진첩 (`photos`)**: 모바일에서 수집된 이미지 미디어 그리드 뷰 및 원본 문서 연동.
+    2. **🎬 동영상기록 (`videos`)**: 모바일에서 수집된 동영상 미디어 인라인 재생 및 원본 문서 연동.
+    3. **🎙️ 음성녹음 (`recordings`)**: 독백 음성메모·회의 녹음·통화 녹음 통합 관리 및 4단계 AI 스크립트 상태 제어.
+    4. **📇 연락처+명함 (`contacts`)**: 동기화된 연락처 주소록 조회, 누적 대화/통화 집계, 향후 연락처별 AI 메모 및 명함 스캔 관리.

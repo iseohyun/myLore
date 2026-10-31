@@ -39,6 +39,18 @@ pub(crate) fn spawn_mobile_companion_http_server(
                     } else if url_path == "/api/v1/status" || url_path == "/api/v1/sync/watermarks"
                     {
                         routes_core::handle_status_and_watermarks(request, db_path, url_path);
+                    } else if url_path == "/api/v1/sync/manifest"
+                        || url_path == "/api/v1/sync/reconcile"
+                    {
+                        routes_core::handle_sync_manifest_and_reconcile(
+                            request, app_handle, db_path, url_path,
+                        );
+                    } else if url_path == "/api/v1/sync/session-plan" {
+                        handle_session_plan(request, app_handle, db_path);
+                    } else if url_path == "/api/v1/sync/complete" {
+                        handle_sync_complete(request, app_handle, db_path);
+                    } else if url_path == "/api/v1/sync/ack" {
+                        handle_sync_ack(request, db_path);
                     } else if url_path == "/api/v1/sync/batch-init" {
                         routes_core::handle_batch_init(request, app_handle);
                     } else if url_path == "/api/v1/pair/confirm" {

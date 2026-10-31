@@ -9,9 +9,11 @@ export interface MarkdownRendererProps {
   bodyText: string;
   onUpdateTaskStatus: (lineIndex: number, nextCode: TaskPriorityCode) => void;
   onNavigateUuid: (uuid: string) => void;
+  onNavigateDocName?: (docName: string) => void;
   onOpenExternalUrl?: (url: string) => void;
   activeAudioLineIndex?: number | null;
   onSeekAudioTime?: (seconds: number, lineIndex: number) => void;
+  onEditSourceLine?: (lineIndex: number) => void;
   enableAudioTimestampSync?: boolean;
 }
 
@@ -131,7 +133,8 @@ function isRawHtmlBlockStart(line: string): { tag: string; selfClosing: boolean 
 export function renderInlineMarkdown(
   text: string,
   onNavigateUuid: (uuid: string) => void,
-  onOpenExternalUrl?: (url: string) => void
+  onOpenExternalUrl?: (url: string) => void,
+  onNavigateDocName?: (docName: string) => void
 ): React.ReactNode {
   if (!text) return null;
 
@@ -146,8 +149,9 @@ export function renderInlineMarkdown(
   // 8. 취소선: ~~...~~
   // 9. 하이라이트: ==...==
   // 10. 인라인 Raw HTML 태그: <br>, <hr>, <kbd>...</kbd>, <mark>...</mark>, <u>...</u>, <span ...>...</span>, <b>...</b>, <i>...</i>, <sup>...</sup>, <sub>...</sub>, <font ...>...</font>, <a ...>...</a>, <img ...>
+  // 11. 위키 링크 [[문서명]] 및 단축 마크다운 문서 링크 [문서명.md]
   const tokenRegex =
-    /(`[^`]+`)|(\[([^\]]+)\]\((mylore:\/\/(?:doc|media)\/([a-fA-F0-9-]+))\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(mylore:\/\/(?:doc|media)\/([a-fA-F0-9-]+))|(\*\*\*([^*]+)\*\*\*)|(\*\*([^*]+)\*\*)|(__([^_]+)__)|(\*([^*]+)\*)|(~~([^~]+)~~)|(==([^=]+)==)|(<(?:br|hr)\s*\/?>|<img\s+[^>]*\/?>|<(kbd|mark|u|b|i|strong|em|sup|sub|span|font|small|big|code|del|ins|a)(\s[^>]*)?>([\s\S]*?)<\/\22>)/gi;
+    /(`[^`]+`)|(\[([^\]]+)\]\((mylore:\/\/(?:doc|media)\/([a-fA-F0-9-]+))\))|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))|(mylore:\/\/(?:doc|media)\/([a-fA-F0-9-]+))|(\*\*\*([^*]+)\*\*\*)|(\*\*([^*]+)\*\*)|(__([^_]+)__)|(\*([^*]+)\*)|(~~([^~]+)~~)|(==([^=]+)==)|(<(?:br|hr)\s*\/?>|<img\s+[^>]*\/?>|<(kbd|mark|u|b|i|strong|em|sup|sub|span|font|small|big|code|del|ins|a)(\s[^>]*)?>([\s\S]*?)<\/\24>)|(\[\[([^\]]+)\]\])|(\[([^\]\n]+\.md)\])/gi;
 
   const nodes: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -255,6 +259,20 @@ export function renderInlineMarkdown(
           />
         );
       }
+    } else if (match[27] || match[29]) {
+      const rawDocRef = (match[28] || match[30] || '').trim();
+      const displayLabel = rawDocRef.split('|').pop()?.trim() || rawDocRef;
+      const targetName = rawDocRef.split('|')[0].split('#')[0].trim();
+      nodes.push(
+        <span
+          key={`dl-${keySeq++}`}
+          className="mylore-uri-link"
+          onClick={() => onNavigateDocName?.(targetName)}
+          title={`문서 열기: ${targetName}`}
+        >
+          🔗 {displayLabel}
+        </span>
+      );
     }
 
     lastIndex = tokenRegex.lastIndex;
@@ -274,11 +292,20 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
   bodyText,
   onUpdateTaskStatus,
   onNavigateUuid,
+  onNavigateDocName,
   onOpenExternalUrl,
   activeAudioLineIndex,
   onSeekAudioTime,
+  onEditSourceLine,
   enableAudioTimestampSync,
 }) => {
+  const renderInline = (t: string) =>
+    renderInlineMarkdown(
+      t,
+      onNavigateUuid,
+      onOpenExternalUrl,
+      onNavigateDocName
+    );
   const lines = bodyText.replace(/\r\n/g, '\n').split('\n');
   const elements: React.ReactNode[] = [];
   let inScriptSection = false;
@@ -382,11 +409,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
                     key={`th-${colIdx}`}
                     style={{ textAlign: alignments[colIdx] || 'left' }}
                   >
-                    {renderInlineMarkdown(
-                      hCell,
-                      onNavigateUuid,
-                      onOpenExternalUrl
-                    )}
+                    {renderInline(hCell)}
                   </th>
                 ))}
               </tr>
@@ -399,11 +422,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
                       key={`td-${rowIdx}-${colIdx}`}
                       style={{ textAlign: alignments[colIdx] || 'left' }}
                     >
-                      {renderInlineMarkdown(
-                        rCells[colIdx] ?? '',
-                        onNavigateUuid,
-                        onOpenExternalUrl
-                      )}
+                      {renderInline(rCells[colIdx] ?? '')}
                     </td>
                   ))}
                 </tr>
@@ -461,11 +480,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
     const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const content = renderInlineMarkdown(
-        headingMatch[2],
-        onNavigateUuid,
-        onOpenExternalUrl
-      );
+      const content = renderInline(headingMatch[2]);
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
       elements.push(
         <Tag key={`h-${i}`} data-source-line={i} data-source-line-end={i}>
@@ -493,9 +508,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
           data-source-line-end={quoteEnd}
         >
           {quoteLines.map((qLine, qIdx) => (
-            <p key={qIdx}>
-              {renderInlineMarkdown(qLine, onNavigateUuid, onOpenExternalUrl)}
-            </p>
+            <p key={qIdx}>{renderInline(qLine)}</p>
           ))}
         </blockquote>
       );
@@ -552,7 +565,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
               textDecoration: normCode === 'x' ? 'line-through' : 'none',
             }}
           >
-            {renderInlineMarkdown(text, onNavigateUuid, onOpenExternalUrl)}
+            {renderInline(text)}
           </span>
         </div>
       );
@@ -618,12 +631,33 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
                 }
                 onClick={
                   isAudioCue && onSeekAudioTime && audioOffsetSec !== null
-                    ? () => onSeekAudioTime(audioOffsetSec, it.idx)
+                    ? (e) => {
+                        if (e.ctrlKey || e.metaKey) {
+                          e.preventDefault();
+                          try {
+                            const sel = window.getSelection();
+                            if (sel) {
+                              const r = document.createRange();
+                              r.selectNodeContents(e.currentTarget);
+                              sel.removeAllRanges();
+                              sel.addRange(r);
+                            }
+                          } catch {
+                            // ignore
+                          }
+                          onSeekAudioTime(audioOffsetSec, it.idx);
+                        } else if (
+                          onEditSourceLine &&
+                          (window.getSelection()?.toString() || '').length === 0
+                        ) {
+                          onEditSourceLine(it.idx);
+                        }
+                      }
                     : undefined
                 }
                 title={
                   isAudioCue
-                    ? '클릭하여 이 문장 위치부터 음성 재생'
+                    ? 'Ctrl+클릭: 이 문장 위치부터 음성 재생 | 일반 클릭: 해당 위치 편집'
                     : undefined
                 }
                 style={{
@@ -650,11 +684,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
                     }}
                   >
                     <div style={{ fontSize: '0.78rem', lineHeight: 1.4 }}>
-                      {renderInlineMarkdown(
-                        it.text,
-                        onNavigateUuid,
-                        onOpenExternalUrl
-                      )}
+                      {renderInline(it.text)}
                     </div>
                     {isImgMeta && mediaFileName && (
                       <img
@@ -692,11 +722,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
                     )}
                   </div>
                 ) : (
-                  renderInlineMarkdown(
-                    it.text,
-                    onNavigateUuid,
-                    onOpenExternalUrl
-                  )
+                  renderInline(it.text)
                 )}
               </li>
             );
@@ -734,7 +760,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
               key={`oli-${it.idx}`}
               style={{ marginLeft: `${it.indent * 16}px` }}
             >
-              {renderInlineMarkdown(it.text, onNavigateUuid, onOpenExternalUrl)}
+              {renderInline(it.text)}
             </li>
           ))}
         </ol>
@@ -749,11 +775,7 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
       (/^=+$/.test(lines[i + 1].trim()) || /^-+$/.test(lines[i + 1].trim()))
     ) {
       const isH1 = lines[i + 1].trim().startsWith('=');
-      const content = renderInlineMarkdown(
-        line,
-        onNavigateUuid,
-        onOpenExternalUrl
-      );
+      const content = renderInline(line);
       elements.push(
         isH1 ? (
           <h1
@@ -799,12 +821,37 @@ export const MarkdownPreviewRenderer: React.FC<MarkdownRendererProps> = ({
         }
         onClick={
           isPAudioCue && onSeekAudioTime && pAudioOffset !== null
-            ? () => onSeekAudioTime(pAudioOffset, pLineIdx)
+            ? (e) => {
+                if (e.ctrlKey || e.metaKey) {
+                  e.preventDefault();
+                  try {
+                    const sel = window.getSelection();
+                    if (sel) {
+                      const r = document.createRange();
+                      r.selectNodeContents(e.currentTarget);
+                      sel.removeAllRanges();
+                      sel.addRange(r);
+                    }
+                  } catch {
+                    // ignore
+                  }
+                  onSeekAudioTime(pAudioOffset, pLineIdx);
+                } else if (
+                  onEditSourceLine &&
+                  (window.getSelection()?.toString() || '').length === 0
+                ) {
+                  onEditSourceLine(pLineIdx);
+                }
+              }
             : undefined
         }
-        title={isPAudioCue ? '클릭하여 이 문장 위치부터 음성 재생' : undefined}
+        title={
+          isPAudioCue
+            ? 'Ctrl+클릭: 이 문장 위치부터 음성 재생 | 일반 클릭: 해당 위치 편집'
+            : undefined
+        }
       >
-        {renderInlineMarkdown(line, onNavigateUuid, onOpenExternalUrl)}
+        {renderInline(line)}
       </p>
     );
     i++;

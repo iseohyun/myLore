@@ -68,7 +68,16 @@ export interface ParsedTaskItem {
   subLines: string[];
 }
 
-export type LifelogSourceType = 'kakaotalk' | 'sms' | 'notification' | 'call' | 'recording' | 'health';
+export type LifelogSourceType =
+  | 'kakaotalk'
+  | 'sms'
+  | 'notification'
+  | 'call'
+  | 'recording'
+  | 'health'
+  | 'media'
+  | 'contacts'
+  | 'pc_log';
 
 export interface LifelogMessage {
   id: number;
@@ -82,6 +91,8 @@ export interface LifelogMessage {
   deviceId?: string | null;
   deviceName?: string | null;
   hasAudioRecording?: boolean;
+  transcriptStage?: number; // 0: 녹음없음(🔇), 1: 미생성대기(🔊), 2: 확인전(❓), 3: 추가요구사항(❗), 4: 확인완료(📄)
+  transcriptRequirement?: string | null;
 }
 
 export interface PairedDeviceItem {
@@ -233,6 +244,12 @@ export interface MyLoreAppSettings {
   defaultMenuBarExpanded: boolean;
   scrollSyncEnabled: boolean;
   autoCallTranscription: boolean;
+  aiUserProfile: string;
+  aiDailyTokenLimit: number;
+  statusBarShowAi: boolean;
+  statusBarShowTrash: boolean;
+  statusBarShowAutoSave: boolean;
+  statusBarShowPort: boolean;
   baseFontFamily: string;
   headingFontFamily: string;
   tableFontFamily: string;
@@ -249,7 +266,32 @@ export interface MyLoreAppSettings {
   tableHeaderBg: string;
   tableHeaderColor: string;
   borderColor: string;
+  failedCallTextColor: string;
+  lifelogTimeFormat: string;
+  callPlaybackSpeed: number;
+  logRetentionCommDays: number;
+  logRetentionVersionDays: number;
+  logRetentionSystemDays: number;
+  logRetentionAiDays: number;
   settingsFilePath: string;
+}
+
+export interface ServiceLogEntry {
+  id?: number;
+  timestamp: string;
+  service: string; // 'comm' | 'version' | 'system' | 'ai'
+  level: string; // 'INFO' | 'WARN' | 'ERROR'
+  message: string;
+}
+
+export interface ServiceLogsPayload {
+  logDirPath: string;
+  entries: ServiceLogEntry[];
+  logFiles?: string[];
+  retentionCommDays: number;
+  retentionVersionDays: number;
+  retentionSystemDays: number;
+  retentionAiDays: number;
 }
 
 export interface GeminiApiKeyStatus {
@@ -292,12 +334,20 @@ export interface MobileSyncStepSummary {
   totalCount: number;
   skippedCount: number;
   downloadedCount: number;
+  totalBytes?: number;
+  syncedBytes?: number;
   segments: MobileSyncSegment[];
 }
 
 export interface MobileSyncProgressPayload {
   isRunning: boolean;
   isCompleted: boolean;
+  sessionId?: string;
+  isReady?: boolean;
+  sessionTotalBytes?: number;
+  sessionSyncedBytes?: number;
+  sessionTotalCount?: number;
+  sessionSyncedCount?: number;
   currentStepIndex: number;
   totalSteps: number;
   currentKey: string;
@@ -315,7 +365,8 @@ export type ViewMode =
   | 'dashboard_diary'
   | 'dashboard_finance'
   | 'dashboard_lifelog'
-  | 'dashboard_settings';
+  | 'dashboard_settings'
+  | 'dashboard_logs';
 
 export type RightSidebarTab = 'tree' | 'search' | 'toc' | 'backlinks' | 'lifelog';
 export type PaletteMode = 'closed' | 'files' | 'commands';
@@ -343,6 +394,9 @@ export interface ContextMenuState {
   targetPath: string;
   targetUuid?: string;
   targetName: string;
+  isDirectory?: boolean;
+  folderRole?: BaseFolderRole;
+  folderSubDir?: string;
 }
 
 export interface MobileContextMenuState {
@@ -368,6 +422,67 @@ export interface CommandPaletteItem {
   shortcut: string;
   action: () => void;
 }
+
+export interface PcAppUsageItem {
+  appName: string;
+  totalSec: number;
+  percentage: number;
+  eventCount: number;
+  topTitles: string[];
+}
+
+export interface PcWindowTimelineEvent {
+  id: number;
+  localTime: string;
+  durationSec: number;
+  appName: string;
+  windowTitle: string;
+}
+
+export interface PcDailyUsageItem {
+  date: string;
+  totalWindowSec: number;
+  notAfkSec: number;
+  topApp: string;
+}
+
+export interface PcActivitySummaryPayload {
+  isAwAvailable: boolean;
+  awDbPath: string;
+  hostname: string;
+  targetDate: string;
+  syncedNewEvents: number;
+  totalStoredEvents: number;
+  totalWindowSec: number;
+  activeNotAfkSec: number;
+  afkSec: number;
+  eventCount: number;
+  hourlyBreakdown: number[];
+  topApps: PcAppUsageItem[];
+  recentTimeline: PcWindowTimelineEvent[];
+  weeklySummary: PcDailyUsageItem[];
+}
+
+export interface GoogleCalendarSyncStatus {
+  isConnected: boolean;
+  clientId: string;
+  defaultCalendarId: string;
+  lastSyncAt: string;
+  lastError: string;
+  storageLocation: string;
+}
+
+export interface GoogleCalendarSyncResult {
+  uploadedCount: number;
+  downloadedCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  needsAuth: boolean;
+  message: string;
+  lastSyncAt: string;
+}
+
+
 
 
 

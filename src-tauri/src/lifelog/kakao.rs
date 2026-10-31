@@ -210,26 +210,6 @@ pub(crate) fn enrich_kakao_markdown_with_media(conn: &Connection, md_path: &Path
                 continue;
             }
         }
-
-        if msg_part == "동영상"
-            || msg_part.contains("<동영상")
-            || msg_part.starts_with("동영상 ")
-        {
-            out_lines.push(format!(
-                "  - 🎬 **[연결된 동영상 정보]** `{}` (카카오톡 동영상 미디어 항목)",
-                msg_part
-            ));
-            changed = true;
-        } else if msg_part == "사진"
-            || msg_part.contains("<사진")
-            || msg_part.starts_with("사진 ")
-        {
-            out_lines.push(format!(
-                "  - 🖼️ **[연결된 이미지 정보]** `{}` (카카오톡 사진 미디어 항목)",
-                msg_part
-            ));
-            changed = true;
-        }
     }
 
     if changed {

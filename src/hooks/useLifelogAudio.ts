@@ -38,6 +38,8 @@ export function useLifelogAudio({
   >(null);
   const callAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingSeekSecondsRef = useRef<number | null>(null);
+  const lastSyncedAudioLineRef = useRef<number | null>(null);
+  const lastProgrammaticAudioScrollMsRef = useRef<number>(0);
 
   // 현재 편집/열람 중인 모바일 문서의 카테고리('kakaotalk' | 'notification' | 'sms' | 'call' | 'recording' | 'health' | null) 판별
   const currentDocMobileSource = useMemo<LifelogSourceType | null>(() => {
@@ -134,6 +136,7 @@ export function useLifelogAudio({
 
   // 통화/음성 문서가 열릴 때 하단 상태바에 오디오 재생바 자동 준비
   useEffect(() => {
+    lastSyncedAudioLineRef.current = null;
     if (!currentDoc || !isCurrentDocCall) {
       setActiveAudioLineIndex(null);
       return;
@@ -210,8 +213,58 @@ export function useLifelogAudio({
     return rawCues;
   }, [bodyText, isCurrentDocCall]);
 
-  // 오디오 재생 중 시각(`currentTime`)에 해당하는 스크립트 문장을 자동 Select 및 스크롤 추적
-  const handleAudioTimeUpdate = () => {
+  const scrollAndSelectCue = (
+    matchedCue: {
+      lineIndex: number;
+      startSec: number;
+      endSec: number;
+      charStart: number;
+      charEnd: number;
+    },
+    _forceSelect = false
+  ) => {
+    lastProgrammaticAudioScrollMsRef.current = Date.now();
+
+    // 프리뷰 영역에서만 해당 대화 문장으로 스크롤 이동 (에디터 <textarea>의 커서·선택 영역은 건드리지 않아 Ctrl+C/V/A 등 기본 편집 동작 보장)
+    if (previewPaneRef.current) {
+      const pane = previewPaneRef.current;
+      const targetNode = pane.querySelector(
+        `[data-audio-line="${matchedCue.lineIndex}"]`
+      ) as HTMLElement | null;
+      if (targetNode) {
+        const paneRect = pane.getBoundingClientRect();
+        const nodeRect = targetNode.getBoundingClientRect();
+        const nextScrollTop =
+          pane.scrollTop +
+          (nodeRect.top - paneRect.top) -
+          pane.clientHeight * 0.38;
+        pane.scrollTo({
+          top: Math.max(0, nextScrollTop),
+          behavior: 'smooth',
+        });
+
+        if (viewMode === 'preview' && typeof window !== 'undefined') {
+          try {
+            const sel = window.getSelection();
+            if (sel) {
+              const range = document.createRange();
+              range.selectNodeContents(targetNode);
+              sel.removeAllRanges();
+              sel.addRange(range);
+            }
+          } catch {
+            // ignore DOM selection errors
+          }
+        }
+      }
+    }
+  };
+
+  // 오디오 재생 중 시각(`currentTime`) 또는 시점 이동(`onSeeked`) 시 해당 스크립트 문장을 자동 Select 및 스크롤 추적
+  const handleAudioTimeUpdate = (
+    eOrForce?: React.SyntheticEvent<HTMLAudioElement> | boolean
+  ) => {
+    const force = typeof eOrForce === 'boolean' ? eOrForce : false;
     const audioEl = callAudioRef.current;
     if (!audioEl || audioScriptCues.length === 0) return;
     const curSec = audioEl.currentTime;
@@ -223,49 +276,24 @@ export function useLifelogAudio({
         break;
       }
     }
-    if (!matchedCue || curSec < audioScriptCues[0].startSec) return;
+    if (!matchedCue) return;
 
-    if (activeAudioLineIndex !== matchedCue.lineIndex) {
+    if (force || lastSyncedAudioLineRef.current !== matchedCue.lineIndex) {
+      lastSyncedAudioLineRef.current = matchedCue.lineIndex;
       setActiveAudioLineIndex(matchedCue.lineIndex);
-
-      // 1) 프리뷰 영역에서 해당 문장 부드럽게 스크롤 표시
-      if (previewPaneRef.current) {
-        const targetNode = previewPaneRef.current.querySelector(
-          `[data-audio-line="${matchedCue.lineIndex}"]`
-        ) as HTMLElement | null;
-        if (targetNode) {
-          targetNode.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      }
-
-      // 2) 에디터 영역에서 사용자가 타이핑 중이 아닐 때 해당 문장 줄 자동 Select 및 스크롤
-      if (
-        editorRef.current &&
-        !audioEl.paused &&
-        Date.now() - lastEditorKeyPressMsRef.current > 2000
-      ) {
-        const ta = editorRef.current;
-        const totalLines = Math.max(1, bodyText.split('\n').length);
-        const ratio = matchedCue.lineIndex / totalLines;
-        const targetScrollTop = Math.max(
-          0,
-          ratio * ta.scrollHeight - ta.clientHeight * 0.4
-        );
-        ta.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
-        if (document.activeElement !== ta || viewMode === 'editor') {
-          try {
-            ta.setSelectionRange(matchedCue.charStart, matchedCue.charEnd);
-          } catch {
-            // ignore selection error
-          }
-        }
-      }
+      scrollAndSelectCue(matchedCue, force);
     }
   };
 
   // 사용자가 스크립트의 특정 문장을 클릭/선택했을 때 해당 오프셋 시각으로 즉시 이동하여 재생
   const handleSeekAudioTime = async (seconds: number, lineIndex: number) => {
+    lastSyncedAudioLineRef.current = lineIndex;
     setActiveAudioLineIndex(lineIndex);
+    lastEditorKeyPressMsRef.current = 0;
+    const targetCue = audioScriptCues.find((c) => c.lineIndex === lineIndex);
+    if (targetCue) {
+      scrollAndSelectCue(targetCue, true);
+    }
     const audioEl = callAudioRef.current;
     if (audioEl && directCallPlayInfo) {
       audioEl.currentTime = seconds;
@@ -293,6 +321,7 @@ export function useLifelogAudio({
     setActiveAudioLineIndex,
     callAudioRef,
     pendingSeekSecondsRef,
+    lastProgrammaticAudioScrollMsRef,
     currentDocMobileSource,
     isCurrentDocMobileLifelog,
     isCurrentDocSms,

@@ -12,6 +12,18 @@ export interface SyncProgressCardProps {
   >;
 }
 
+function formatBytesHuman(bytes?: number): string {
+  const b = bytes ?? 0;
+  if (b <= 0) return '0 B';
+  const kb = 1024;
+  const mb = kb * 1024;
+  const gb = mb * 1024;
+  if (b >= gb) return `${(b / gb).toFixed(2)} GB`;
+  if (b >= mb) return `${(b / mb).toFixed(1)} MB`;
+  if (b >= kb) return `${(b / kb).toFixed(1)} KB`;
+  return `${b} B`;
+}
+
 export function SyncProgressCard({
   mobileSyncProgress,
   setMobileSyncProgress,
@@ -80,7 +92,47 @@ export function SyncProgressCard({
                 color: 'var(--text-secondary)',
               }}
             >
-              (총 {activeStep.totalCount}건)
+              (총 {activeStep.totalCount}건
+              {(activeStep.totalBytes ?? 0) > 0
+                ? ` · ${formatBytesHuman(activeStep.syncedBytes)} / ${formatBytesHuman(activeStep.totalBytes)}`
+                : ''}
+              )
+            </span>
+          )}
+          {(mobileSyncProgress.sessionTotalBytes ?? 0) > 0 && (
+            <span
+              style={{
+                padding: '2px 8px',
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                fontWeight: 700,
+                fontFamily: 'var(--font-mono)',
+                backgroundColor: 'rgba(251, 191, 36, 0.14)',
+                border: '1px solid rgba(251, 191, 36, 0.38)',
+                color: '#fbbf24',
+              }}
+              title="세션 통합 전송 용량 및 볼륨 진행 현황 (동적 볼륨 확장 지원)"
+            >
+              📦 {formatBytesHuman(mobileSyncProgress.sessionSyncedBytes)} /{' '}
+              {formatBytesHuman(mobileSyncProgress.sessionTotalBytes)} [
+              {mobileSyncProgress.sessionSyncedCount ?? 0} /{' '}
+              {mobileSyncProgress.sessionTotalCount ?? 0}개]
+            </span>
+          )}
+          {mobileSyncProgress.isReady === false && (
+            <span
+              style={{
+                padding: '2px 8px',
+                borderRadius: '999px',
+                fontSize: '11px',
+                fontWeight: 700,
+                backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                border: '1px solid rgba(245, 158, 11, 0.45)',
+                color: '#fcd34d',
+              }}
+              title="단말이 로컬 캐시로 즉시 전송을 시작하고 백그라운드에서 전체 볼륨을 정밀 스캔 중입니다."
+            >
+              ⏳ 전송 준비 및 초기 동기화 중...
             </span>
           )}
           {mobileSyncProgress.isRunning && (
@@ -247,6 +299,16 @@ export function SyncProgressCard({
             >
               신규 {st.downloadedCount}
             </span>
+            {(st.totalBytes ?? 0) > 0 && (
+              <span
+                style={{
+                  color: '#fbbf24',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                {formatBytesHuman(st.syncedBytes)} / {formatBytesHuman(st.totalBytes)}
+              </span>
+            )}
           </span>
         ))}
       </div>

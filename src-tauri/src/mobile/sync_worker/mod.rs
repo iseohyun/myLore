@@ -18,6 +18,9 @@ pub(crate) enum SyncWorkerJob {
     BatchInit {
         service: String,
         total_count: usize,
+        total_bytes: u64,
+        synced_bytes: u64,
+        is_lazy_update: bool,
     },
     Notifications {
         dev_id: String,
@@ -65,6 +68,8 @@ pub(crate) enum SyncWorkerJob {
         now_ms: i64,
     },
     Media {
+        dev_id: String,
+        dev_name: String,
         file_name: String,
         source_type: String,
         folder_name: String,
@@ -126,8 +131,9 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
             let date_re = cached_regex!(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일");
             let pc_msg_re = cached_regex!(r"^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(.*)$");
 
-            // 서버 기동 시 DB에 저장된 워터마크를 인메모리 캐시에 로드하고 초기 6단계 동기화 점검 수행
+            // 서버 기동 시 현재 NAT의 Wi-Fi SSID를 검색하여 DB 설정을 최신으로 갱신하고, 워터마크를 인메모리 캐시에 로드
             if let Ok(conn) = open_db(&db_path) {
+                let _ = refresh_server_nat_wifi_ssids(&conn);
                 update_atomic_max_i64(&MEM_LAST_KAKAO_TS, get_meta_i64(&conn, "last_kakao_ts"));
                 update_atomic_max_i64(&MEM_LAST_NOTI_TS, get_meta_i64(&conn, "last_noti_ts"));
                 update_atomic_max_i64(&MEM_LAST_SMS_TS, get_meta_i64(&conn, "last_sms_ts"));
@@ -139,9 +145,11 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                 update_atomic_max_i64(&MEM_LAST_HEALTH_TS, get_meta_i64(&conn, "last_health_ts"));
                 update_atomic_max_i64(&MEM_LAST_CONTACT_TS, get_meta_i64(&conn, "last_contact_ts"));
                 update_atomic_max_i64(&MEM_LAST_USAGE_TS, get_meta_i64(&conn, "last_usage_ts"));
+                update_atomic_max_i64(&MEM_LAST_PHOTO_TS, get_meta_i64(&conn, "last_photo_ts"));
+                jobs_files::backfill_picture_extern_device_photos(&conn);
             }
             let _ = broadcast_udp_pc_online();
-            complete_all_remaining_sync_steps(&app_handle, &db_path, true);
+            init_sync_progress_from_db(&app_handle, &db_path);
 
             let mut next_first_job: Option<SyncWorkerJob> = None;
             let mut cycle_had_foreground_job = false;
@@ -206,17 +214,51 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                             SyncWorkerJob::BatchInit {
                                 service,
                                 total_count,
+                                total_bytes,
+                                synced_bytes,
+                                is_lazy_update,
                             } => {
                                 waiting_for_initial_phone_burst = false;
-                                let _ = emit_live_service_sync_progress(
-                                    &app_handle,
-                                    &service,
-                                    0,
-                                    total_count.max(1),
-                                    0,
-                                    0,
-                                    Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
-                                );
+                                if total_bytes > 0 || is_lazy_update {
+                                    let pct = update_live_service_byte_progress(
+                                        &app_handle,
+                                        &service,
+                                        synced_bytes,
+                                        total_bytes,
+                                        total_count,
+                                        is_lazy_update,
+                                        None,
+                                    );
+                                    log_sync(
+                                        "INFO",
+                                        &format!(
+                                            "[BatchInit:{}] 용량 기준 진행률 갱신 (lazy={}) — {} / {} ({}건 · {}%)",
+                                            service,
+                                            is_lazy_update,
+                                            format_bytes_human(synced_bytes),
+                                            format_bytes_human(total_bytes),
+                                            total_count,
+                                            pct
+                                        ),
+                                    );
+                                } else {
+                                    let _ = emit_live_service_sync_progress(
+                                        &app_handle,
+                                        &service,
+                                        0,
+                                        total_count.max(1),
+                                        0,
+                                        0,
+                                        Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
+                                    );
+                                    log_sync(
+                                        "INFO",
+                                        &format!(
+                                            "[BatchInit:{}] 총 {}건 전송 준비 완료",
+                                            service, total_count
+                                        ),
+                                    );
+                                }
                             }
                             job @ SyncWorkerJob::Notifications { .. } => {
                                 jobs_messages::handle_notifications_job(&app_handle, &conn, &mut md_coalesced, job);
@@ -248,15 +290,42 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                                 raw_bytes,
                                 now_ms,
                             } => {
-                                let (added, skipped, _) = process_samsung_health_sync_payload(
+                                let (added, skipped, max_ts) = process_samsung_health_sync_payload(
                                     &conn, &dev_id, &dev_name, &raw_bytes, now_ms,
+                                );
+                                let eff_health_ts = max_ts.max(now_ms);
+                                set_meta_i64_max(&conn, "last_health_ts", eff_health_ts);
+                                mark_domain_sync_state_unacked(
+                                    &conn,
+                                    "health",
+                                    eff_health_ts,
+                                    None,
+                                );
+                                if !dev_id.is_empty() {
+                                    let _ = conn.execute(
+                                        "UPDATE paired_devices SET last_health_ts = MAX(COALESCE(last_health_ts, 0), ?1) WHERE device_id = ?2",
+                                        params![eff_health_ts, dev_id],
+                                    );
+                                }
+                                let (syn_b, tot_b) =
+                                    add_live_service_synced_bytes("health", raw_bytes.len() as u64);
+                                log_sync(
+                                    "INFO",
+                                    &format!(
+                                        "[SamsungHealth] 헬스 데이터 적재 완료 ({} B · 누적 {} / {}) — 신규 {}건, 중복 {}건",
+                                        raw_bytes.len(),
+                                        format_bytes_human(syn_b),
+                                        format_bytes_human(tot_b),
+                                        added,
+                                        skipped
+                                    ),
                                 );
                                 let _ = emit_live_service_sync_progress(
                                     &app_handle,
                                     "health",
-                                    (added + skipped).max(1),
-                                    (added + skipped).max(1),
-                                    skipped,
+                                    1,
+                                    1,
+                                    if added == 0 && skipped == 0 { 1 } else { skipped },
                                     added,
                                     None,
                                 );
@@ -324,12 +393,30 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                             if SYNC_QUEUE_DEPTH.load(std::sync::atomic::Ordering::Relaxed) == 0 {
                                 waiting_for_initial_phone_burst = false;
                                 cycle_had_foreground_job = false;
-                                complete_all_remaining_sync_steps(&app_handle, &db_path, false);
+                                IS_WORKER_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+                                if RECONCILE_PENDING_COMPLETION
+                                    .swap(false, std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    complete_all_remaining_sync_steps(&app_handle, &db_path, false);
+                                } else {
+                                    let mutex = LIVE_SYNC_PROGRESS
+                                        .get_or_init(|| Mutex::new(default_live_sync_progress()));
+                                    if let Ok(mut guard) = mutex.lock() {
+                                        guard.queued_jobs = 0;
+                                        guard.is_running = false;
+                                        let all_done = guard
+                                            .steps
+                                            .iter()
+                                            .all(|s| s.status == "done" && s.percent >= 100);
+                                        guard.is_completed = all_done;
+                                        let _ = app_handle.emit("mobile-sync-progress", &*guard);
+                                    }
+                                }
                                 let _ = app_handle.emit(
                                     "mobile-sync-event",
                                     serde_json::json!({
                                         "type": "sync_cycle_complete",
-                                        "message": "✅ 모바일 백그라운드 동기화 큐 처리가 모두 완료되었습니다."
+                                        "message": "✅ 모바일 백그라운드 동기화 큐 처리가 완료되었습니다."
                                     }),
                                 );
                             }

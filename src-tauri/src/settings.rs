@@ -82,7 +82,47 @@ pub(crate) fn default_border_color() -> String {
     "#2b3040".to_string()
 }
 
+pub(crate) fn default_failed_call_text_color() -> String {
+    "#b91c1c".to_string()
+}
+
+pub(crate) fn default_lifelog_time_format() -> String {
+    "MM-DD(ddd) hh:mm".to_string()
+}
+
+pub(crate) fn default_call_playback_speed() -> f64 {
+    1.75
+}
+
 pub(crate) fn default_auto_call_transcription() -> bool {
+    true
+}
+
+pub(crate) fn default_log_retention_comm_days() -> u32 {
+    7
+}
+
+pub(crate) fn default_log_retention_version_days() -> u32 {
+    30
+}
+
+pub(crate) fn default_log_retention_system_days() -> u32 {
+    30
+}
+
+pub(crate) fn default_log_retention_ai_days() -> u32 {
+    30
+}
+
+pub(crate) fn default_ai_user_profile() -> String {
+    "이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영".to_string()
+}
+
+pub(crate) fn default_ai_daily_token_limit() -> i64 {
+    1_000_000
+}
+
+pub(crate) fn default_status_bar_show() -> bool {
     true
 }
 
@@ -102,6 +142,26 @@ pub struct MyLoreAppSettings {
     pub scroll_sync_enabled: bool,
     #[serde(default = "default_auto_call_transcription")]
     pub auto_call_transcription: bool,
+    #[serde(default = "default_ai_user_profile")]
+    pub ai_user_profile: String,
+    #[serde(default = "default_ai_daily_token_limit")]
+    pub ai_daily_token_limit: i64,
+    #[serde(default = "default_status_bar_show")]
+    pub status_bar_show_ai: bool,
+    #[serde(default = "default_status_bar_show")]
+    pub status_bar_show_trash: bool,
+    #[serde(default = "default_status_bar_show")]
+    pub status_bar_show_auto_save: bool,
+    #[serde(default = "default_status_bar_show")]
+    pub status_bar_show_port: bool,
+    #[serde(default = "default_log_retention_comm_days")]
+    pub log_retention_comm_days: u32,
+    #[serde(default = "default_log_retention_version_days", alias = "logRetentionSyncDays")]
+    pub log_retention_version_days: u32,
+    #[serde(default = "default_log_retention_system_days")]
+    pub log_retention_system_days: u32,
+    #[serde(default = "default_log_retention_ai_days", alias = "logRetentionGeminiDays")]
+    pub log_retention_ai_days: u32,
     #[serde(default = "default_base_font_family")]
     pub base_font_family: String,
     #[serde(default = "default_heading_font_family")]
@@ -134,6 +194,12 @@ pub struct MyLoreAppSettings {
     pub table_header_color: String,
     #[serde(default = "default_border_color")]
     pub border_color: String,
+    #[serde(default = "default_failed_call_text_color")]
+    pub failed_call_text_color: String,
+    #[serde(default = "default_lifelog_time_format")]
+    pub lifelog_time_format: String,
+    #[serde(default = "default_call_playback_speed")]
+    pub call_playback_speed: f64,
     #[serde(default)]
     pub settings_file_path: String,
 }
@@ -147,6 +213,16 @@ impl Default for MyLoreAppSettings {
             default_menu_bar_expanded: false,
             scroll_sync_enabled: default_scroll_sync(),
             auto_call_transcription: default_auto_call_transcription(),
+            ai_user_profile: default_ai_user_profile(),
+            ai_daily_token_limit: default_ai_daily_token_limit(),
+            status_bar_show_ai: default_status_bar_show(),
+            status_bar_show_trash: default_status_bar_show(),
+            status_bar_show_auto_save: default_status_bar_show(),
+            status_bar_show_port: default_status_bar_show(),
+            log_retention_comm_days: default_log_retention_comm_days(),
+            log_retention_version_days: default_log_retention_version_days(),
+            log_retention_system_days: default_log_retention_system_days(),
+            log_retention_ai_days: default_log_retention_ai_days(),
             base_font_family: default_base_font_family(),
             heading_font_family: default_heading_font_family(),
             table_font_family: default_table_font_family(),
@@ -163,6 +239,9 @@ impl Default for MyLoreAppSettings {
             table_header_bg: default_table_header_bg(),
             table_header_color: default_table_header_color(),
             border_color: default_border_color(),
+            failed_call_text_color: default_failed_call_text_color(),
+            lifelog_time_format: default_lifelog_time_format(),
+            call_playback_speed: default_call_playback_speed(),
             settings_file_path: default_projects_base_dir()
                 .join(".myLore")
                 .join("setting.json")
@@ -179,6 +258,21 @@ pub(crate) fn resolve_projects_setting_json_path(conn: &Connection) -> PathBuf {
     mylore_dir.join("setting.json")
 }
 
+pub(crate) fn read_ai_user_profile(conn: &Connection) -> String {
+    let setting_path = resolve_projects_setting_json_path(conn);
+    if setting_path.exists() {
+        if let Ok(raw) = fs::read_to_string(&setting_path) {
+            if let Ok(parsed) = serde_json::from_str::<MyLoreAppSettings>(&raw) {
+                let trimmed = parsed.ai_user_profile.trim().to_string();
+                if !trimmed.is_empty() {
+                    return trimmed;
+                }
+            }
+        }
+    }
+    default_ai_user_profile()
+}
+
 #[tauri::command]
 pub(crate) fn get_app_settings(state: State<AppState>) -> Result<MyLoreAppSettings, String> {
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
@@ -191,6 +285,15 @@ pub(crate) fn get_app_settings(state: State<AppState>) -> Result<MyLoreAppSettin
             if let Ok(mut parsed) = serde_json::from_str::<MyLoreAppSettings>(&raw) {
                 if parsed.f11_viewer_mode != "detached" && parsed.f11_viewer_mode != "split" {
                     parsed.f11_viewer_mode = "detached".to_string();
+                }
+                if parsed.ai_user_profile.trim().is_empty() {
+                    parsed.ai_user_profile = default_ai_user_profile();
+                }
+                if parsed.ai_daily_token_limit <= 0 {
+                    parsed.ai_daily_token_limit = default_ai_daily_token_limit();
+                }
+                if parsed.call_playback_speed <= 0.25 || parsed.call_playback_speed > 4.0 {
+                    parsed.call_playback_speed = default_call_playback_speed();
                 }
                 parsed.settings_file_path = path_str;
                 return Ok(parsed);
@@ -233,10 +336,28 @@ pub(crate) fn save_app_settings(
     updated.base_font_size = updated.base_font_size.clamp(10, 32);
     updated.table_font_size = updated.table_font_size.clamp(9, 28);
     updated.heading_scale = updated.heading_scale.clamp(0.7, 1.8);
+    updated.log_retention_comm_days = updated.log_retention_comm_days.clamp(1, 365);
+    updated.log_retention_version_days = updated.log_retention_version_days.clamp(1, 365);
+    updated.log_retention_system_days = updated.log_retention_system_days.clamp(1, 365);
+    updated.log_retention_ai_days = updated.log_retention_ai_days.clamp(1, 365);
+    updated.ai_daily_token_limit = updated.ai_daily_token_limit.clamp(10_000, 100_000_000);
+    updated.call_playback_speed = updated.call_playback_speed.clamp(0.5, 3.0);
     updated.settings_file_path = path_str;
 
     let json_str = serde_json::to_string_pretty(&updated).map_err(|e| e.to_string())?;
     fs::write(&setting_path, json_str).map_err(|e| e.to_string())?;
+    let log_dir = refresh_log_dir_cache(&conn);
+    let _ = prune_logs_in_dir(&log_dir, &updated);
+    log_system(
+        "INFO",
+        &format!(
+            "설정 저장 완료 (로그 보관일: 통신 {}일, 버전 {}일, 시스템 {}일, AI {}일)",
+            updated.log_retention_comm_days,
+            updated.log_retention_version_days,
+            updated.log_retention_system_days,
+            updated.log_retention_ai_days
+        ),
+    );
     let _ = app.emit("app-settings-updated", &updated);
     Ok(updated)
 }

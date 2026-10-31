@@ -6,6 +6,7 @@ mod recordings;
 mod kakao;
 mod backfill;
 mod commands;
+mod pc_activity;
 
 #[cfg(test)]
 mod parse_tests;
@@ -16,3 +17,4 @@ pub(crate) use recordings::*;
 pub(crate) use kakao::*;
 pub(crate) use backfill::*;
 pub(crate) use commands::*;
+pub(crate) use pc_activity::*;

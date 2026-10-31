@@ -82,6 +82,7 @@ pub(crate) fn handle_notifications_job(
     }
     if max_ts > 0 {
         set_meta_i64_max(&conn, "last_noti_ts", max_ts);
+        mark_domain_sync_state_unacked(&conn, "notification", max_ts, None);
         if !dev_id.is_empty() {
             let _ = conn.execute(
                 "UPDATE paired_devices SET last_noti_ts = MAX(COALESCE(last_noti_ts, 0), ?1) WHERE device_id = ?2",
@@ -89,7 +90,7 @@ pub(crate) fn handle_notifications_job(
             );
         }
     }
-    let _ = emit_live_service_sync_progress(
+    let pct = emit_live_service_sync_progress(
         &app_handle,
         "notification",
         current_index,
@@ -97,11 +98,17 @@ pub(crate) fn handle_notifications_job(
         skipped,
         downloaded,
         Some(&format!(
-            "알림 {}/{}건 처리 중 ({}%)",
+            "알림 {}/{}건 처리 중",
             current_index,
-            total_count,
-            ((current_index as f64 / total_count.max(1) as f64) * 100.0).round() as usize
+            total_count
         )),
+    );
+    log_sync(
+        "INFO",
+        &format!(
+            "[Notifications] 알림 {}/{}건 적재 ({}% · 신규 {}건, 중복 {}건)",
+            current_index, total_count, pct, downloaded, skipped
+        ),
     );
 }
 
@@ -194,6 +201,7 @@ pub(crate) fn handle_sms_job(
     }
     if max_ts > 0 {
         set_meta_i64_max(&conn, "last_sms_ts", max_ts);
+        mark_domain_sync_state_unacked(&conn, "sms", max_ts, None);
         if !dev_id.is_empty() {
             let _ = conn.execute(
                 "UPDATE paired_devices SET last_sms_ts = MAX(COALESCE(last_sms_ts, 0), ?1) WHERE device_id = ?2",
@@ -209,6 +217,13 @@ pub(crate) fn handle_sms_job(
         skipped,
         downloaded,
         None,
+    );
+    log_sync(
+        "INFO",
+        &format!(
+            "[SMS] 문자 {}건 처리 완료 (신규 {}건, 중복 {}건)",
+            total_len, downloaded, skipped
+        ),
     );
 }
 
@@ -310,6 +325,7 @@ pub(crate) fn handle_call_logs_job(
     }
     if max_ts > 0 {
         set_meta_i64_max(&conn, "last_call_ts", max_ts);
+        mark_domain_sync_state_unacked(&conn, "call", max_ts, None);
         if !dev_id.is_empty() {
             let _ = conn.execute(
                 "UPDATE paired_devices SET last_call_ts = MAX(COALESCE(last_call_ts, 0), ?1) WHERE device_id = ?2",
@@ -325,6 +341,13 @@ pub(crate) fn handle_call_logs_job(
         skipped,
         inserted,
         None,
+    );
+    log_sync(
+        "INFO",
+        &format!(
+            "[CallLogs] 통화 기록 {}건 처리 완료 (신규 {}건, 중복 {}건)",
+            total_len, inserted, skipped
+        ),
     );
 }
 
@@ -423,6 +446,8 @@ pub(crate) fn handle_kakao_chat_job(
             && !t_line.starts_with("저장한 날짜 :")
             && !t_line.contains("님이 들어왔습니다")
             && !t_line.contains("님이 나갔습니다")
+            && !t_line.contains("**[연결된 이미지 정보]**")
+            && !t_line.contains("**[연결된 동영상 정보]**")
         {
             if let Some(last_item) = parsed_kakao_items.last_mut() {
                 last_item.3.push_str("<br/>");
@@ -446,8 +471,17 @@ pub(crate) fn handle_kakao_chat_job(
     let mut messages_added = 0usize;
     let mut overlapping_count = 0usize;
     let mut kakao_md_lines: Vec<(String, String)> = Vec::with_capacity(parsed_kakao_items.len());
+    let mut room_last_msg_ts = 0i64;
+    let mut room_last_msg_body = String::new();
 
     for (c_date, time_str, sender, body) in parsed_kakao_items {
+        let msg_ts = parse_korean_date_time_to_epoch_ms(&c_date, &time_str);
+        if msg_ts >= room_last_msg_ts {
+            if msg_ts > 0 {
+                room_last_msg_ts = msg_ts;
+            }
+            room_last_msg_body = body.clone();
+        }
         let dedup_raw = format!(
             "kakao|{}|{}|{}|{}|{}",
             room_name, c_date, time_str, sender, body
@@ -497,11 +531,28 @@ pub(crate) fn handle_kakao_chat_job(
         let _ = enrich_kakao_markdown_with_media(&conn, &kakao_md_path);
     }
 
-    set_meta_i64_max(&conn, "last_kakao_ts", now_ms);
+    let eff_msg_ts = if room_last_msg_ts > 0 {
+        room_last_msg_ts
+    } else {
+        now_ms
+    };
+    upsert_kakao_room_sync_state_unacked(
+        &conn,
+        &room_name,
+        &raw_folder_name,
+        &room_last_msg_body,
+        eff_msg_ts,
+        now_ms,
+        raw_text.len() as u64,
+        0,
+    );
+
+    let eff_kakao_watermark = eff_msg_ts.max(now_ms);
+    set_meta_i64_max(&conn, "last_kakao_ts", eff_kakao_watermark);
     if !dev_id.is_empty() {
         let _ = conn.execute(
             "UPDATE paired_devices SET last_kakao_ts = MAX(COALESCE(last_kakao_ts, 0), ?1) WHERE device_id = ?2",
-            params![now_ms, dev_id],
+            params![eff_kakao_watermark, dev_id],
         );
     }
     if !file_hash.is_empty() {
@@ -513,21 +564,45 @@ pub(crate) fn handle_kakao_chat_job(
         );
     }
 
-    let _ = emit_live_service_sync_progress(
+    let (syn_b, tot_b) = add_live_service_synced_bytes("kakaotalk", raw_text.len() as u64);
+    let label_msg = if tot_b > 0 {
+        format!(
+            "[{}] 폴더 {}/{} 병합 완료 ({} / {} · 신규 {}건, 중복 {}건)",
+            room_name,
+            folder_index,
+            total_folders,
+            format_bytes_human(syn_b),
+            format_bytes_human(tot_b),
+            messages_added,
+            overlapping_count
+        )
+    } else {
+        format!(
+            "[{}] 폴더 {}/{} 병합 완료 (신규 {}건, 중복 {}건)",
+            room_name, folder_index, total_folders, messages_added, overlapping_count
+        )
+    };
+    let pct = emit_live_service_sync_progress(
         &app_handle,
         "kakaotalk",
         folder_index,
         total_folders,
         overlapping_count,
         messages_added,
-        Some(&format!(
-            "[{}] 폴더 {}/{} 완료 ({}% · 신규 {}건, 기존중복 {}건)",
+        Some(&label_msg),
+    );
+    log_sync(
+        "INFO",
+        &format!(
+            "[KakaoChat] [{}] 폴더 {}/{} 적재 완료 ({}% · {} / {} · 신규 {}건, 중복 {}건)",
             room_name,
             folder_index,
             total_folders,
-            ((folder_index as f64 / total_folders.max(1) as f64) * 100.0).round() as usize,
+            pct,
+            format_bytes_human(syn_b),
+            format_bytes_human(tot_b),
             messages_added,
             overlapping_count
-        )),
+        ),
     );
 }

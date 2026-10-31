@@ -83,12 +83,16 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
             if md_path.exists() {
                 if let Ok(md_raw) = fs::read_to_string(&md_path) {
                     let (fm, body) = parse_frontmatter_and_body_simple(&md_raw);
-                    if fm.get("transcript_status").map(|s| s.as_str()) == Some("completed") {
+                    let status_val = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
+                    if status_val == "completed" || status_val == "unverified" || status_val == "verified" {
                         is_completed = true;
-                        // 기존 스크립트에 `[00:00:00]` 타임스탬프가 없거나 `이름_전화번호_날짜`가 남아있으면 자동 정제 업그레이드
-                        let needs_upgrade = (file_stem != contact_display && body.contains(&file_stem))
+                        let (_, script_only) = split_summary_and_transcript(&body);
+                        let dup_header_count = body.matches("> **통화 상대방**:").count();
+                        // 기존 스크립트 본문(`## 📜 스크립트` 하위)에 `[00:00:00]` 타임스탬프가 없거나 `이름_전화번호_날짜`가 남아있거나 중복 헤더가 있으면 자동 정제 업그레이드
+                        let needs_upgrade = (file_stem != contact_display && script_only.contains(&file_stem))
                             || fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str())
-                            || !body.contains("[00:");
+                            || !script_only.contains("[00:")
+                            || dup_header_count > 1;
                         if needs_upgrade {
                             write_call_recording_markdown(
                                 conn,

@@ -3,7 +3,6 @@
  * @description 상단 헤더 컨테이너: 햄버거 메뉴 토글, `<MenuBar />`, `<DocTabsBar />`, 우측 대시보드·사이드바 바로가기 아이콘.
  */
 import React from 'react';
-import { openExternalUrlInChrome } from '../../services/tauriClient';
 import { DocTabsBar, DocTabsBarProps } from './DocTabsBar';
 import { MenuBar, MenuBarProps } from './MenuBar';
 
@@ -66,7 +65,7 @@ export function AppHeader(props: AppHeaderProps) {
             getShortcutLabel('dashboard_projects') || 'F6'
           })`}
         >
-          📁
+          ⭐
         </button>
         <button
           className={`hamburger-menu-btn ${
@@ -102,13 +101,15 @@ export function AppHeader(props: AppHeaderProps) {
           🗓️
         </button>
         <button
-          className="hamburger-menu-btn"
-          onClick={() =>
-            openExternalUrlInChrome('https://calendar.google.com')
-          }
-          title="구글 캘린더 열기 (https://calendar.google.com)"
+          className={`hamburger-menu-btn ${
+            activeTabPath === 'mylore://dashboard/logs' ? 'active' : ''
+          }`}
+          onClick={() => openDashboardTab('logs')}
+          title={`로그 기록 조회 대쉬보드 (${
+            getShortcutLabel('toggle_log_terminal') || 'Ctrl+`'
+          })`}
         >
-          📅
+          📋
         </button>
         <button
           className={`hamburger-menu-btn ${

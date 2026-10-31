@@ -5,6 +5,7 @@ mod progress;
 mod auth;
 mod storage;
 mod health;
+mod ack_state;
 mod sync_worker;
 mod http_server;
 
@@ -16,5 +17,6 @@ pub(crate) use progress::*;
 pub(crate) use auth::*;
 pub(crate) use storage::*;
 pub(crate) use health::*;
+pub(crate) use ack_state::*;
 pub(crate) use sync_worker::*;
 pub(crate) use http_server::*;

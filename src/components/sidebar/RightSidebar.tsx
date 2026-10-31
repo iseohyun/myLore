@@ -2,8 +2,9 @@
  * @file RightSidebar.tsx
  * @description 우측 접이식 사이드바 컨테이너: 아이콘 탭 바 + 폴더 트리(`<FileTreePanel />`), 전체 검색/치환, 목차(TOC), 백링크, 일자별 라이프로그, `<MobileLifelogSidebar />`.
  */
-import React from 'react';
+import React, { useRef, useState } from 'react';
 import {
+  BaseFolderRole,
   DocumentPayload,
   FinanceTransaction,
   LifelogMessage,
@@ -78,7 +79,23 @@ export function RightSidebar(props: RightSidebarProps) {
     dailyTransactions,
     dailyMessages,
     insertIntoBody,
+    activeTreeRoleTab,
+    setActiveTreeRoleTab,
+    handleMoveRole,
+    baseFolders,
   } = props;
+
+  const [dragOverRoleTab, setDragOverRoleTab] = useState<BaseFolderRole | null>(
+    null
+  );
+  const hoverSwitchTimerRef = useRef<number | null>(null);
+
+  const clearHoverSwitchTimer = () => {
+    if (hoverSwitchTimerRef.current !== null) {
+      window.clearTimeout(hoverSwitchTimerRef.current);
+      hoverSwitchTimerRef.current = null;
+    }
+  };
 
   return (
     <aside
@@ -89,45 +106,128 @@ export function RightSidebar(props: RightSidebarProps) {
         <MobileLifelogSidebar {...props} />
       ) : (
         <>
-          <div className="sidebar-tabs">
-            <button
-              className={`sidebar-tab ${rightTab === 'tree' ? 'active' : ''}`}
-              onClick={() => setRightTab('tree')}
-              title="파일 트리 (Del: 휴지통 이동 | 우클릭: 메뉴)"
-            >
-              📂
-            </button>
-            <button
-              className={`sidebar-tab ${rightTab === 'search' ? 'active' : ''}`}
-              onClick={() => setRightTab('search')}
-              title="파일에서 찾기 결과 리스트 (클릭 시 해당 위치로 이동)"
-            >
-              🔍
-            </button>
-            <button
-              className={`sidebar-tab ${rightTab === 'toc' ? 'active' : ''}`}
-              onClick={() => setRightTab('toc')}
-              title="문서 내 목차 (TOC)"
-            >
-              📑
-            </button>
-            <button
-              className={`sidebar-tab ${rightTab === 'backlinks' ? 'active' : ''}`}
-              onClick={() => setRightTab('backlinks')}
-              title="양방향 백링크"
-            >
-              🔗
-            </button>
-            <button
-              className={`sidebar-tab ${rightTab === 'lifelog' ? 'active' : ''}`}
-              onClick={() => setRightTab('lifelog')}
-              title="당일 라이프로그 (금융·카톡)"
-            >
-              📱
-            </button>
+          <div className="sidebar-tabs sidebar-role-tabs">
+            {(
+              [
+                {
+                  key: 'projects',
+                  label: '프로젝트',
+                  title:
+                    '⭐ 프로젝트 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 프로젝트 루트로 이동)',
+                },
+                {
+                  key: 'diary',
+                  label: '일기',
+                  title:
+                    '📅 일기 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 일기 폴더로 이동)',
+                },
+                {
+                  key: 'data',
+                  label: '아카이브',
+                  title:
+                    '🗄️ 아카이브 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 아카이브 루트로 이동)',
+                },
+                {
+                  key: 'git',
+                  label: 'Git',
+                  title:
+                    '💻 Git 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 Git 루트로 이동)',
+                },
+              ] as const
+            ).map((t) => {
+              const isTabActive =
+                rightTab === 'tree' && activeTreeRoleTab === t.key;
+              const isDragTarget = dragOverRoleTab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  className={`sidebar-tab sidebar-role-tab ${isTabActive ? 'active' : ''} ${isDragTarget ? 'drag-over' : ''}`}
+                  onClick={() => {
+                    setRightTab('tree');
+                    setActiveTreeRoleTab(t.key);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRightTab('tree');
+                    setActiveTreeRoleTab(t.key);
+                    const basePath =
+                      baseFolders.find((b) => b.role === t.key && b.enabled)
+                        ?.path ||
+                      baseFolders.find((b) => b.role === t.key)?.path ||
+                      '';
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      targetPath: basePath,
+                      targetName: t.label,
+                      isDirectory: true,
+                      folderRole: t.key,
+                      folderSubDir: '',
+                    });
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dragOverRoleTab !== t.key) {
+                      setDragOverRoleTab(t.key);
+                      clearHoverSwitchTimer();
+                      hoverSwitchTimerRef.current = window.setTimeout(() => {
+                        setRightTab('tree');
+                        setActiveTreeRoleTab(t.key);
+                      }, 380);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverRoleTab === t.key) {
+                      setDragOverRoleTab(null);
+                    }
+                    clearHoverSwitchTimer();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverRoleTab(null);
+                    clearHoverSwitchTimer();
+                    const srcPath =
+                      e.dataTransfer.getData('application/x-mylore-filepath') ||
+                      e.dataTransfer.getData('text/plain');
+                    if (srcPath) {
+                      setRightTab('tree');
+                      setActiveTreeRoleTab(t.key);
+                      void handleMoveRole(t.key, srcPath, '');
+                    }
+                  }}
+                  title={t.title}
+                >
+                  <span>{t.label}</span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="sidebar-content">
+            {rightTab !== 'tree' && (
+              <div className="sidebar-special-panel-header">
+                <span>
+                  {rightTab === 'search'
+                    ? '🔍 파일에서 찾기 (Ctrl+Shift+F)'
+                    : rightTab === 'toc'
+                      ? '📑 문서 내 목차 (Ctrl+1)'
+                      : rightTab === 'backlinks'
+                        ? '🔗 양방향 백링크 (Ctrl+2)'
+                        : '📱 당일 라이프로그'}
+                </span>
+                <button
+                  type="button"
+                  className="toolbar-btn sidebar-special-close-btn"
+                  onClick={() => setRightTab('tree')}
+                  title="파일 트리로 돌아가기"
+                >
+                  ✕ 닫기
+                </button>
+              </div>
+            )}
             {rightTab === 'tree' && <FileTreePanel {...props} />}
 
             {rightTab === 'search' && (

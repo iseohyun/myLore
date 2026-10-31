@@ -21,12 +21,13 @@ pub(crate) fn open_db(db_path: &Path) -> Result<Connection, String> {
     .map_err(|e| e.to_string())?;
 
     if DB_SCHEMA_INITIALIZED.get().is_none() {
-        // 실행 순서가 중요합니다: 스키마 → 컬럼 마이그레이션 → 기본값 시드 → 템플릿 → 카톡 파일 마이그레이션
+        // 실행 순서가 중요합니다: 스키마 → 컬럼 마이그레이션 → 기본값 시드 → 템플릿 → 카톡 파일 마이그레이션 → ACK 상태 역추출
         create_schema(&conn)?;
         apply_column_migrations(&conn);
         seed_default_meta_and_base_folders(&conn);
         let _ = ensure_projects_mylore_templates(&conn);
         migrate_raw_kakao_chat_mds(&conn);
+        backfill_sync_ack_states(&conn);
         let _ = DB_SCHEMA_INITIALIZED.set(true);
     }
 
@@ -122,6 +123,47 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             call_time TEXT NOT NULL,
             timestamp_ms INTEGER NOT NULL,
             dedup_key TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS kakao_room_sync_state (
+            room_name TEXT PRIMARY KEY,
+            folder_name TEXT NOT NULL DEFAULT '',
+            last_message TEXT NOT NULL DEFAULT '',
+            last_message_ts INTEGER NOT NULL DEFAULT 0,
+            last_shared_ts INTEGER NOT NULL DEFAULT 0,
+            total_bytes INTEGER NOT NULL DEFAULT 0,
+            synced_bytes INTEGER NOT NULL DEFAULT 0,
+            client_ack INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS domain_sync_state (
+            domain TEXT PRIMARY KEY,
+            latest_ts INTEGER NOT NULL DEFAULT 0,
+            extra_json TEXT NOT NULL DEFAULT '{}',
+            client_ack INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS call_transcript_meta (
+            safe_stem TEXT PRIMARY KEY,
+            stage INTEGER NOT NULL DEFAULT 1,
+            user_requirement TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS pc_activity_events (
+            aw_event_id INTEGER PRIMARY KEY,
+            bucket_type TEXT NOT NULL,
+            hostname TEXT NOT NULL,
+            local_date TEXT NOT NULL,
+            local_time TEXT NOT NULL,
+            local_hour INTEGER NOT NULL,
+            timestamp_utc TEXT NOT NULL,
+            duration_sec REAL NOT NULL,
+            app_name TEXT NOT NULL DEFAULT '',
+            window_title TEXT NOT NULL DEFAULT '',
+            afk_status TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_pc_activity_date ON pc_activity_events(local_date, bucket_type);
+        CREATE TABLE IF NOT EXISTS contact_ai_profiles (
+            contact_name TEXT PRIMARY KEY,
+            profile_text TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
         );
         ",
     )

@@ -2,9 +2,10 @@
  * @file FileTreePanel.tsx
  * @description 우측 사이드바 가상 통합 파일 트리: 프로젝트(`main.md` 우선순위)·이번 주 일기·아카이브·Git 저장소 계층형 폴더 트리 렌더링.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ArchiveTreeFolder,
+  BaseFolderConfig,
   BaseFolderRole,
   ContextMenuState,
   DocumentPayload,
@@ -14,8 +15,16 @@ import {
 } from '../../types/mylore';
 
 export interface FileTreePanelProps {
+  baseFolders: BaseFolderConfig[];
   treeFilter: string;
   setTreeFilter: React.Dispatch<React.SetStateAction<string>>;
+  activeTreeRoleTab: BaseFolderRole;
+  setActiveTreeRoleTab: React.Dispatch<React.SetStateAction<BaseFolderRole>>;
+  handleMoveRole: (
+    targetRole: BaseFolderRole,
+    sourcePath?: string,
+    targetSubDir?: string
+  ) => Promise<void> | void;
   trashHistory: TrashedFileRecord[];
   handleRestoreTrashedDocument: () => void;
   sectionModes: Record<BaseFolderRole, FolderSectionMode>;
@@ -29,6 +38,7 @@ export interface FileTreePanelProps {
   projectRootTree: ArchiveTreeFolder;
   archiveRootTree: ArchiveTreeFolder;
   gitRootTree: ArchiveTreeFolder;
+  diaryRootTree: ArchiveTreeFolder;
   currentWeekRange: { start: string; end: string };
   openProjectFolders: Set<string>;
   setOpenProjectFolders: React.Dispatch<React.SetStateAction<Set<string>>>;
@@ -43,8 +53,11 @@ export interface FileTreePanelProps {
 }
 
 export function FileTreePanel({
+  baseFolders,
   treeFilter,
   setTreeFilter,
+  activeTreeRoleTab,
+  handleMoveRole,
   trashHistory,
   handleRestoreTrashedDocument,
   sectionModes,
@@ -56,6 +69,7 @@ export function FileTreePanel({
   projectRootTree,
   archiveRootTree,
   gitRootTree,
+  diaryRootTree,
   currentWeekRange,
   openProjectFolders,
   setOpenProjectFolders,
@@ -66,8 +80,82 @@ export function FileTreePanel({
   setIsFolderPaneFocused,
   openDocumentByNode,
   setContextMenu,
-  setStatusMessage,
 }: FileTreePanelProps) {
+  const [draggingFilePath, setDraggingFilePath] = useState<string | null>(null);
+  const [dragOverFolderKey, setDragOverFolderKey] = useState<string | null>(
+    null
+  );
+
+  const cleanSubDirKey = (rawKey: string): string =>
+    rawKey
+      .replace(/^(?:git|diary):\/*/, '')
+      .replace(/^[\\/]+|[\\/]+$/g, '');
+
+  const resolveFolderFullPath = (
+    targetRole: BaseFolderRole,
+    rawSubDir: string
+  ): string => {
+    const base =
+      baseFolders.find((b) => b.role === targetRole && b.enabled)?.path ||
+      baseFolders.find((b) => b.role === targetRole)?.path ||
+      '';
+    const sub = cleanSubDirKey(rawSubDir).replace(/\//g, '\\');
+    return sub ? `${base}\\${sub}` : base;
+  };
+
+  const handleFileDragStart = (
+    e: React.DragEvent<HTMLDivElement>,
+    node: FileNode
+  ) => {
+    e.stopPropagation();
+    setDraggingFilePath(node.fullPath);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-mylore-filepath', node.fullPath);
+    e.dataTransfer.setData('text/plain', node.fullPath);
+  };
+
+  const handleFileDragEnd = () => {
+    setDraggingFilePath(null);
+    setDragOverFolderKey(null);
+  };
+
+  const handleFolderDrop = (
+    e: React.DragEvent<HTMLDivElement>,
+    targetRole: BaseFolderRole,
+    targetSubDir: string
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverFolderKey(null);
+    const srcPath =
+      e.dataTransfer.getData('application/x-mylore-filepath') ||
+      e.dataTransfer.getData('text/plain') ||
+      draggingFilePath;
+    setDraggingFilePath(null);
+    if (!srcPath) return;
+
+    if (targetSubDir) {
+      if (
+        targetRole === 'projects' ||
+        targetRole === 'git' ||
+        targetRole === 'diary'
+      ) {
+        setOpenProjectFolders((prev) => {
+          const next = new Set(prev);
+          next.add(targetSubDir);
+          return next;
+        });
+      } else if (targetRole === 'data') {
+        setOpenArchiveFolders((prev) => {
+          const next = new Set(prev);
+          next.add(targetSubDir);
+          return next;
+        });
+      }
+    }
+
+    void handleMoveRole(targetRole, srcPath, cleanSubDirKey(targetSubDir));
+  };
   const countFolderFiles = (folder: ArchiveTreeFolder): number => {
     return (
       folder.files.length +
@@ -139,7 +227,8 @@ export function FileTreePanel({
   const renderProjectFolderLevel = (
     folder: ArchiveTreeFolder,
     depth: number,
-    mode: FolderSectionMode
+    mode: FolderSectionMode,
+    targetRole: BaseFolderRole = 'projects'
   ): React.ReactNode => {
     const isFilterActive = treeFilter.trim() !== '';
     const visibleFolders =
@@ -168,9 +257,12 @@ export function FileTreePanel({
             <div
               key={node.fullPath}
               tabIndex={0}
-              className={`tree-node-row ${
+              draggable={true}
+              onDragStart={(e) => handleFileDragStart(e, node)}
+              onDragEnd={handleFileDragEnd}
+              className={`tree-node-row draggable-file ${
                 currentDoc?.fullPath === node.fullPath ? 'active' : ''
-              }`}
+              } ${draggingFilePath === node.fullPath ? 'dragging' : ''}`}
               style={{ paddingLeft: '8px' }}
               onClick={() => {
                 setIsFolderPaneFocused(true);
@@ -188,12 +280,25 @@ export function FileTreePanel({
                   targetName: node.relativePath,
                 });
               }}
-              title={`${node.fullPath}\n(루트 전체 프로젝트 마스터 | Del: 휴지통)`}
+              title={`${node.fullPath}\n(루트 전체 프로젝트 마스터 | 드래그하여 폴더 이동 | Del: 휴지통)`}
             >
               <div className="tree-node-label">
-                <span>⭐</span>
-                <span style={{ fontWeight: 700 }}>
-                  {node.name === 'main.md'
+                <span>
+                  {targetRole === 'projects' &&
+                  node.name.toLowerCase() === 'main.md'
+                    ? '⭐'
+                    : '📄'}
+                </span>
+                <span
+                  style={{
+                    fontWeight:
+                      targetRole === 'projects' &&
+                      node.name.toLowerCase() === 'main.md'
+                        ? 700
+                        : 400,
+                  }}
+                >
+                  {targetRole === 'projects' && node.name === 'main.md'
                     ? 'main.md (전체 프로젝트 마스터)'
                     : node.name}
                 </span>
@@ -210,6 +315,8 @@ export function FileTreePanel({
           const folderMainDoc = sub.files.find(
             (f) => f.name.toLowerCase() === 'main.md'
           );
+          const dropKey = `${targetRole}:${sub.pathKey}`;
+          const isDropTarget = dragOverFolderKey === dropKey;
 
           return (
             <div key={`proj-dir-${sub.pathKey}`}>
@@ -217,41 +324,45 @@ export function FileTreePanel({
                 tabIndex={0}
                 className={`tree-node-row project-folder-row ${
                   isActive ? 'active-project' : ''
-                }`}
+                } ${isDropTarget ? 'drag-drop-target' : ''}`}
                 style={{ paddingLeft: `${depth * 14 + 8}px` }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverFolderKey !== dropKey) {
+                    setDragOverFolderKey(dropKey);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  e.stopPropagation();
+                  if (dragOverFolderKey === dropKey) {
+                    setDragOverFolderKey(null);
+                  }
+                }}
+                onDrop={(e) => handleFolderDrop(e, targetRole, sub.pathKey)}
                 onClick={() => {
                   setIsFolderPaneFocused(true);
-                  if (folderMainDoc) {
-                    if (
-                      isOpen &&
-                      currentDoc?.fullPath === folderMainDoc.fullPath
-                    ) {
-                      toggleProjectFolderOpen(sub.pathKey);
-                    } else {
-                      openDocumentByNode(folderMainDoc);
-                    }
-                  } else {
-                    toggleProjectFolderOpen(sub.pathKey);
-                  }
+                  toggleProjectFolderOpen(sub.pathKey);
                 }}
                 onContextMenu={(e) => {
-                  if (folderMainDoc) {
-                    e.preventDefault();
-                    setIsFolderPaneFocused(true);
-                    setContextMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      targetPath: folderMainDoc.fullPath,
-                      targetUuid: folderMainDoc.uuid,
-                      targetName: folderMainDoc.relativePath,
-                    });
-                  }
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsFolderPaneFocused(true);
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    targetPath: resolveFolderFullPath(targetRole, sub.pathKey),
+                    targetUuid: folderMainDoc?.uuid,
+                    targetName: sub.name,
+                    isDirectory: true,
+                    folderRole: targetRole,
+                    folderSubDir: cleanSubDirKey(sub.pathKey),
+                  });
                 }}
-                title={
-                  folderMainDoc
-                    ? `${sub.pathKey}/main.md 클릭하여 프로젝트 열기 (하위 문서 ${totalFiles}개)`
-                    : `${sub.pathKey} (하위 문서 ${totalFiles}개)`
-                }
+                title={`${cleanSubDirKey(sub.pathKey) || sub.name} (${
+                  isOpen ? '열린 폴더 — 클릭 시 닫기' : '닫힌 폴더 — 클릭 시 열기'
+                } | 하위 문서 ${totalFiles}개 | 우클릭: 새 문서 생성)`}
               >
                 <div className="tree-node-label">
                   <span>{isOpen ? '📂' : '📁'}</span>
@@ -263,13 +374,6 @@ export function FileTreePanel({
                     </span>
                   )}
                 </div>
-                <button
-                  className="tree-folder-close-btn"
-                  onClick={(e) => toggleProjectFolderOpen(sub.pathKey, e)}
-                  title={isOpen ? '프로젝트 폴더 접기' : '프로젝트 하위 문서 펼치기'}
-                >
-                  {isOpen ? '접기' : '펼치기'}
-                </button>
               </div>
 
               {isOpen && (
@@ -283,10 +387,15 @@ export function FileTreePanel({
                       <div
                         key={node.fullPath}
                         tabIndex={0}
-                        className={`tree-node-row ${
+                        draggable={true}
+                        onDragStart={(e) => handleFileDragStart(e, node)}
+                        onDragEnd={handleFileDragEnd}
+                        className={`tree-node-row draggable-file ${
                           currentDoc?.fullPath === node.fullPath ? 'active' : ''
-                        }`}
-                        style={{ paddingLeft: `${(depth + 1) * 14 + 10}px` }}
+                        } ${draggingFilePath === node.fullPath ? 'dragging' : ''}`}
+                        style={{
+                          paddingLeft: `${(depth + 1) * 14 + 10}px`,
+                        }}
                         onClick={() => {
                           setIsFolderPaneFocused(true);
                           openDocumentByNode(node);
@@ -303,7 +412,7 @@ export function FileTreePanel({
                             targetName: node.relativePath,
                           });
                         }}
-                        title={`${node.fullPath}\n(Del: 휴지통으로 이동 | 우클릭: 메뉴)`}
+                        title={`${node.fullPath}\n(드래그하여 다른 폴더/탭으로 이동 | Del: 휴지통 | 우클릭: 메뉴)`}
                       >
                         <div className="tree-node-label">
                           <span>{isMain ? '⭐' : '📄'}</span>
@@ -316,7 +425,12 @@ export function FileTreePanel({
                   })}
 
                   {sub.folders.length > 0 &&
-                    renderProjectFolderLevel(sub, depth + 1, mode)}
+                    renderProjectFolderLevel(
+                      sub,
+                      depth + 1,
+                      mode,
+                      targetRole
+                    )}
                 </div>
               )}
             </div>
@@ -377,27 +491,63 @@ export function FileTreePanel({
             const isOpen =
               openArchiveFolders.has(sub.pathKey) || isFilterActive;
             const childTotal = sub.folders.length + sub.files.length;
+            const dropKey = `data:${sub.pathKey}`;
+            const isDropTarget = dragOverFolderKey === dropKey;
 
             return (
               <div key={`arch-dir-${sub.pathKey}`}>
                 <div
                   className={`tree-node-row archive-folder-row ${
                     isOpen ? 'open-path' : 'closed-path'
-                  }`}
-                  style={{ paddingLeft: `${depth * 14 + 8}px` }}
+                  } ${isDropTarget ? 'drag-drop-target' : ''}`}
+                  style={{
+                    paddingLeft: `${depth * 14 + 8}px`,
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dragOverFolderKey !== dropKey) {
+                      setDragOverFolderKey(dropKey);
+                    }
+                  }}
+                  onDragLeave={(e) => {
+                    e.stopPropagation();
+                    if (dragOverFolderKey === dropKey) {
+                      setDragOverFolderKey(null);
+                    }
+                  }}
+                  onDrop={(e) => handleFolderDrop(e, 'data', sub.pathKey)}
                   onClick={() => {
+                    setIsFolderPaneFocused(true);
                     if (isOpen) {
                       handleCloseArchiveFolder(sub.pathKey);
                     } else {
-                      setStatusMessage(
-                        `🗄️ 아카이브 폴더(${sub.name})는 닫기만 지원합니다. 해당 폴더 내 파일에 엑세스하면 경로가 자동으로 열립니다.`
-                      );
+                      setOpenArchiveFolders((prev) => {
+                        const next = new Set(prev);
+                        next.add(sub.pathKey);
+                        return next;
+                      });
                     }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsFolderPaneFocused(true);
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      targetPath: resolveFolderFullPath('data', sub.pathKey),
+                      targetName: sub.name,
+                      isDirectory: true,
+                      folderRole: 'data',
+                      folderSubDir: sub.pathKey,
+                    });
                   }}
                   title={
                     isOpen
-                      ? `${sub.pathKey} (열린 경로 — 클릭 시 닫기)`
-                      : `${sub.pathKey} (닫힌 상태 — 하위 파일 엑세스 시 자동 열림)`
+                      ? `${sub.pathKey} (열린 폴더 — 클릭 시 닫기 | 우클릭: 새 문서 생성)`
+                      : `${sub.pathKey} (닫힌 폴더 — 클릭 시 열기 | 우클릭: 새 문서 생성)`
                   }
                 >
                   <div className="tree-node-label">
@@ -405,17 +555,6 @@ export function FileTreePanel({
                     <span>{sub.name}</span>
                     <span className="tree-folder-count">({childTotal})</span>
                   </div>
-                  {isOpen ? (
-                    <button
-                      className="tree-folder-close-btn"
-                      onClick={(e) => handleCloseArchiveFolder(sub.pathKey, e)}
-                      title="이 폴더 닫기"
-                    >
-                      닫기
-                    </button>
-                  ) : (
-                    <span className="tree-folder-closed-badge">닫힘</span>
-                  )}
                 </div>
                 {isOpen && renderArchiveFolderLevel(sub, depth + 1)}
               </div>
@@ -427,10 +566,15 @@ export function FileTreePanel({
             <div
               key={node.fullPath}
               tabIndex={0}
-              className={`tree-node-row ${
+              draggable={true}
+              onDragStart={(e) => handleFileDragStart(e, node)}
+              onDragEnd={handleFileDragEnd}
+              className={`tree-node-row draggable-file ${
                 currentDoc?.fullPath === node.fullPath ? 'active' : ''
-              }`}
-              style={{ paddingLeft: `${depth * 14 + 8}px` }}
+              } ${draggingFilePath === node.fullPath ? 'dragging' : ''}`}
+              style={{
+                paddingLeft: `${depth * 14 + 8}px`,
+              }}
               onClick={() => {
                 setIsFolderPaneFocused(true);
                 openDocumentByNode(node);
@@ -447,7 +591,7 @@ export function FileTreePanel({
                   targetName: node.relativePath,
                 });
               }}
-              title={`${node.fullPath}\n(Del: 휴지통으로 이동 | 우클릭: 메뉴)`}
+              title={`${node.fullPath}\n(드래그하여 다른 폴더/탭으로 이동 | Del: 휴지통 | 우클릭: 메뉴)`}
             >
               <div className="tree-node-label">
                 <span>📄</span>
@@ -508,11 +652,11 @@ export function FileTreePanel({
         </button>
       )}
 
-      {(['projects', 'diary', 'data', 'git'] as BaseFolderRole[]).map(
+      {([activeTreeRoleTab] as BaseFolderRole[]).map(
         (roleKey) => {
           const roleLabel =
             roleKey === 'projects'
-              ? '📁 프로젝트'
+              ? '⭐ 프로젝트'
               : roleKey === 'diary'
                 ? '📅 일기'
                 : roleKey === 'data'
@@ -550,17 +694,47 @@ export function FileTreePanel({
                   ? roleFiles
                   : [];
 
+          const rootDropKey = `${roleKey}:__root__`;
+          const isRootDropTarget = dragOverFolderKey === rootDropKey;
+
           return (
             <div key={roleKey} className="tree-group-section">
               <div
-                className="tree-group-header"
+                className={`tree-group-header ${isRootDropTarget ? 'drag-drop-target' : ''}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverFolderKey !== rootDropKey) {
+                    setDragOverFolderKey(rootDropKey);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  e.stopPropagation();
+                  if (dragOverFolderKey === rootDropKey) {
+                    setDragOverFolderKey(null);
+                  }
+                }}
+                onDrop={(e) => handleFolderDrop(e, roleKey, '')}
                 onClick={() => cycleSectionMode(roleKey)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsFolderPaneFocused(true);
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    targetPath: resolveFolderFullPath(roleKey, ''),
+                    targetName: roleLabel,
+                    isDirectory: true,
+                    folderRole: roleKey,
+                    folderSubDir: '',
+                  });
+                }}
                 title={
                   roleKey === 'data'
-                    ? '클릭하여 요약 / 닫기 토글 (아카이브는 열기가 없으며 닫기/요약만 지원)'
-                    : roleKey === 'git'
-                      ? '클릭하여 열기 / 요약 / 닫기 토글 (Git 폴더는 UUID 스캔·주입 제외, 열람·편집만 처리)'
-                      : '클릭하여 열기 / 요약 / 닫기 토글'
+                    ? '클릭하여 요약 / 닫기 토글 | 우클릭: 루트에 새 문서 생성 | 드래그하여 루트로 이동'
+                    : '클릭하여 열기 / 요약 / 닫기 토글 | 우클릭: 루트에 새 문서 생성 | 드래그하여 루트로 이동'
                 }
               >
                 <div className="tree-group-title-wrap">
@@ -640,24 +814,40 @@ export function FileTreePanel({
 
               {mode !== 'closed' && roleKey === 'projects' && (
                 <div className="archive-tree-container">
-                  {renderProjectFolderLevel(projectRootTree, 0, mode)}
+                  {renderProjectFolderLevel(projectRootTree, 0, mode, 'projects')}
                 </div>
               )}
 
               {mode !== 'closed' && roleKey === 'diary' && (
                 <>
-                  {displayedFiles.length === 0 ? (
+                  {diaryRootTree.folders.length > 0 && (
+                    <div className="archive-tree-container">
+                      {renderProjectFolderLevel(
+                        { ...diaryRootTree, files: [] },
+                        0,
+                        'open',
+                        'diary'
+                      )}
+                    </div>
+                  )}
+                  {displayedFiles.length === 0 &&
+                  diaryRootTree.folders.length === 0 ? (
                     <div className="tree-empty-hint">
                       {`이번 주(${currentWeekRange.start.slice(5)}~${currentWeekRange.end.slice(5)}) 일기가 없습니다.`}
                     </div>
                   ) : (
-                    displayedFiles.map((node) => (
+                    displayedFiles
+                      .filter((f) => !/[\\/]/.test(f.relativePath))
+                      .map((node) => (
                       <div
                         key={node.fullPath}
                         tabIndex={0}
-                        className={`tree-node-row ${
+                        draggable={true}
+                        onDragStart={(e) => handleFileDragStart(e, node)}
+                        onDragEnd={handleFileDragEnd}
+                        className={`tree-node-row draggable-file ${
                           currentDoc?.fullPath === node.fullPath ? 'active' : ''
-                        }`}
+                        } ${draggingFilePath === node.fullPath ? 'dragging' : ''}`}
                         onClick={() => {
                           setIsFolderPaneFocused(true);
                           openDocumentByNode(node);
@@ -674,7 +864,7 @@ export function FileTreePanel({
                             targetName: node.relativePath,
                           });
                         }}
-                        title={`${node.fullPath}\n(Del: 휴지통으로 이동 | 우클릭: 메뉴)`}
+                        title={`${node.fullPath}\n(드래그하여 다른 폴더/탭으로 이동 | Del: 휴지통 | 우클릭: 메뉴)`}
                       >
                         <div className="tree-node-label">
                           <span>{node.name === 'main.md' ? '⭐' : '📄'}</span>
@@ -699,7 +889,7 @@ export function FileTreePanel({
                       등록된 Git 베이스 폴더가 없거나 .md 파일이 없습니다. (설정 대쉬보드에서 Git 베이스 폴더를 추가할 수 있습니다)
                     </div>
                   ) : (
-                    renderProjectFolderLevel(gitRootTree, 0, 'open')
+                    renderProjectFolderLevel(gitRootTree, 0, 'open', 'git')
                   )}
                 </div>
               )}

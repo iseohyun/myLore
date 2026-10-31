@@ -12,13 +12,17 @@ import {
   FileNode,
   FinanceTransaction,
   GeminiApiKeyStatus,
+  GoogleCalendarSyncResult,
+  GoogleCalendarSyncStatus,
   LifelogMessage,
   MediaInboxItem,
   MobilePairingPayload,
   MobileSyncProgressPayload,
   MyLoreAppSettings,
+  PcActivitySummaryPayload,
   ScanProgressPayload,
   SearchMatchItem,
+  ServiceLogsPayload,
   TaskPriorityCode,
   TrashedFileRecord,
   VaultTemplateItem,
@@ -171,6 +175,13 @@ export async function createNewDocument(params: {
   dateStr?: string;
   calendarCategory?: string;
   location?: string;
+  includeLocation?: boolean;
+  descriptionMode?: string;
+  transparency?: string;
+  visibility?: string;
+  attendeeEmail?: string;
+  attendeeResponseStatus?: string;
+  eventStatus?: string;
   isProjectFolder?: boolean;
   templateFile?: string;
   subFolder?: string;
@@ -185,6 +196,19 @@ export async function createTempMemo(title?: string): Promise<DocumentPayload> {
   if (isTauriEnv()) {
     return await invoke<DocumentPayload>('create_temp_memo', {
       title: title ?? null,
+    });
+  }
+  throw new Error('Tauri runtime required');
+}
+
+export async function createEmptyDocumentInFolder(
+  role: BaseFolderRole,
+  subDir?: string
+): Promise<DocumentPayload> {
+  if (isTauriEnv()) {
+    return await invoke<DocumentPayload>('create_empty_document_in_folder', {
+      role,
+      subDir: subDir ?? null,
     });
   }
   throw new Error('Tauri runtime required');
@@ -298,13 +322,15 @@ export async function promoteToProjectFolder(
 export async function moveDocumentToRole(
   sourceFullPath: string,
   targetRole: BaseFolderRole,
-  newFileName?: string
+  newFileName?: string,
+  targetSubDir?: string
 ): Promise<DocumentPayload> {
   if (isTauriEnv()) {
     return await invoke<DocumentPayload>('move_document_to_role', {
       sourceFullPath,
       targetRole,
       newFileName: newFileName ?? null,
+      targetSubDir: targetSubDir ?? null,
     });
   }
   throw new Error('Tauri runtime required');
@@ -619,6 +645,29 @@ export async function getMobileContactsMap(): Promise<Record<string, string>> {
   return {};
 }
 
+export const DEFAULT_CONTACT_PROFILE_TEMPLATE =
+  '이 사람의 호칭(복수 가능): \n나를 부르는 호칭: \n소속 모임: \n이 사람은?(직업, 사는곳, 이미지, ): ';
+
+export async function getContactAiProfiles(): Promise<Record<string, string>> {
+  if (isTauriEnv()) {
+    return await invoke<Record<string, string>>('get_contact_ai_profiles');
+  }
+  return {};
+}
+
+export async function saveContactAiProfile(
+  contactName: string,
+  profileText: string
+): Promise<Record<string, string>> {
+  if (isTauriEnv()) {
+    return await invoke<Record<string, string>>('save_contact_ai_profile', {
+      contactName,
+      profileText,
+    });
+  }
+  return { [contactName]: profileText };
+}
+
 export async function openLifelogItemDocument(params: {
   source: string;
   roomOrSender: string;
@@ -678,11 +727,30 @@ export async function getCallRecordingPlayInfo(params: {
 export async function transcribeSingleCallItem(params: {
   roomOrSender: string;
   attachmentUuid?: string | null;
+  userRequirement?: string | null;
 }): Promise<DocumentPayload> {
   if (isTauriEnv()) {
     return await invoke<DocumentPayload>('transcribe_single_call_item', {
       roomOrSender: params.roomOrSender,
       attachmentUuid: params.attachmentUuid ?? null,
+      userRequirement: params.userRequirement ?? null,
+    });
+  }
+  throw new Error('Tauri 환경에서만 동작합니다.');
+}
+
+export async function updateCallTranscriptStage(params: {
+  roomOrSender: string;
+  attachmentUuid?: string | null;
+  stage: number;
+  userRequirement?: string | null;
+}): Promise<DocumentPayload> {
+  if (isTauriEnv()) {
+    return await invoke<DocumentPayload>('update_call_transcript_stage', {
+      roomOrSender: params.roomOrSender,
+      attachmentUuid: params.attachmentUuid ?? null,
+      stage: params.stage,
+      userRequirement: params.userRequirement ?? null,
     });
   }
   throw new Error('Tauri 환경에서만 동작합니다.');
@@ -738,5 +806,116 @@ export async function transcribeLocalAudioFile(
   return '데모 환경 통화 녹음 스크립트 변환 결과입니다.';
 }
 
+export async function getServiceLogs(params?: {
+  serviceFilter?: string | null;
+  limit?: number;
+}): Promise<ServiceLogsPayload> {
+  if (isTauriEnv()) {
+    return await invoke<ServiceLogsPayload>('get_service_logs', {
+      serviceFilter: params?.serviceFilter ?? null,
+      limit: params?.limit ?? 300,
+    });
+  }
+  return {
+    logDirPath: '%APPDATA%\\com.iseohyun.mylore\\logs',
+    entries: [],
+    logFiles: [],
+    retentionCommDays: 7,
+    retentionVersionDays: 30,
+    retentionSystemDays: 30,
+    retentionAiDays: 30,
+  };
+}
+
+export async function clearServiceLogs(
+  serviceFilter?: string | null
+): Promise<ServiceLogsPayload> {
+  if (isTauriEnv()) {
+    return await invoke<ServiceLogsPayload>('clear_service_logs', {
+      serviceFilter: serviceFilter ?? null,
+    });
+  }
+  return await getServiceLogs();
+}
+
+export async function pruneExpiredServiceLogs(): Promise<number> {
+  if (isTauriEnv()) {
+    return await invoke<number>('prune_expired_service_logs');
+  }
+  return 0;
+}
+
+export async function getPcActivitySummary(
+  date?: string
+): Promise<PcActivitySummaryPayload> {
+  if (isTauriEnv()) {
+    return await invoke<PcActivitySummaryPayload>('get_pc_activity_summary', {
+      date: date ?? null,
+    });
+  }
+  return {
+    isAwAvailable: false,
+    awDbPath: '',
+    hostname: 'LocalPC',
+    targetDate: date || new Date().toISOString().slice(0, 10),
+    syncedNewEvents: 0,
+    totalStoredEvents: 0,
+    totalWindowSec: 0,
+    activeNotAfkSec: 0,
+    afkSec: 0,
+    eventCount: 0,
+    hourlyBreakdown: new Array(24).fill(0),
+    topApps: [],
+    recentTimeline: [],
+    weeklySummary: [],
+  };
+}
+
+export async function getGoogleCalendarSyncStatus(): Promise<GoogleCalendarSyncStatus> {
+  if (isTauriEnv()) {
+    return await invoke<GoogleCalendarSyncStatus>(
+      'get_google_calendar_sync_status'
+    );
+  }
+  return {
+    isConnected: false,
+    clientId: '',
+    defaultCalendarId: '',
+    lastSyncAt: '',
+    lastError: '',
+    storageLocation: '%APPDATA%\\com.iseohyun.mylore\\google_calendar_secret.json',
+  };
+}
+
+export async function syncGoogleCalendarEvents(
+  year?: number,
+  month?: number
+): Promise<GoogleCalendarSyncResult> {
+  if (isTauriEnv()) {
+    return await invoke<GoogleCalendarSyncResult>(
+      'sync_google_calendar_events',
+      {
+        year: year ?? null,
+        month: month ?? null,
+      }
+    );
+  }
+  return {
+    uploadedCount: 0,
+    downloadedCount: 0,
+    updatedCount: 0,
+    skippedCount: 0,
+    needsAuth: true,
+    message: '브라우저 미리보기 모드입니다.',
+    lastSyncAt: '',
+  };
+}
+
+export async function startGoogleCalendarOauthLogin(): Promise<string> {
+  if (isTauriEnv()) {
+    return await invoke<string>('start_google_calendar_oauth_login');
+  }
+  return '';
+}
 
 

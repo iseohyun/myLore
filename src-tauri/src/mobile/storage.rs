@@ -106,6 +106,8 @@ pub(crate) static MEM_LAST_CONTACT_TS: std::sync::atomic::AtomicI64 = std::sync:
 
 pub(crate) static MEM_LAST_USAGE_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
+pub(crate) static MEM_LAST_PHOTO_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 pub(crate) static PENDING_SYNCED_HASHES: std::sync::OnceLock<Mutex<HashSet<String>>> =
     std::sync::OnceLock::new();
 
@@ -119,6 +121,7 @@ pub(crate) fn reset_in_memory_sync_caches() {
         &MEM_LAST_HEALTH_TS,
         &MEM_LAST_CONTACT_TS,
         &MEM_LAST_USAGE_TS,
+        &MEM_LAST_PHOTO_TS,
     ] {
         a.store(0, std::sync::atomic::Ordering::Relaxed);
     }

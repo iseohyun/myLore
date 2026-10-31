@@ -16,14 +16,17 @@ import {
   openNativeFileDialog,
   openNativeFolderDialog,
   readDocument,
+  readDocumentByUuid,
   saveBaseFolders,
   saveDocument,
   startBatchUuidScan,
+  syncGoogleCalendarEvents,
 } from '../services/tauriClient';
 import {
   autoFormatMarkdownTasks,
   combineYamlAndBody,
   splitYamlFrontmatter,
+  syncProjectSubmissionTableProgress,
 } from '../utils/markdownAutoFormat';
 
 export interface UseDocumentsParams {
@@ -41,6 +44,8 @@ export interface UseDocumentsParams {
   editorRef: React.MutableRefObject<HTMLTextAreaElement | null>;
   baseFolders: BaseFolderConfig[];
   setBaseFolders: React.Dispatch<React.SetStateAction<BaseFolderConfig[]>>;
+  flattenedFiles?: FileNode[];
+  calendarYearMonth?: { year: number; month: number };
   refreshTree: () => Promise<void>;
   setStatusMessage: React.Dispatch<React.SetStateAction<string>>;
 }
@@ -60,6 +65,8 @@ export function useDocuments({
   editorRef,
   baseFolders,
   setBaseFolders,
+  flattenedFiles = [],
+  calendarYearMonth,
   refreshTree,
   setStatusMessage,
 }: UseDocumentsParams) {
@@ -284,15 +291,17 @@ export function useDocuments({
       | 'lifelog'
       | 'finance'
       | 'diary'
-      | 'settings';
+      | 'settings'
+      | 'logs';
     const titleMap: Record<
-      'lifelog' | 'finance' | 'diary' | 'settings',
+      'lifelog' | 'finance' | 'diary' | 'settings' | 'logs',
       string
     > = {
       lifelog: '📱 라이프로그',
       finance: '💳 금융',
       diary: '📅 일정',
       settings: '⚙️ 설정',
+      logs: '📋 로그 기록',
     };
     const label = titleMap[dashType];
     if (!label) return null;
@@ -317,7 +326,7 @@ export function useDocuments({
 
   // 대쉬보드도 일반 .md 문서와 동일하게 상단 탭(.doc-tabs-bar)에 추가하여 열기
   const openDashboardTab = (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings'
+    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
   ) => {
     const fullPath = `mylore://dashboard/${dashType}`;
     const titleMap: Record<typeof dashType, string> = {
@@ -325,6 +334,7 @@ export function useDocuments({
       finance: '💳 금융',
       diary: '📅 일정',
       settings: '⚙️ 설정',
+      logs: '📋 로그 기록',
     };
     const label = titleMap[dashType];
     const virtualDoc: DocumentPayload = {
@@ -438,16 +448,46 @@ export function useDocuments({
     }
   };
 
-  const handleAutoFormatTasks = () => {
+  const handleAutoFormatTasks = async () => {
     if (!currentDoc) return;
     const formatted = autoFormatMarkdownTasks(bodyText);
-    setBodyText(formatted);
-    setStatusMessage(
-      '⚡ 서브 미션 Auto-Format 적용 완료 ([!] 핵심 → [/] 진행중 → [ ] 대기 → [-] 보류 → [x] 완료 순 재배치)'
+    const { nextBody, updatedCount } = await syncProjectSubmissionTableProgress(
+      formatted,
+      currentDoc.fullPath,
+      flattenedFiles,
+      readDocument,
+      readDocumentByUuid
     );
+    setBodyText(nextBody);
+    if (updatedCount > 0) {
+      setStatusMessage(
+        `⚡ 서브 미션 Auto-Format 및 진행율 자동 갱신 완료 (하위 미션 ${updatedCount}건의 수행 개수·성공률 반영)`
+      );
+    } else {
+      setStatusMessage(
+        '⚡ 서브 미션 Auto-Format 적용 완료 ([!] 핵심 → [/] 진행중 → [ ] 대기 → [-] 보류 → [x] 완료 순 재배치)'
+      );
+    }
   };
 
   const handleRunBatchUuidScan = async () => {
+    if (activeTabPath === 'mylore://dashboard/diary') {
+      setStatusMessage(
+        `🔄 [F5] 구글 캘린더 일정 동기화 중 (${calendarYearMonth?.year || ''}년 ${calendarYearMonth?.month || ''}월)...`
+      );
+      try {
+        const res = await syncGoogleCalendarEvents(
+          calendarYearMonth?.year,
+          calendarYearMonth?.month
+        );
+        await refreshTree();
+        setStatusMessage(res.message);
+      } catch (err) {
+        setStatusMessage(`구글 캘린더 동기화 오류: ${String(err)}`);
+      }
+      return;
+    }
+
     setStatusMessage(
       '🔍 전체 파일 수 및 기등록 UUID 현황 파악 중 (기등록 파일은 건너뛰고 이어서 진행합니다)...'
     );

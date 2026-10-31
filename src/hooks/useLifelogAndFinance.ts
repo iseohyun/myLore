@@ -103,7 +103,7 @@ export function useLifelogAndFinance({
 
   // 라이프로그 수집 대쉬보드 2개 탭 (설정 | 휴대폰데이터) 및 휴대폰 데이터 사이드바 상태
   const [lifelogDashboardTab, setLifelogDashboardTab] = useState<
-    'settings' | 'mobile'
+    'settings' | 'chat' | 'records' | 'pc_activity'
   >('settings');
   const [mobileSidebarTab, setMobileSidebarTab] = useState<LifelogSourceType>(
     'kakaotalk'
@@ -144,41 +144,44 @@ export function useLifelogAndFinance({
   };
 
   // 전화번호를 기본으로 하되, 연락처 주소록에 이미 저장된 번호라면 저장된 이름을 반환하며
-  // `이름_전화번호_날짜` 포맷일 경우 전화번호와 날짜를 제거하고 순수 `이름`만 추출합니다.
+  // `이름 (전화번호)` 또는 `이름_전화번호_날짜` 포맷일 경우 전화번호와 날짜를 제거하고 순수 `이름`만 추출합니다.
   const resolveContactName = (rawNumberOrName: string): string => {
-    const s = (rawNumberOrName || '')
+    let s = (rawNumberOrName || '')
       .trim()
       .replace(/^(통화\s*녹음[_\s]*|Call_)/i, '')
-      .replace(/\s*\([0-9+\-\s]{7,}\)\s*$/, '')
+      .trim();
+    if (!s) return '알수없음';
+
+    let extractedPhone = '';
+    const parenPhoneMatch = s.match(/\s*\(([0-9+\-\s]{7,})\)\s*$/);
+    if (parenPhoneMatch) {
+      extractedPhone = normalizePhoneDigits(parenPhoneMatch[1]);
+      s = s.replace(/\s*\([0-9+\-\s]{7,}\)\s*$/, '').trim();
+    }
+
+    s = s
       .replace(/_(\d{8})_(\d{6})$/, '')
       .replace(/_(\d{6})_(\d{6})$/, '')
       .replace(/_(\d{8,14})$/, '')
       .trim();
-    if (!s) return '알수없음';
 
-    if (s.includes('_')) {
-      const parts = s
-        .split('_')
-        .map((p) => p.trim())
-        .filter(Boolean);
-      if (parts.length > 0) {
-        const first = parts[0];
-        const firstDigits = normalizePhoneDigits(first);
-        const isFirstPhone =
-          firstDigits.length >= 7 && /^[0-9+\-]+$/.test(first);
-        if (!isFirstPhone) {
-          return contactsMap[first] || first;
-        }
-        if (contactsMap[first]) return contactsMap[first];
-        if (contactsMap[firstDigits]) return contactsMap[firstDigits];
-        return first;
+    const trailingUnderscorePhone = s.match(/^(.*?)_([0-9+\-]{7,15})$/);
+    if (trailingUnderscorePhone) {
+      const prefixName = trailingUnderscorePhone[1].trim();
+      const candPhone = normalizePhoneDigits(trailingUnderscorePhone[2]);
+      if (candPhone.length >= 7) {
+        if (!extractedPhone) extractedPhone = candPhone;
+        s = prefixName || candPhone;
       }
     }
 
+    if (extractedPhone.length >= 8 && contactsMap[extractedPhone]) {
+      return contactsMap[extractedPhone];
+    }
     if (contactsMap[s]) return contactsMap[s];
     const digits = normalizePhoneDigits(s);
-    if (digits.length >= 8 && contactsMap[digits]) {
-      return contactsMap[digits];
+    if (digits.length >= 8 && /^[0-9+\-\s]+$/.test(s)) {
+      return contactsMap[digits] || digits;
     }
     return s;
   };
@@ -209,7 +212,19 @@ export function useLifelogAndFinance({
       const attStem = rawAtt
         .replace(/\.(m4a|mp3|amr|wav|ogg|aac)$/i, '')
         .trim();
-      if (attStem && (attStem === docStem || docStem.includes(attStem))) {
+      if (
+        attStem &&
+        (attStem === docStem ||
+          docStem.includes(attStem) ||
+          attStem.includes(docStem))
+      ) {
+        return true;
+      }
+
+      const roomStem = (msg.roomOrSender || '')
+        .replace(/\.(m4a|mp3|amr|wav|ogg|aac|md)$/i, '')
+        .trim();
+      if (roomStem && docStem && roomStem === docStem) {
         return true;
       }
 
@@ -221,6 +236,14 @@ export function useLifelogAndFinance({
               docStem.includes(msgRoom) ||
               msgRoom.includes(docStem))
         );
+      }
+
+      const isSingleCallDoc =
+        Boolean(fmAudio) ||
+        Boolean(currentDoc.frontmatter['call_time']) ||
+        /_\d{6}_\d{6}$|_\d{8,14}$/.test(docStem);
+      if (isSingleCallDoc) {
+        return false;
       }
 
       const rawTarget =
@@ -293,6 +316,60 @@ export function useLifelogAndFinance({
     }
 
     return false;
+  };
+
+  const normalizeCallStem = (raw: string): string =>
+    (raw || '')
+      .trim()
+      .replace(/^transcribed:/i, '')
+      .replace(/^pending_transcript:/i, '')
+      .replace(/\.(m4a|mp3|amr|wav|ogg|aac|md)$/i, '')
+      .trim();
+
+  // 스크립트 평가(1~4단계 전환) 즉시 사이드바/리스트에 0ms 낙관적(Optimistic) 반영
+  const applyOptimisticCallStageUpdate = (
+    targetStemOrRoom: string,
+    nextStage: 1 | 2 | 3 | 4,
+    reqText?: string,
+    messageId?: number,
+    audioFileHint?: string
+  ) => {
+    const cleanTarget = normalizeCallStem(targetStemOrRoom);
+    const cleanAudioHint = normalizeCallStem(audioFileHint || '');
+    setAllLifelogMessages((prev) =>
+      prev.map((m) => {
+        if (m.source !== 'call' && m.source !== 'recording') return m;
+        const mAttStem = normalizeCallStem(m.attachmentUuid || '');
+        const mRoomStem = normalizeCallStem(m.roomOrSender || '');
+        const isIdMatch = messageId !== undefined && m.id === messageId;
+        const isStemMatch =
+          Boolean(cleanTarget) &&
+          (mAttStem === cleanTarget || mRoomStem === cleanTarget);
+        const isAudioMatch =
+          Boolean(cleanAudioHint) &&
+          (mAttStem === cleanAudioHint || mRoomStem === cleanAudioHint);
+
+        if (!isIdMatch && !isStemMatch && !isAudioMatch) {
+          return m;
+        }
+
+        const effectiveStem =
+          mAttStem || cleanAudioHint || cleanTarget || mRoomStem;
+        const nextAttachmentUuid = effectiveStem
+          ? nextStage === 1 || nextStage === 3
+            ? `pending_transcript:${effectiveStem}`
+            : `transcribed:${effectiveStem}`
+          : m.attachmentUuid;
+
+        return {
+          ...m,
+          transcriptStage: nextStage,
+          transcriptRequirement:
+            reqText !== undefined ? reqText : m.transcriptRequirement,
+          attachmentUuid: nextAttachmentUuid,
+        };
+      })
+    );
   };
 
   const refreshAllLifelogMessages = async () => {
@@ -655,6 +732,7 @@ export function useLifelogAndFinance({
     excelInputRef,
     resolveContactName,
     isLifelogMessageMatchingCurrentDoc,
+    applyOptimisticCallStageUpdate,
     refreshAllLifelogMessages,
     refreshMobilePairingInfo,
     loadLifelogForDate,

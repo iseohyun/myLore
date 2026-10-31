@@ -140,6 +140,13 @@ export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   defaultMenuBarExpanded: false,
   scrollSyncEnabled: true,
   autoCallTranscription: true,
+  aiUserProfile:
+    '이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영',
+  aiDailyTokenLimit: 1000000,
+  statusBarShowAi: true,
+  statusBarShowTrash: true,
+  statusBarShowAutoSave: true,
+  statusBarShowPort: true,
   baseFontFamily: FONT_FAMILY_PRESETS[0].value,
   headingFontFamily: FONT_FAMILY_PRESETS[0].value,
   tableFontFamily: FONT_FAMILY_PRESETS[0].value,
@@ -148,6 +155,13 @@ export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   tableFontSize: 13,
   themePreset: 'dark_indigo',
   ...THEME_PRESETS.dark_indigo,
+  failedCallTextColor: '#b91c1c',
+  lifelogTimeFormat: 'MM-DD(ddd) hh:mm',
+  callPlaybackSpeed: 1.75,
+  logRetentionCommDays: 7,
+  logRetentionVersionDays: 30,
+  logRetentionSystemDays: 30,
+  logRetentionAiDays: 30,
   settingsFilePath:
     '%USERPROFILE%\\Documents\\myLore\\Projects\\.myLore\\setting.json',
 };
@@ -174,4 +188,65 @@ export function applyAppSettingsToDocument(settings: MyLoreAppSettings): void {
   root.style.setProperty('--table-header-bg', settings.tableHeaderBg);
   root.style.setProperty('--table-header-color', settings.tableHeaderColor);
   root.style.setProperty('--border-color', settings.borderColor);
+  root.style.setProperty(
+    '--failed-call-text-color',
+    settings.failedCallTextColor || '#b91c1c'
+  );
+}
+
+/**
+ * Gemini API 5시간 쿼터 락 해제 시각(`YYYY-MM-DD HH:MM:SS`)을 파싱하여
+ * 현재 락이 유효한 경우 `{ isActive: true, shortText: 'MM-DD hh:mm', hhmm: 'hh:mm' }` 를 반환합니다.
+ */
+export function parseAiQuotaRetryInfo(
+  retryAfterAt?: string,
+  nowMs: number = Date.now()
+): { isActive: boolean; shortText: string; hhmm: string } {
+  if (!retryAfterAt) return { isActive: false, shortText: '', hhmm: '' };
+  const trimmed = retryAfterAt.trim();
+  if (!trimmed) return { isActive: false, shortText: '', hhmm: '' };
+  const m = trimmed.match(
+    /^(\d{4})-(\d{2}-\d{2})\s+(\d{2}:\d{2})(?::(\d{2}))?/
+  );
+  if (!m) return { isActive: false, shortText: '', hhmm: '' };
+  const year = Number(m[1]);
+  const [month, day] = m[2].split('-').map(Number);
+  const [hour, minute] = m[3].split(':').map(Number);
+  const second = Number(m[4] || '0');
+  const targetMs = new Date(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second
+  ).getTime();
+  if (!Number.isFinite(targetMs) || nowMs >= targetMs) {
+    return { isActive: false, shortText: '', hhmm: '' };
+  }
+  return {
+    isActive: true,
+    shortText: `${m[2]} ${m[3]}`,
+    hhmm: m[3],
+  };
+}
+
+/**
+ * 일일 예상 토큰 한도(`dailyLimit`, 기본 1,000,000) 대비 오늘 사용량(`todayUsedTokens`)을 바탕으로
+ * 잔여 백분율 문자열(예: `"93.1%"`)을 계산합니다.
+ * 단, 5시간 쿼터 락(`retryAfterAt`)이 활성화된 경우에는 `%` 대신 재시도 시각(`MM-DD hh:mm`)을 반환합니다.
+ */
+export function calculateAiRemainingPercent(
+  todayUsedTokens?: number,
+  dailyLimit?: number,
+  retryAfterAt?: string
+): string {
+  const retryInfo = parseAiQuotaRetryInfo(retryAfterAt);
+  if (retryInfo.isActive) {
+    return retryInfo.shortText;
+  }
+  const limit = dailyLimit && dailyLimit > 0 ? dailyLimit : 1000000;
+  const used = todayUsedTokens && todayUsedTokens > 0 ? todayUsedTokens : 0;
+  const pct = Math.max(0, Math.min(100, ((limit - used) / limit) * 100));
+  return `${pct.toFixed(1)}%`;
 }

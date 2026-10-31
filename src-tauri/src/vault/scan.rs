@@ -76,13 +76,21 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
     let prog_arc = state.scan_progress.clone();
 
     thread::spawn(move || {
-        // 1. 사전 스캔(Pre-scan): 전체 파일 목록과 이미 DB에 UUID가 등록된 파일 목록을 빠르게 대조
-        let (folders, registered_paths) = {
+        // 1. 사전 스캔(Pre-scan): 전체 마크다운(.md) 파일 목록과 이미 DB에 UUID가 등록된 파일 목록을 대조
+        //    - 비마크다운 바이너리 파일들이 동일 content_hash로 인해 ON CONFLICT(uuid) 덮어쓰기를 일으켜
+        //      매 F5마다 미등록(pending)으로 반복 잡히던 버그를 방지하기 위해 .md 문서만 스캔합니다.
+        //    - 복사된 .md 문서 간 중복 UUID 충돌로 서로의 full_path를 덮어쓰는 현상도 함께 점검·해소합니다.
+        let normalize_win_path = |p: &str| -> String { p.replace('/', "\\").to_lowercase() };
+
+        let (folders, mut registered_paths, mut uuid_owner_map) = {
             let _g = lock_arc.lock().unwrap();
             let conn = match open_db(&db_path) {
                 Ok(c) => c,
                 Err(_) => return,
             };
+            // 비마크다운 레코드 정리 (기존 버전에서 쌓인 불필요한 바이너리 레코드 제거)
+            let _ = conn.execute("DELETE FROM files WHERE lower(extension) != 'md'", []);
+
             let mut stmt = conn
                 .prepare("SELECT id, role, path FROM base_folders WHERE enabled = 1 AND role != 'git'")
                 .unwrap();
@@ -92,13 +100,31 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
                 .filter_map(|r| r.ok())
                 .collect();
 
-            let mut reg_stmt = conn.prepare("SELECT full_path FROM files").unwrap();
-            let reg_set: HashSet<String> = reg_stmt
-                .query_map([], |r| r.get::<_, String>(0))
+            let mut reg_stmt = conn.prepare("SELECT uuid, full_path FROM files").unwrap();
+            let rows: Vec<(String, String)> = reg_stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                 .unwrap()
                 .filter_map(|r| r.ok())
                 .collect();
-            (folders, reg_set)
+
+            let mut reg_set: HashSet<String> = HashSet::new();
+            let mut owner_map: HashMap<String, String> = HashMap::new();
+            let mut stale_uuids: Vec<String> = Vec::new();
+
+            for (u, fp) in rows {
+                if Path::new(&fp).is_file() {
+                    let norm_fp = normalize_win_path(&fp);
+                    reg_set.insert(norm_fp.clone());
+                    owner_map.insert(u, norm_fp);
+                } else {
+                    stale_uuids.push(u);
+                }
+            }
+            for su in stale_uuids {
+                let _ = conn.execute("DELETE FROM files WHERE uuid = ?1", params![su]);
+            }
+
+            (folders, reg_set, owner_map)
         };
 
         struct PendingItem {
@@ -113,6 +139,7 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
         let mut total_files = 0usize;
         let mut already_registered = 0usize;
         let mut pending_list: Vec<PendingItem> = Vec::new();
+        let mut seen_yaml_uuids_on_disk: HashMap<String, String> = HashMap::new();
 
         for (base_id, role, base_path_str) in folders {
             let base_path = PathBuf::from(&base_path_str);
@@ -126,11 +153,44 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
                 .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
             {
                 let full_path = entry.path().to_path_buf();
+                let ext = full_path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if ext != "md" {
+                    continue;
+                }
+
                 let full_path_str = full_path.to_string_lossy().to_string();
+                let norm_path = normalize_win_path(&full_path_str);
                 total_files += 1;
 
-                // 이미 DB에 등록된 파일이면 즉시 건너뛰기 카운트에 포함 (이어하기!)
-                if registered_paths.contains(&full_path_str) {
+                // 디스크상의 마크다운 파일이 복사본이어서 다른 파일과 동일한 YAML uuid를 공유하는지 확인
+                let mut has_duplicate_uuid = false;
+                if let Ok(raw) = fs::read_to_string(&full_path) {
+                    let (_, _, fm) = parse_markdown_yaml(&raw);
+                    if let Some(u) = fm.get("uuid").map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                        if let Some(prev_path) = seen_yaml_uuids_on_disk.get(&u) {
+                            if prev_path != &norm_path {
+                                has_duplicate_uuid = true;
+                            }
+                        } else {
+                            seen_yaml_uuids_on_disk.insert(u.clone(), norm_path.clone());
+                        }
+                        if let Some(db_owner) = uuid_owner_map.get(&u) {
+                            if db_owner != &norm_path {
+                                has_duplicate_uuid = true;
+                            }
+                        }
+                    } else {
+                        // 파일 내부에 YAML uuid가 비어 있으면 DB에 경로가 있어도 재주입 대상에 포함
+                        registered_paths.remove(&norm_path);
+                    }
+                }
+
+                // 이미 DB에 정상 등록되어 있고 중복 UUID도 없는 파일이면 즉시 건너뛰기
+                if !has_duplicate_uuid && registered_paths.contains(&norm_path) {
                     already_registered += 1;
                     continue;
                 }
@@ -140,11 +200,6 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
                     .unwrap_or(&full_path)
                     .to_string_lossy()
                     .to_string();
-                let ext = full_path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
 
                 pending_list.push(PendingItem {
                     base_id: base_id.clone(),
@@ -200,17 +255,34 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
         let uri_re = cached_regex!(r"mylore://(?:doc|media)/([a-fA-F0-9-]{36})");
 
         let mut uuids_injected = 0usize;
-        let mut media_indexed = 0usize;
+        let media_indexed = 0usize;
         let mut links_indexed = 0usize;
 
         for (idx, item) in pending_list.into_iter().enumerate() {
             {
                 let _g = lock_arc.lock().unwrap();
-                if let Ok(conn) = open_db(&db_path) {
+                if let Ok(conn) = Connection::open(&db_path) {
+                    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
                     if item.ext == "md" {
-                        if let Ok((uuid_val, raw_after, injected)) =
+                        if let Ok((mut uuid_val, mut raw_after, mut injected)) =
                             ensure_uuid_in_markdown_file(&item.full_path, None)
                         {
+                            let norm_cur = normalize_win_path(&item.full_path_str);
+                            // 이미 다른 마크다운 파일이 동일한 UUID를 점유 중이면 새 UUID를 발급하여 충돌 해소
+                            if let Some(existing_owner) = uuid_owner_map.get(&uuid_val) {
+                                if existing_owner != &norm_cur {
+                                    let fresh_uuid = Uuid::new_v4().to_string();
+                                    if let Ok(replaced_raw) =
+                                        replace_uuid_in_markdown_file(&item.full_path, &fresh_uuid)
+                                    {
+                                        uuid_val = fresh_uuid;
+                                        raw_after = replaced_raw;
+                                        injected = true;
+                                    }
+                                }
+                            }
+                            uuid_owner_map.insert(uuid_val.clone(), norm_cur);
+
                             if injected {
                                 uuids_injected += 1;
                             }
@@ -267,48 +339,6 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
                                 }
                             }
                         }
-                    } else if let Ok(bytes) = fs::read(&item.full_path) {
-                        let hash_val = blake3::hash(&bytes).to_hex().to_string();
-                        let existing_uuid: Option<String> = conn
-                            .query_row(
-                                "SELECT uuid FROM files WHERE full_path = ?1 OR content_hash = ?2 LIMIT 1",
-                                params![item.full_path_str, hash_val],
-                                |r| r.get(0),
-                            )
-                            .optional()
-                            .unwrap_or(None);
-
-                        let uuid_val =
-                            existing_uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
-                        let title = item
-                            .full_path
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("file")
-                            .to_string();
-                        let now_str = chrono::Local::now().to_rfc3339();
-
-                        let _ = conn.execute(
-                            "INSERT INTO files (uuid, full_path, relative_path, role, base_folder_id, extension, content_hash, title, updated_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                             ON CONFLICT(uuid) DO UPDATE SET
-                                full_path = excluded.full_path,
-                                relative_path = excluded.relative_path,
-                                content_hash = excluded.content_hash,
-                                updated_at = excluded.updated_at",
-                            params![
-                                uuid_val,
-                                item.full_path_str,
-                                item.rel_path_str,
-                                item.role,
-                                item.base_id,
-                                item.ext,
-                                hash_val,
-                                title,
-                                now_str
-                            ],
-                        );
-                        media_indexed += 1;
                     }
                 }
             };
@@ -430,6 +460,7 @@ pub(crate) fn get_virtual_tree(state: State<AppState>) -> Result<Vec<FileNode>, 
 
             let mut project_status: Option<String> = None;
             let mut event_date: Option<String> = None;
+            let mut calendar_category: Option<String> = None;
 
             if role == "projects" {
                 if rel_path_str.eq_ignore_ascii_case("main.md") {
@@ -448,6 +479,28 @@ pub(crate) fn get_virtual_tree(state: State<AppState>) -> Result<Vec<FileNode>, 
                 if let Some(cap) = date_prefix_re.captures(&name) {
                     event_date = cap.get(1).map(|m| m.as_str().to_string());
                 }
+                if let Ok(raw) = fs::read_to_string(full_path) {
+                    let (_, _, fm) = parse_markdown_yaml(&raw);
+                    if event_date.is_none() {
+                        if let Some(d) = fm.get("date") {
+                            if d.len() >= 10 {
+                                event_date = Some(d[..10].to_string());
+                            }
+                        }
+                    }
+                    let cal_val = fm.get("calendar").map(|s| s.trim().to_string()).unwrap_or_default();
+                    let color_id_val = fm.get("colorId").map(|s| s.trim().to_string()).unwrap_or_default();
+                    let resolved_cat = if !color_id_val.is_empty() {
+                        color_id_val
+                    } else if !cal_val.is_empty() {
+                        cal_val
+                    } else {
+                        "8".to_string()
+                    };
+                    calendar_category = Some(resolved_cat);
+                } else {
+                    calendar_category = Some("8".to_string());
+                }
             }
 
             out.push(FileNode {
@@ -461,7 +514,7 @@ pub(crate) fn get_virtual_tree(state: State<AppState>) -> Result<Vec<FileNode>, 
                 extension: ext,
                 content_hash: hash_val,
                 title: title_val,
-                calendar_category: None,
+                calendar_category,
                 event_date,
                 project_status,
                 updated_at: String::new(),

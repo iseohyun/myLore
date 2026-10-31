@@ -2,14 +2,17 @@
 
 use crate::*;
 
-/// 통화 녹음 파일(`mobile/calls/audio/*.m4a`) 앞부분에 잘못 포함된 Multipart 헤더가 있으면 제거하여 순수 오디오 바이트로 복구합니다.
+/// 통화 녹음 및 미디어 파일 앞부분/뒷부분에 잘못 포함된 Multipart 헤더·트레일러가 있으면 제거하여 순수 파일 바이트로 복구합니다.
 pub(crate) fn strip_multipart_prefix_if_present(raw: &[u8]) -> (Vec<u8>, bool) {
     let head_len = std::cmp::min(raw.len(), 2048);
     let head_str = String::from_utf8_lossy(&raw[..head_len]);
+    let mut start_offset = 0usize;
+    let mut stripped_any = false;
+
     if let Some(fn_idx) = head_str.find("filename=\"") {
         let search_from = fn_idx;
         if search_from < raw.len() {
-            let start_offset = if let Some(rel) = raw[search_from..]
+            let so_opt = if let Some(rel) = raw[search_from..]
                 .windows(4)
                 .position(|w| w == b"\r\n\r\n")
             {
@@ -19,22 +22,42 @@ pub(crate) fn strip_multipart_prefix_if_present(raw: &[u8]) -> (Vec<u8>, bool) {
             } else {
                 None
             };
-            if let Some(so) = start_offset {
-                let mut end_offset = raw.len();
-                let tail_start = raw.len().saturating_sub(256);
-                if tail_start > so {
-                    if let Some(rel_end) = raw[tail_start..]
-                        .windows(4)
-                        .rposition(|w| w == b"\r\n--")
-                    {
-                        end_offset = tail_start + rel_end;
-                    }
-                }
-                if so < end_offset {
-                    return (raw[so..end_offset].to_vec(), true);
-                }
+            if let Some(so) = so_opt {
+                start_offset = so;
+                stripped_any = true;
             }
         }
+    }
+
+    let mut end_offset = raw.len();
+    let tail_start = raw.len().saturating_sub(4096).max(start_offset);
+    if tail_start < raw.len() {
+        let tail_slice = &raw[tail_start..];
+        let mut search_pos = 0usize;
+        while let Some(rel) = tail_slice[search_pos..]
+            .windows(4)
+            .position(|w| w == b"\r\n--")
+        {
+            let cand_idx = search_pos + rel;
+            let after_boundary = &tail_slice[cand_idx + 4..];
+            let lookahead_len = std::cmp::min(after_boundary.len(), 160);
+            let lookahead = &after_boundary[..lookahead_len];
+            let is_multipart_boundary = lookahead
+                .windows(20)
+                .any(|w| w.eq_ignore_ascii_case(b"content-disposition:"))
+                || (after_boundary.len() <= 80
+                    && after_boundary.windows(2).any(|w| w == b"--"));
+            if is_multipart_boundary {
+                end_offset = tail_start + cand_idx;
+                stripped_any = true;
+                break;
+            }
+            search_pos = cand_idx + 4;
+        }
+    }
+
+    if stripped_any && start_offset < end_offset {
+        return (raw[start_offset..end_offset].to_vec(), true);
     }
     (raw.to_vec(), false)
 }
@@ -487,13 +510,39 @@ pub(crate) fn split_summary_and_transcript(raw_llm_text: &str) -> (String, Strin
 
     for marker in script_markers {
         if let Some(idx) = cleaned.find(marker) {
-            let summary_raw = cleaned[..idx]
+            let before_script = &cleaned[..idx];
+            // 만약 `## 💡 요약` 마커가 존재하면 그 이후 구간만 추출하여 상단 `# 📞 ...` 헤더 중복 유입을 원천 차단
+            let after_summary_header = if let Some(s_idx) = before_script.find("## 💡 요약") {
+                &before_script[s_idx + "## 💡 요약".len()..]
+            } else if let Some(s_idx) = before_script.find("## 요약") {
+                &before_script[s_idx + "## 요약".len()..]
+            } else {
+                before_script
+            };
+
+            let raw_cleaned = after_summary_header
                 .replace("## 💡 요약", "")
                 .replace("## 요약", "")
                 .replace("### 💡 요약", "")
                 .replace("1. **💡 통화 핵심 요약**:", "")
                 .replace("1. **통화 핵심 요약**:", "")
-                .replace("**💡 통화 핵심 요약**", "")
+                .replace("**💡 통화 핵심 요약**", "");
+
+            let filtered_lines: Vec<&str> = raw_cleaned
+                .lines()
+                .filter(|line| {
+                    let t = line.trim();
+                    !t.starts_with("# 📞")
+                        && !t.starts_with("# 🎙️")
+                        && !t.starts_with("# ⌚")
+                        && !t.starts_with("> **통화 상대방**:")
+                        && !t.starts_with("> **녹음 출처**:")
+                        && !t.starts_with("> 📌 **사용자 추가 요구사항**:")
+                })
+                .collect();
+
+            let summary_raw = filtered_lines
+                .join("\n")
                 .trim()
                 .trim_end_matches("---")
                 .trim()

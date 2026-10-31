@@ -44,8 +44,17 @@ pub(crate) fn handle_sync_call_recordings(mut request: tiny_http::Request, db_pa
             }
         }
     } else {
-        let header_str =
-            String::from_utf8_lossy(&raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)]);
+        let head_end = std::cmp::min(raw_bytes.len(), 4096);
+        let tail_start = raw_bytes.len().saturating_sub(4096);
+        let header_str = if tail_start > head_end {
+            format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&raw_bytes[..head_end]),
+                String::from_utf8_lossy(&raw_bytes[tail_start..])
+            )
+        } else {
+            String::from_utf8_lossy(&raw_bytes).to_string()
+        };
         {
             let re_fh = cached_regex!(r#"name="file_hash"[\s\S]*?\r?\n\r?\n([0-9a-fA-F]{32,128})"#);
             if let Some(cap) = re_fh.captures(&header_str) {
@@ -79,7 +88,7 @@ pub(crate) fn handle_sync_call_recordings(mut request: tiny_http::Request, db_pa
         mark_hash_synced_in_memory(&file_hash);
     }
     let now_ms = chrono::Local::now().timestamp_millis();
-    update_atomic_max_i64(&MEM_LAST_RECORDING_TS, now_ms);
+    let cur_rec_ts = MEM_LAST_RECORDING_TS.load(std::sync::atomic::Ordering::Relaxed);
     let (dev_id, dev_name) = extract_request_device_headers(&request, None);
     let has_transcript = !transcript_text.is_empty();
 
@@ -101,7 +110,7 @@ pub(crate) fn handle_sync_call_recordings(mut request: tiny_http::Request, db_pa
             "ok": true,
             "queued": true,
             "file_hash": file_hash,
-            "last_recording_ts": now_ms,
+            "last_recording_ts": cur_rec_ts,
             "transcript_generated": has_transcript
         }),
     );
@@ -129,6 +138,7 @@ pub(crate) fn handle_sync_media(mut request: tiny_http::Request, db_path: PathBu
     let mut file_bytes: Vec<u8> = Vec::new();
     let mut taken_date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut taken_time = chrono::Local::now().format("%H:%M:%S").to_string();
+    let mut has_explicit_taken_at = false;
 
     if raw_bytes.first() == Some(&b'{') {
         if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&raw_bytes) {
@@ -149,6 +159,7 @@ pub(crate) fn handle_sync_media(mut request: tiny_http::Request, db_path: PathBu
             if let Some(ta) = json_val.get("taken_at").and_then(|v| v.as_str()) {
                 if ta.len() >= 10 {
                     taken_date = ta[..10].to_string();
+                    has_explicit_taken_at = true;
                 }
                 if ta.len() >= 19 {
                     taken_time = ta[11..19].to_string();
@@ -156,8 +167,17 @@ pub(crate) fn handle_sync_media(mut request: tiny_http::Request, db_path: PathBu
             }
         }
     } else {
-        let header_part =
-            String::from_utf8_lossy(&raw_bytes[..std::cmp::min(raw_bytes.len(), 4096)]);
+        let head_end = std::cmp::min(raw_bytes.len(), 4096);
+        let tail_start = raw_bytes.len().saturating_sub(4096);
+        let header_part = if tail_start > head_end {
+            format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&raw_bytes[..head_end]),
+                String::from_utf8_lossy(&raw_bytes[tail_start..])
+            )
+        } else {
+            String::from_utf8_lossy(&raw_bytes).to_string()
+        };
         let fn_re = cached_regex!(r#"filename="([^"]+)""#);
         if let Some(cap) = fn_re.captures(&header_part) {
             if let Some(m) = cap.get(1) {
@@ -180,15 +200,45 @@ pub(crate) fn handle_sync_media(mut request: tiny_http::Request, db_path: PathBu
                 }
             }
         }
+        {
+            let re_ta = cached_regex!(r#"name="taken_at"[\s\S]*?\r?\n\r?\n([^\r\n]+)"#);
+            if let Some(cap) = re_ta.captures(&header_part) {
+                if let Some(m) = cap.get(1) {
+                    let ta = m.as_str().trim();
+                    if ta.len() >= 10 {
+                        taken_date = ta[..10].to_string();
+                        has_explicit_taken_at = true;
+                    }
+                    if ta.len() >= 19 {
+                        taken_time = ta[11..19].to_string();
+                    }
+                }
+            }
+        }
         let (clean_b, _) = strip_multipart_prefix_if_present(&raw_bytes);
         file_bytes = clean_b;
     }
 
+    if !has_explicit_taken_at {
+        let re_fn_dt = cached_regex!(
+            r"((?:19|20)\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_-]([01]\d|2[0-3])([0-5]\d)([0-5]\d)"
+        );
+        if let Some(cap) = re_fn_dt.captures(&file_name) {
+            taken_date = format!("{}-{}-{}", &cap[1], &cap[2], &cap[3]);
+            taken_time = format!("{}:{}:{}", &cap[4], &cap[5], &cap[6]);
+        }
+    }
+
+    let (dev_id, dev_name) = extract_request_device_headers(&request, None);
     let media_uuid = Uuid::new_v4().to_string();
-    let content_hash = blake3::hash(&file_bytes).to_hex().to_string();
+    let content_hash = sha256_hex(&file_bytes);
+    let blake3_hash = blake3::hash(&file_bytes).to_hex().to_string();
     mark_hash_synced_in_memory(&content_hash);
+    mark_hash_synced_in_memory(&blake3_hash);
 
     enqueue_sync_worker_job(SyncWorkerJob::Media {
+        dev_id,
+        dev_name,
         file_name,
         source_type,
         folder_name,
@@ -305,6 +355,17 @@ pub(crate) fn handle_local_media(request: tiny_http::Request, db_path: PathBuf, 
         // `mobile/kakao/{folder_name}/` 하위 폴더에 그대로 적재된 이미지/동영상도 탐색
         let kakao_root = base_p.join("mobile").join("kakao");
         if let Ok(entries) = fs::read_dir(&kakao_root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    candidates.push(p.join(&clean_name));
+                }
+            }
+        }
+
+        // `Picture/extern/{device_name}/` 폴더에 적재된 사진첩 미디어도 탐색
+        let pic_extern_root = resolve_picture_extern_root_dir(&conn);
+        if let Ok(entries) = fs::read_dir(&pic_extern_root) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() {

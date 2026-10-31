@@ -12,6 +12,7 @@ import {
 } from './types/mylore';
 import { DetachedPreviewWindowView } from './components/window/DetachedPreviewWindowView';
 import { StatusBar } from './components/footer/StatusBar';
+import { LogTerminalDrawer } from './components/footer/LogTerminalDrawer';
 import { ContextMenus } from './components/modals/ContextMenus';
 import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { CalendarNewDocModal } from './components/modals/CalendarNewDocModal';
@@ -21,6 +22,7 @@ import { DiaryDashboard } from './components/dashboards/DiaryDashboard';
 import { LifelogDashboard } from './components/dashboards/LifelogDashboard';
 import { FinanceDashboard } from './components/dashboards/FinanceDashboard';
 import { SettingsDashboard } from './components/dashboards/SettingsDashboard';
+import { LogDashboard } from './components/dashboards/LogDashboard';
 import { AppHeader } from './components/header/AppHeader';
 import { DocumentWorkspace } from './components/editor/DocumentWorkspace';
 import { RightSidebar } from './components/sidebar/RightSidebar';
@@ -86,6 +88,7 @@ function MainApp() {
   const [paletteQuery, setPaletteQuery] = useState('');
   const [isFolderPaneFocused, setIsFolderPaneFocused] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [logTerminalOpen, setLogTerminalOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState(
     '준비 완료 — F1: 도움말 | F2: 제목변경 | F3/F4: 이전/다음 선택 | F5: UUID 재스캔 | F10: 메뉴 | F11: 뷰어 토글(독립/병렬) | F12: 개발자모드'
   );
@@ -126,6 +129,8 @@ function MainApp() {
     setIsFolderPaneFocused,
     contextMenu,
     setContextMenu,
+    logTerminalOpen,
+    setLogTerminalOpen,
     statusMessage,
     setStatusMessage,
     editorRef,
@@ -159,6 +164,7 @@ function MainApp() {
   // 7. 독립 뷰어 창 및 앱 설정 훅
   const previewSettings = useDetachedPreviewAndSettings({
     ...baseCtx,
+    ...audio,
     ...docs,
     ...lifelog,
   });
@@ -221,6 +227,8 @@ function MainApp() {
             <FinanceDashboard {...ctx} />
           ) : activeTabPath === 'mylore://dashboard/settings' ? (
             <SettingsDashboard {...ctx} />
+          ) : activeTabPath === 'mylore://dashboard/logs' ? (
+            <LogDashboard {...ctx} />
           ) : (
             <DocumentWorkspace {...ctx} />
           )}
@@ -230,7 +238,8 @@ function MainApp() {
         <RightSidebar {...ctx} />
       </div>
 
-      {/* 4. 하단 상태 표시줄 */}
+      {/* 4. 통합 로그 터미널 드로어 (Ctrl+`) 및 하단 상태 표시줄 */}
+      <LogTerminalDrawer {...ctx} />
       <StatusBar {...ctx} />
 
       {/* 5. 우클릭 컨텍스트 메뉴 (파일 트리 / 탭 바 / 모바일 라이프로그) */}
