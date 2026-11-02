@@ -11,6 +11,7 @@ import {
   saveContactAiProfile,
 } from '../../services/tauriClient';
 import { formatLifelogEventTime } from '../sidebar/MobileLifelogSidebar';
+import { MediaOriginRegistryPanel } from './LifelogMilestonePanels';
 import {
   LifelogMessage,
   LifelogSourceType,
@@ -41,18 +42,12 @@ function extractGroupsFromProfileText(text?: string): string[] {
   const groups: string[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
-    if (
-      trimmed.startsWith('소속 모임:') ||
-      trimmed.startsWith('소속모임:')
-    ) {
+    if (trimmed.startsWith('소속 모임:') || trimmed.startsWith('소속모임:')) {
       const colonIdx = trimmed.indexOf(':');
       if (colonIdx >= 0) {
-        const val = trimmed.slice(colonIdx + 1).trim();
-        for (const token of val.split(/[,/;·|]+/)) {
+        for (const token of trimmed.slice(colonIdx + 1).trim().split(/[,/;·|]+/)) {
           const g = token.trim();
-          if (g && !groups.includes(g)) {
-            groups.push(g);
-          }
+          if (g && !groups.includes(g)) groups.push(g);
         }
       }
     }
@@ -60,23 +55,9 @@ function extractGroupsFromProfileText(text?: string): string[] {
   return groups;
 }
 
-function summarizeContactProfile(text?: string): {
-  hasData: boolean;
-  theirTitle: string;
-  myTitle: string;
-  groups: string[];
-  about: string;
-  extraLines: string[];
-} {
+function summarizeContactProfile(text?: string) {
   if (!text || !text.trim()) {
-    return {
-      hasData: false,
-      theirTitle: '',
-      myTitle: '',
-      groups: [],
-      about: '',
-      extraLines: [],
-    };
+    return { hasData: false, theirTitle: '', myTitle: '', groups: [] as string[], about: '', extraLines: [] as string[] };
   }
   let theirTitle = '';
   let myTitle = '';
@@ -87,25 +68,16 @@ function summarizeContactProfile(text?: string): {
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (line.startsWith('이 사람의 호칭')) {
-      const idx = line.indexOf(':');
-      if (idx >= 0) theirTitle = line.slice(idx + 1).trim();
-    } else if (line.startsWith('나를 부르는 호칭')) {
-      const idx = line.indexOf(':');
-      if (idx >= 0) myTitle = line.slice(idx + 1).trim();
-    } else if (line.startsWith('소속 모임') || line.startsWith('소속모임')) {
-      // handled by extractGroupsFromProfileText
-    } else if (line.startsWith('이 사람은?')) {
-      const idx = line.indexOf(':');
-      if (idx >= 0) about = line.slice(idx + 1).trim();
-    } else {
-      extraLines.push(line);
-    }
+    const idx = line.indexOf(':');
+    const val = idx >= 0 ? line.slice(idx + 1).trim() : '';
+    if (line.startsWith('이 사람의 호칭') && idx >= 0) theirTitle = val;
+    else if (line.startsWith('나를 부르는 호칭') && idx >= 0) myTitle = val;
+    else if (line.startsWith('소속 모임') || line.startsWith('소속모임')) continue;
+    else if (line.startsWith('이 사람은?') && idx >= 0) about = val;
+    else extraLines.push(line);
   }
 
-  const hasData = Boolean(
-    theirTitle || myTitle || groups.length > 0 || about || extraLines.length > 0
-  );
+  const hasData = Boolean(theirTitle || myTitle || groups.length > 0 || about || extraLines.length > 0);
   return { hasData, theirTitle, myTitle, groups, about, extraLines };
 }
 
@@ -620,75 +592,79 @@ export function LifelogRecordsTab({
         />
       </div>
 
-      {subTab === 'media' &&
-        (filteredMedia.length === 0 ? (
-          <div className="lifelog-phase3-banner">
-            🖼️ 표시할 사진/영상 기록이 없습니다. 모바일 동기화로 수신된 이미지 및 동영상 파일이 이곳에 자동 분류됩니다.
-          </div>
-        ) : (
-          <div className="lifelog-records-grid">
-            {filteredMedia.map((item) => (
-              <div
-                key={item.id}
-                className="lifelog-record-card"
-                onClick={() => {
-                  if (item.sourceMessage.source === 'media') {
-                    if (item.kind === 'photo') {
-                      window.open(item.mediaUrl, '_blank');
-                    }
-                  } else if (item.kind === 'photo') {
-                    handleSelectLifelogSidebarItem(item.sourceMessage);
-                  }
-                }}
-                title={
-                  item.sourceMessage.source === 'media'
-                    ? `${item.fileName} (${item.roomOrSender})`
-                    : '클릭하여 해당 사진/영상이 연결된 원본 마크다운 문서 열기'
-                }
-              >
-                {item.kind === 'video' ? (
-                  <video
-                    src={item.mediaUrl}
-                    controls
-                    preload="metadata"
-                    className="lifelog-record-video"
-                  />
-                ) : (
-                  <img
-                    src={item.mediaUrl}
-                    alt={item.fileName}
-                    className="lifelog-record-thumb"
-                    loading="lazy"
-                  />
-                )}
+      {subTab === 'media' && (
+        <>
+          <MediaOriginRegistryPanel />
+          {filteredMedia.length === 0 ? (
+            <div className="lifelog-phase3-banner">
+              🖼️ 표시할 사진/영상 기록이 없습니다. 모바일 동기화로 수신된 이미지 및 동영상 파일이 이곳에 자동 분류됩니다.
+            </div>
+          ) : (
+            <div className="lifelog-records-grid">
+              {filteredMedia.map((item) => (
                 <div
-                  className="lifelog-record-meta"
-                  style={{ cursor: 'pointer' }}
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  key={item.id}
+                  className="lifelog-record-card"
+                  onClick={() => {
                     if (item.sourceMessage.source === 'media') {
-                      window.open(item.mediaUrl, '_blank');
-                    } else {
+                      if (item.kind === 'photo') {
+                        window.open(item.mediaUrl, '_blank');
+                      }
+                    } else if (item.kind === 'photo') {
                       handleSelectLifelogSidebarItem(item.sourceMessage);
                     }
                   }}
+                  title={
+                    item.sourceMessage.source === 'media'
+                      ? `${item.fileName} (${item.roomOrSender})`
+                      : '클릭하여 해당 사진/영상이 연결된 원본 마크다운 문서 열기'
+                  }
                 >
-                  <div className="lifelog-record-title">
-                    {item.kind === 'video' ? '🎬' : '🖼️'} {item.fileName}
-                  </div>
-                  <div className="lifelog-record-sub">
-                    <span>
-                      {item.roomOrSender} · {item.sender}
-                    </span>
-                    <span>
-                      {item.sentDate} {item.sentTime.slice(0, 5)}
-                    </span>
+                  {item.kind === 'video' ? (
+                    <video
+                      src={item.mediaUrl}
+                      controls
+                      preload="metadata"
+                      className="lifelog-record-video"
+                    />
+                  ) : (
+                    <img
+                      src={item.mediaUrl}
+                      alt={item.fileName}
+                      className="lifelog-record-thumb"
+                      loading="lazy"
+                    />
+                  )}
+                  <div
+                    className="lifelog-record-meta"
+                    style={{ cursor: 'pointer' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (item.sourceMessage.source === 'media') {
+                        window.open(item.mediaUrl, '_blank');
+                      } else {
+                        handleSelectLifelogSidebarItem(item.sourceMessage);
+                      }
+                    }}
+                  >
+                    <div className="lifelog-record-title">
+                      {item.kind === 'video' ? '🎬' : '🖼️'} {item.fileName}
+                    </div>
+                    <div className="lifelog-record-sub">
+                      <span>
+                        {item.roomOrSender} · {item.sender}
+                      </span>
+                      <span>
+                        {item.sentDate} {item.sentTime.slice(0, 5)}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ))}
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {subTab === 'recording' && (
         <div

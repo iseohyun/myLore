@@ -36,6 +36,8 @@ pub(crate) fn spawn_mobile_companion_http_server(
 
                     if url_path == "/api/v1/open-files" {
                         routes_core::handle_open_files(request, app_handle, pending_cli_files);
+                    } else if url_path == "/api/v1/internal/ai-event" {
+                        routes_core::handle_internal_ai_event(request, app_handle);
                     } else if url_path == "/api/v1/status" || url_path == "/api/v1/sync/watermarks"
                     {
                         routes_core::handle_status_and_watermarks(request, db_path, url_path);
@@ -69,6 +71,8 @@ pub(crate) fn spawn_mobile_companion_http_server(
                         routes_sync::handle_sync_contacts(request, db_path);
                     } else if url_path == "/api/v1/sync/app-usage" {
                         routes_sync::handle_sync_app_usage(request, db_path);
+                    } else if url_path == "/api/v1/sync/location-logs" {
+                        routes_sync::handle_sync_location_logs(request, db_path);
                     } else if url_path == "/api/v1/sync/call-recordings" {
                         routes_media::handle_sync_call_recordings(request, db_path);
                     } else if url_path == "/api/v1/sync/media" {

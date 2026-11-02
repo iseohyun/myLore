@@ -65,7 +65,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'sidebar_toc', category: '보기', label: '문서 내 목차(TOC) 사이드바 열기', shortcut: 'Ctrl+1', secondaryShortcut: '', condition: '전역' },
   { id: 'sidebar_backlinks', category: '보기', label: '양방향 백링크 사이드바 열기', shortcut: 'Ctrl+2', secondaryShortcut: '', condition: '전역' },
   { id: 'toggle_yaml', category: '보기', label: 'YAML 메타데이터 편집 토글', shortcut: 'Ctrl+=', secondaryShortcut: '', condition: '편집모드에서' },
-  { id: 'toggle_log_terminal', category: '대쉬보드', label: '로그 대쉬보드 열기', shortcut: 'Ctrl+`', secondaryShortcut: '', condition: '전역' },
+  { id: 'toggle_log_terminal', category: '대쉬보드', label: '의사결재 대쉬보드 (결재창) 열기', shortcut: 'Ctrl+`', secondaryShortcut: '', condition: '전역' },
   { id: 'next_file', category: '이동', label: '다음 파일로 이동', shortcut: 'Ctrl+Tab', secondaryShortcut: 'Ctrl+PageDown', condition: '다중 탭 열람 시' },
   { id: 'prev_file', category: '이동', label: '이전 파일로 이동', shortcut: 'Ctrl+Shift+Tab', secondaryShortcut: 'Ctrl+PageUp', condition: '다중 탭 열람 시' },
   { id: 'next_edit_pos', category: '이동', label: '다음 편집점으로 이동', shortcut: 'Alt+ArrowRight', secondaryShortcut: '', condition: '편집모드에서' },
@@ -75,6 +75,7 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'goto_bookmark', category: '이동', label: '북마크 이동', shortcut: 'Ctrl+F2', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'goto_main_md', category: '이동', label: 'main.md로 이동', shortcut: 'Alt+M', secondaryShortcut: '', condition: '전역' },
   { id: 'auto_format', category: '실행', label: '서브미션 Auto-Format 정렬', shortcut: 'Alt+Shift+F', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'toggle_audio_playback', category: '실행', label: '통화녹음 재생 중단/재개', shortcut: 'Ctrl+Space', secondaryShortcut: '', condition: '통화녹음 재생 중' },
 ];
 
 export interface UseKeybindingsParams {
@@ -224,6 +225,8 @@ export function useKeybindings(params: UseKeybindingsParams) {
         e.keyCode === 192;
       if (isBackquoteKey) {
         parts.push('`');
+      } else if (e.code === 'Space' || e.key === ' ') {
+        parts.push('Space');
       } else if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
         const k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
         parts.push(k);
@@ -462,6 +465,7 @@ export function useKeybindings(params: UseKeybindingsParams) {
           (e.key === '`' || e.key === '~' || e.code === 'Backquote'))
       ) {
         e.preventDefault();
+        ctx.setRightSidebarOpen(true);
         ctx.openDashboardTab('logs');
       } else if (
         matchKb('toggle_yaml') ||
@@ -502,6 +506,35 @@ export function useKeybindings(params: UseKeybindingsParams) {
       } else if (matchKb('auto_format')) {
         e.preventDefault();
         ctx.handleAutoFormatTasks();
+      } else if (
+        matchKb('toggle_audio_playback') ||
+        (e.ctrlKey &&
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.code === 'Space' || e.key === ' '))
+      ) {
+        const audioElements = Array.from(document.querySelectorAll('audio'));
+        const playingAudios = audioElements.filter(
+          (a) => !a.paused && !a.ended && Boolean(a.src || a.currentSrc)
+        );
+        if (playingAudios.length > 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          for (const a of playingAudios) {
+            a.pause();
+          }
+          ctx.setStatusMessage('⏸️ 통화녹음 재생 일시중단 (Ctrl+Space)');
+        } else {
+          const pausedAudio = audioElements.find((a) =>
+            Boolean(a.src || a.currentSrc)
+          );
+          if (pausedAudio) {
+            e.preventDefault();
+            e.stopPropagation();
+            pausedAudio.play().catch(() => {});
+            ctx.setStatusMessage('▶️ 통화녹음 재생 재개 (Ctrl+Space)');
+          }
+        }
       } else {
         const activeEl = document.activeElement as HTMLElement | null;
         const activeTag = activeEl?.tagName || '';
@@ -701,7 +734,7 @@ export function useKeybindings(params: UseKeybindingsParams) {
     },
     {
       id: 'cmd-toggle-log-terminal',
-      label: '대쉬보드: 로그 기록 조회 대시보드 탭 열기 (log/{분야}_YYYYMMDD.log)',
+      label: '대쉬보드: ⚖️ 의사결재 대쉬보드 (결재창) 탭 열기 (통화 스크립트 검토)',
       shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
       action: () => params.openDashboardTab('logs'),
     },

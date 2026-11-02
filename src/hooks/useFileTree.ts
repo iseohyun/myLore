@@ -39,6 +39,7 @@ export function useFileTree({
     diary: 'summary',
     data: 'summary',
     git: 'summary',
+    picture: 'summary',
   });
   // 아카이브(data) 파일트리에서 현재 열린 상위 폴더 경로 집합 (특정 파일 엑세스 시 해당 경로만 자동 오픈, 수동 닫기만 지원)
   const [openArchiveFolders, setOpenArchiveFolders] = useState<Set<string>>(

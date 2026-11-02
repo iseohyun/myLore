@@ -368,3 +368,234 @@ pub struct GoogleCalendarSyncResult {
     pub message: String,
     pub last_sync_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallAiDailyStat {
+    pub date: String,
+    pub label: String,
+    pub count: usize,
+    pub gemini_count: usize,
+    pub claude_count: usize,
+    pub openai_count: usize,
+    pub grok_count: usize,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub gemini_bytes: u64,
+    #[serde(default)]
+    pub claude_bytes: u64,
+    #[serde(default)]
+    pub openai_bytes: u64,
+    #[serde(default)]
+    pub grok_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallAiTranscriptionStats {
+    pub total_audio_calls: usize,
+    pub completed_calls: usize,
+    pub remaining_calls: usize,
+    #[serde(default)]
+    pub total_audio_bytes: u64,
+    #[serde(default)]
+    pub completed_audio_bytes: u64,
+    #[serde(default)]
+    pub remaining_audio_bytes: u64,
+    pub daily_stats: Vec<CallAiDailyStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmProviderConfigStatus {
+    pub provider: String,
+    pub display_name: String,
+    pub has_key: bool,
+    pub masked_key: String,
+    pub model_name: String,
+    pub verified_at: String,
+    pub today_used_tokens: i64,
+    pub total_used_tokens: i64,
+    pub today_request_count: i64,
+    pub last_error: String,
+    pub retry_after_at: Option<String>,
+    #[serde(default)]
+    pub charged_credit_usd: f64,
+    #[serde(default)]
+    pub spent_credit_usd: f64,
+    #[serde(default)]
+    pub remaining_credit_usd: f64,
+    #[serde(default)]
+    pub credit_display_text: String,
+    #[serde(default)]
+    pub credit_exhausted: bool,
+    #[serde(default)]
+    pub has_admin_key: bool,
+    #[serde(default)]
+    pub masked_admin_key: String,
+    #[serde(default)]
+    pub team_id: String,
+    #[serde(default)]
+    pub balance_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiLlmProvidersStatus {
+    pub active_text_provider: String,
+    pub storage_location: String,
+    pub claude: LlmProviderConfigStatus,
+    pub openai: LlmProviderConfigStatus,
+    pub grok: LlmProviderConfigStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaOriginRegistryItem {
+    pub origin_hash: String,
+    pub origin_file_name: String,
+    pub origin_file_size: u64,
+    pub device_name: String,
+    pub taken_date: String,
+    pub taken_time: String,
+    pub current_status: String,
+    pub current_path: String,
+    pub current_hash: String,
+    pub history_note: String,
+    pub first_synced_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaOriginRegistrySummary {
+    pub total_origin_count: usize,
+    pub original_kept_count: usize,
+    pub edited_or_renamed_count: usize,
+    pub deleted_blocked_count: usize,
+    pub items: Vec<MediaOriginRegistryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationMovementLogItem {
+    pub id: i64,
+    pub device_id: String,
+    pub device_name: String,
+    pub event_type: String,
+    pub place_label: String,
+    pub wifi_ssid: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub accuracy_m: f64,
+    pub battery_pct: i32,
+    pub log_date: String,
+    pub log_time: String,
+    pub timestamp_ms: i64,
+    pub naver_map_url: String,
+    pub google_map_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocationMovementSummary {
+    pub total_logs: usize,
+    pub wifi_logs_count: usize,
+    pub gps_logs_count: usize,
+    pub distinct_places: Vec<String>,
+    pub logs: Vec<LocationMovementLogItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallApprovalItem {
+    pub safe_stem: String,
+    pub file_stem: String,
+    pub file_name: String,
+    pub contact_name: String,
+    pub rec_date: String,
+    pub rec_time: String,
+    pub stage: u8,
+    pub llm_provider: String,
+    pub user_requirement: String,
+    pub summary_text: String,
+    pub script_markdown: String,
+    pub md_path: String,
+    pub audio_path: String,
+    pub is_voice_memo: bool,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiQueueAgentSlotStatus {
+    pub provider: String,
+    pub display_name: String,
+    pub is_usable: bool,
+    pub status_label: String,
+    pub credit_or_quota_text: String,
+    pub today_request_count: i64,
+    pub today_used_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiQueuePendingItem {
+    pub queue_order: usize,
+    pub safe_stem: String,
+    pub file_name: String,
+    pub contact_name: String,
+    pub rec_date: String,
+    pub rec_time: String,
+    pub file_bytes: u64,
+    pub stage: u8,
+    pub is_voice_memo: bool,
+    pub has_existing_script: bool,
+    pub user_requirement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiQueueRecentCompletedItem {
+    pub timestamp: String,
+    pub provider: String,
+    pub safe_stem: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiQueueDashboardPayload {
+    pub worker_running: bool,
+    pub worker_pid: u32,
+    pub worker_heartbeat_at: String,
+    pub lock_file_path: String,
+    pub auto_transcription_enabled: bool,
+    pub unlocked_agent_count: usize,
+    pub total_pending_count: usize,
+    pub total_pending_bytes: u64,
+    pub stage1_pending_count: usize,
+    pub stage3_revision_count: usize,
+    pub completed_today_count: usize,
+    pub agent_slots: Vec<AiQueueAgentSlotStatus>,
+    pub pending_items: Vec<AiQueuePendingItem>,
+    pub recent_completed: Vec<AiQueueRecentCompletedItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KakaoUpdateRequestItem {
+    pub room_name: String,
+    pub pending_noti_count: usize,
+    pub last_sender: String,
+    pub last_message_preview: String,
+    pub last_noti_date: String,
+    pub last_noti_time: String,
+    pub last_noti_ts: i64,
+    pub last_synced_date: String,
+    pub md_path: String,
+    pub updated_at: String,
+}
+
+

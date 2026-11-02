@@ -222,9 +222,51 @@ pub(crate) fn apply_session_plan_to_live_progress(
     };
 
     let is_new_session = !session_id.is_empty() && guard.session_id != session_id;
+    let was_already_completed = guard.is_completed
+        || guard
+            .steps
+            .iter()
+            .filter(|s| s.key != "photo")
+            .all(|s| s.status == "done" && s.percent >= 100);
+    // 증분 세션 여부 판별: 이미 한 번 전체 동기화가 완료된 상태에서 소량 알림/이벤트만 포함된 신규 세션인 경우
+    // 완료된 다른 단계들을 0%("알림목록 받아오는 중...")로 리셋하지 않고 기존 100%(done) 상태를 보존합니다.
+    let has_non_noti_work = volumes
+        .iter()
+        .any(|(k, tc, sc, tb, sb)| k != "notification" && (*tc > *sc || *tb > *sb));
+
     if is_new_session {
-        *guard = default_live_sync_progress();
-        guard.session_id = session_id.to_string();
+        if was_already_completed && !has_non_noti_work {
+            guard.session_id = session_id.to_string();
+            for st in &mut guard.steps {
+                if st.status != "done" || st.percent < 100 {
+                    st.status = "done".to_string();
+                    st.percent = 100;
+                    rebuild_step_segments(st);
+                }
+            }
+            guard.is_ready = true;
+            guard.is_running = false;
+            guard.is_completed = true;
+            guard.current_key = "done".to_string();
+            guard.current_label = "모든 라이프로그 항목 동기화 확인 완료 (100%)".to_string();
+            guard.current_percent = 100;
+            return 100;
+        } else if was_already_completed {
+            // 다른 도메인(문자·통화·카톡 등)에 실제 증분 작업이 있는 세션인 경우에도 이미 0건으로 완료된 도메인은 100%(done) 유지
+            guard.session_id = session_id.to_string();
+            for st in &mut guard.steps {
+                let vol_opt = volumes.iter().find(|(k, _, _, _, _)| k == &st.key);
+                let has_work = vol_opt
+                    .map(|(_, tc, sc, tb, sb)| *tc > *sc || *tb > *sb)
+                    .unwrap_or(false);
+                if !has_work && st.status == "done" && st.percent >= 100 {
+                    continue;
+                }
+            }
+        } else {
+            *guard = default_live_sync_progress();
+            guard.session_id = session_id.to_string();
+        }
     } else if !session_id.is_empty() && guard.session_id.is_empty() {
         guard.session_id = session_id.to_string();
     }
@@ -236,8 +278,11 @@ pub(crate) fn apply_session_plan_to_live_progress(
 
     for (norm_key, tc, sc, tb, sb) in volumes {
         if let Some(st) = guard.steps.iter_mut().find(|s| &s.key == norm_key) {
+            if *tc == 0 && *tb == 0 && st.status == "done" && st.percent >= 100 {
+                continue;
+            }
             if *tc > 0 {
-                st.total_count = *tc;
+                st.total_count = st.total_count.max(*tc);
             }
             if *sc > 0 {
                 st.downloaded_count = sc.saturating_sub(st.skipped_count);

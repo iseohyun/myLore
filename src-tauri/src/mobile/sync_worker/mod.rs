@@ -242,15 +242,29 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                                         ),
                                     );
                                 } else {
-                                    let _ = emit_live_service_sync_progress(
-                                        &app_handle,
-                                        &service,
-                                        0,
-                                        total_count.max(1),
-                                        0,
-                                        0,
-                                        Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
-                                    );
+                                    let already_done = LIVE_SYNC_PROGRESS
+                                        .get_or_init(|| Mutex::new(default_live_sync_progress()))
+                                        .lock()
+                                        .ok()
+                                        .and_then(|g| {
+                                            let nk = normalize_sync_service_key(&service);
+                                            g.steps
+                                                .iter()
+                                                .find(|s| s.key == nk)
+                                                .map(|s| s.status == "done" && s.percent >= 100)
+                                        })
+                                        .unwrap_or(false);
+                                    if !already_done {
+                                        let _ = emit_live_service_sync_progress(
+                                            &app_handle,
+                                            &service,
+                                            0,
+                                            total_count.max(1),
+                                            0,
+                                            0,
+                                            Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
+                                        );
+                                    }
                                     log_sync(
                                         "INFO",
                                         &format!(
@@ -351,15 +365,17 @@ pub(crate) fn spawn_mobile_sync_worker_thread(app_handle: AppHandle, db_path: Pa
                     }
 
                     if need_transcript_trigger && is_auto_call_transcription_enabled(&conn) {
-                        let db_bg = db_path.clone();
-                        let app_bg = app_handle.clone();
-                        thread::spawn(move || {
-                            let _ = process_pending_call_transcriptions(
-                                &db_bg,
-                                Some(&app_bg),
-                                false,
-                            );
-                        });
+                        if !spawn_detached_ai_queue_worker_if_needed(false) {
+                            let db_bg = db_path.clone();
+                            let app_bg = app_handle.clone();
+                            thread::spawn(move || {
+                                let _ = process_pending_call_transcriptions(
+                                    &db_bg,
+                                    Some(&app_bg),
+                                    false,
+                                );
+                            });
+                        }
                     }
                 } else {
                     for job in &batch {

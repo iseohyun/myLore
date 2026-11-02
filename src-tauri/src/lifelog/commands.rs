@@ -9,6 +9,7 @@ pub(crate) fn get_lifelog_for_date(
 ) -> Result<DailyLifelogResponse, String> {
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
+    let _ = process_and_consume_kakao_notifications(&conn);
 
     let mut msg_stmt = conn
         .prepare(
@@ -19,19 +20,11 @@ pub(crate) fn get_lifelog_for_date(
     let messages: Vec<LifelogMessage> = msg_stmt
         .query_map(params![date_str], |r| {
             Ok(LifelogMessage {
-                id: r.get(0)?,
-                source: r.get(1)?,
-                room_or_sender: r.get(2)?,
-                sender: r.get(3)?,
-                message: r.get(4)?,
-                sent_date: r.get(5)?,
-                sent_time: r.get(6)?,
-                attachment_uuid: r.get(7)?,
+                id: r.get(0)?, source: r.get(1)?, room_or_sender: r.get(2)?, sender: r.get(3)?,
+                message: r.get(4)?, sent_date: r.get(5)?, sent_time: r.get(6)?, attachment_uuid: r.get(7)?,
                 device_id: r.get::<_, String>(8).ok().filter(|s| !s.is_empty()),
                 device_name: r.get::<_, String>(9).ok().filter(|s| !s.is_empty()),
-                has_audio_recording: false,
-                transcript_stage: 0,
-                transcript_requirement: None,
+                has_audio_recording: false, transcript_stage: 0, transcript_requirement: None,
             })
         })
         .map_err(|e| e.to_string())?
@@ -47,17 +40,9 @@ pub(crate) fn get_lifelog_for_date(
     let transactions: Vec<FinanceTransaction> = tx_stmt
         .query_map(params![date_str], |r| {
             Ok(FinanceTransaction {
-                id: r.get(0)?,
-                tx_date: r.get(1)?,
-                tx_time: r.get(2)?,
-                institution: r.get(3)?,
-                tx_type: r.get(4)?,
-                amount: r.get(5)?,
-                merchant: r.get(6)?,
-                category: r.get(7)?,
-                memo: r.get(8)?,
-                verify_status: r.get(9)?,
-                dedup_key: r.get(10)?,
+                id: r.get(0)?, tx_date: r.get(1)?, tx_time: r.get(2)?, institution: r.get(3)?,
+                tx_type: r.get(4)?, amount: r.get(5)?, merchant: r.get(6)?, category: r.get(7)?,
+                memo: r.get(8)?, verify_status: r.get(9)?, dedup_key: r.get(10)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -73,25 +58,15 @@ pub(crate) fn get_lifelog_for_date(
     let media_inbox: Vec<MediaInboxItem> = media_stmt
         .query_map(params![date_str], |r| {
             Ok(MediaInboxItem {
-                uuid: r.get(0)?,
-                file_name: r.get(1)?,
-                full_path: r.get(2)?,
-                taken_date: r.get(3)?,
-                taken_time: r.get(4)?,
-                file_size: r.get::<_, i64>(5)? as u64,
-                content_hash: r.get(6)?,
-                status: r.get(7)?,
+                uuid: r.get(0)?, file_name: r.get(1)?, full_path: r.get(2)?, taken_date: r.get(3)?,
+                taken_time: r.get(4)?, file_size: r.get::<_, i64>(5)? as u64, content_hash: r.get(6)?, status: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
 
-    Ok(DailyLifelogResponse {
-        messages,
-        transactions,
-        media_inbox,
-    })
+    Ok(DailyLifelogResponse { messages, transactions, media_inbox })
 }
 
 #[tauri::command]
@@ -391,12 +366,14 @@ pub(crate) async fn get_all_lifelog_messages(
 ) -> Result<Vec<LifelogMessage>, String> {
     let db_path = state.db_path.clone();
     let per_source_limit = (limit.unwrap_or(4000) / 2).max(1200) as i64;
+    let full_history_limit = 50_000i64;
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&db_path)?;
         if LIFELOG_BACKFILLED_ONCE.get().is_none() {
             backfill_mobile_md_into_lifelog_db(&conn);
             let _ = LIFELOG_BACKFILLED_ONCE.set(true);
         }
+        let _ = process_and_consume_kakao_notifications(&conn);
 
         let mut stmt = conn
             .prepare(
@@ -410,61 +387,29 @@ pub(crate) async fn get_all_lifelog_messages(
                          GROUP BY source, room_or_sender
                      )
                      UNION
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'kakaotalk'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'kakaotalk' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1)
                      UNION ALL
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'notification'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'notification' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1)
                      UNION
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'sms'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'sms' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?2)
                      UNION ALL
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'call'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'call' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?2)
                      UNION ALL
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'recording'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'recording' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?2)
                      UNION ALL
-                     SELECT * FROM (
-                         SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name
-                         FROM lifelog_messages WHERE source = 'health'
-                         ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?1
-                     )
+                     SELECT * FROM (SELECT id, source, room_or_sender, sender, message, sent_date, sent_time, attachment_uuid, device_id, device_name FROM lifelog_messages WHERE source = 'health' ORDER BY sent_date DESC, sent_time DESC, id DESC LIMIT ?2)
                  )
                  ORDER BY sent_date DESC, sent_time DESC, id DESC",
             )
             .map_err(|e| e.to_string())?;
         let mut rows: Vec<LifelogMessage> = stmt
-            .query_map(params![per_source_limit], |r| {
+            .query_map(params![per_source_limit, full_history_limit], |r| {
                 Ok(LifelogMessage {
-                    id: r.get(0)?,
-                    source: r.get(1)?,
-                    room_or_sender: r.get(2)?,
-                    sender: r.get(3)?,
-                    message: r.get(4)?,
-                    sent_date: r.get(5)?,
-                    sent_time: r.get(6)?,
-                    attachment_uuid: r.get(7)?,
+                    id: r.get(0)?, source: r.get(1)?, room_or_sender: r.get(2)?, sender: r.get(3)?,
+                    message: r.get(4)?, sent_date: r.get(5)?, sent_time: r.get(6)?, attachment_uuid: r.get(7)?,
                     device_id: r.get::<_, String>(8).ok().filter(|s| !s.is_empty()),
                     device_name: r.get::<_, String>(9).ok().filter(|s| !s.is_empty()),
-                    has_audio_recording: false,
-                    transcript_stage: 0,
-                    transcript_requirement: None,
+                    has_audio_recording: false, transcript_stage: 0, transcript_requirement: None,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -658,18 +603,17 @@ pub(crate) async fn get_all_lifelog_messages(
         let mut claimed_log_indices: HashSet<usize> = HashSet::new();
         let re_strip_rec_ts = cached_regex!(r"[_-]?(?:19|20)?\d{6}[_-]?\d{6}$");
 
-        // `lifelog_call_logs` 테이블에서 발신/수신 방향 역추적용 인메모리 캐시 로드
+        // `lifelog_call_logs` 테이블에서 발신/수신 방향 역추적용 인메모리 캐시 로드 (날짜별 해시 인덱스)
         struct CallLogDirEntry {
             phone_digits: String,
             contact_key: String,
             call_type: String,
-            call_date: String,
             call_sec: Option<i64>,
         }
-        let mut call_logs_dir_cache: Vec<CallLogDirEntry> = Vec::new();
+        let mut call_logs_by_date: HashMap<String, Vec<CallLogDirEntry>> = HashMap::new();
         if let Ok(mut cl_stmt) = conn.prepare(
             "SELECT phone_number, contact_name, call_type, call_date, call_time
-             FROM lifelog_call_logs ORDER BY call_date DESC, call_time DESC LIMIT 3000",
+             FROM lifelog_call_logs ORDER BY call_date DESC, call_time DESC",
         ) {
             if let Ok(iter) = cl_stmt.query_map([], |r| {
                 Ok((
@@ -687,13 +631,15 @@ pub(crate) async fn get_all_lifelog_messages(
                     } else {
                         resolve_contact_display(&ph, &contacts_map)
                     };
-                    call_logs_dir_cache.push(CallLogDirEntry {
-                        phone_digits: ph_digits,
-                        contact_key: normalize_call_contact_key(&c_disp),
-                        call_type: ctype,
-                        call_date: cdate,
-                        call_sec: hms_to_seconds(&ctime),
-                    });
+                    call_logs_by_date
+                        .entry(cdate)
+                        .or_default()
+                        .push(CallLogDirEntry {
+                            phone_digits: ph_digits,
+                            contact_key: normalize_call_contact_key(&c_disp),
+                            call_type: ctype,
+                            call_sec: hms_to_seconds(&ctime),
+                        });
                 }
             }
         }
@@ -730,6 +676,16 @@ pub(crate) async fn get_all_lifelog_messages(
             })
             .collect();
 
+        let mut call_log_indices_by_date: HashMap<String, Vec<usize>> = HashMap::new();
+        for (j, r) in rows.iter().enumerate() {
+            if r.source == "call" && !is_original_rec_row[j] && r.message.contains("통화시간") {
+                call_log_indices_by_date
+                    .entry(r.sent_date.clone())
+                    .or_default()
+                    .push(j);
+            }
+        }
+
         // `call_rec` 행과 `call_log` 행의 모든 후보 쌍을 수집한 뒤 시간차(`diff_sec`) 오름차순으로 1:1 매칭
         let mut candidate_pairs: Vec<(i64, usize, usize)> = Vec::new();
         for i in 0..rows.len() {
@@ -737,6 +693,9 @@ pub(crate) async fn get_all_lifelog_messages(
                 continue;
             }
             let rec_date = rows[i].sent_date.clone();
+            let Some(same_date_log_indices) = call_log_indices_by_date.get(&rec_date) else {
+                continue;
+            };
             let rec_sec = hms_to_seconds(&rows[i].sent_time);
             let rec_clean = rows[i].room_or_sender.trim().to_string();
             let rec_no_ts = re_strip_rec_ts.replace(&rec_clean, "").to_string();
@@ -747,13 +706,7 @@ pub(crate) async fn get_all_lifelog_messages(
             let rec_key_b = normalize_call_contact_key(&rec_disp);
             let rec_key_s = normalize_call_contact_key(&rows[i].sender);
 
-            for j in 0..rows.len() {
-                if i == j || rows[j].source != "call" || is_original_rec_row[j] {
-                    continue;
-                }
-                if rows[j].sent_date != rec_date || !rows[j].message.contains("통화시간") {
-                    continue;
-                }
+            for &j in same_date_log_indices {
                 let log_sec = hms_to_seconds(&rows[j].sent_time);
                 let diff_sec = match (rec_sec, log_sec) {
                     (Some(rs), Some(ls)) => (rs - ls).abs(),
@@ -814,27 +767,26 @@ pub(crate) async fn get_all_lifelog_messages(
 
             // `lifelog_call_logs`에서 발신/수신 방향을 찾아 `call_rec` 행의 `sender`를 보정
             let mut best_dir: Option<(i64, &str)> = None;
-            for cl in &call_logs_dir_cache {
-                if cl.call_date != rec_date {
-                    continue;
-                }
-                let diff_sec = match (rec_sec, cl.call_sec) {
-                    (Some(rs), Some(ls)) => (rs - ls).abs(),
-                    _ => 999_999,
-                };
-                if diff_sec > 300 {
-                    continue;
-                }
-                let matched = (!rec_norm.is_empty()
-                    && rec_norm.len() >= 8
-                    && cl.phone_digits == rec_norm)
-                    || (!cl.contact_key.is_empty()
-                        && (cl.contact_key == rec_key_a
-                            || cl.contact_key == rec_key_b
-                            || cl.contact_key == rec_key_s));
-                if matched {
-                    if best_dir.map(|(bd, _)| diff_sec < bd).unwrap_or(true) {
-                        best_dir = Some((diff_sec, cl.call_type.as_str()));
+            if let Some(same_date_cls) = call_logs_by_date.get(&rec_date) {
+                for cl in same_date_cls {
+                    let diff_sec = match (rec_sec, cl.call_sec) {
+                        (Some(rs), Some(ls)) => (rs - ls).abs(),
+                        _ => 999_999,
+                    };
+                    if diff_sec > 300 {
+                        continue;
+                    }
+                    let matched = (!rec_norm.is_empty()
+                        && rec_norm.len() >= 8
+                        && cl.phone_digits == rec_norm)
+                        || (!cl.contact_key.is_empty()
+                            && (cl.contact_key == rec_key_a
+                                || cl.contact_key == rec_key_b
+                                || cl.contact_key == rec_key_s));
+                    if matched {
+                        if best_dir.map(|(bd, _)| diff_sec < bd).unwrap_or(true) {
+                            best_dir = Some((diff_sec, cl.call_type.as_str()));
+                        }
                     }
                 }
             }

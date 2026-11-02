@@ -324,41 +324,41 @@ pub(crate) fn handle_local_media(request: tiny_http::Request, db_path: PathBuf, 
     if let Ok(conn) = open_db(&db_path) {
         let data_base: String = data_base_path_string(&conn);
         let base_p = Path::new(&data_base);
+        let mobile_root = resolve_mobile_root_dir(&conn);
         let mut candidates = Vec::new();
         if !req_sub.is_empty() {
+            candidates.push(mobile_root.join(&req_sub).join(&clean_name));
             candidates.push(base_p.join("mobile").join(&req_sub).join(&clean_name));
         }
         candidates.push(
-            base_p
-                .join("mobile")
+            mobile_root
                 .join("calls")
                 .join("audio")
                 .join(&clean_name),
         );
         candidates.push(
-            base_p
-                .join("mobile")
+            mobile_root
                 .join("recordings")
                 .join("audio")
                 .join(&clean_name),
         );
         candidates.push(
-            base_p
-                .join("mobile")
+            mobile_root
                 .join("kakao")
                 .join("media")
                 .join(&clean_name),
         );
-        candidates.push(base_p.join("mobile").join("kakao").join(&clean_name));
+        candidates.push(mobile_root.join("kakao").join(&clean_name));
         candidates.push(base_p.join("_MediaInbox").join(&clean_name));
 
-        // `mobile/kakao/{folder_name}/` 하위 폴더에 그대로 적재된 이미지/동영상도 탐색
-        let kakao_root = base_p.join("mobile").join("kakao");
-        if let Ok(entries) = fs::read_dir(&kakao_root) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    candidates.push(p.join(&clean_name));
+        // `Mobile/kakao/{folder_name}/` 하위 폴더에 그대로 적재된 이미지/동영상도 탐색
+        for kakao_root in [mobile_root.join("kakao"), base_p.join("mobile").join("kakao")] {
+            if let Ok(entries) = fs::read_dir(&kakao_root) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        candidates.push(p.join(&clean_name));
+                    }
                 }
             }
         }

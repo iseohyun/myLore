@@ -165,6 +165,54 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             profile_text TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS media_origin_registry (
+            origin_hash TEXT PRIMARY KEY,
+            blake3_hash TEXT NOT NULL DEFAULT '',
+            origin_file_name TEXT NOT NULL,
+            origin_file_size INTEGER NOT NULL DEFAULT 0,
+            device_id TEXT NOT NULL DEFAULT '',
+            device_name TEXT NOT NULL DEFAULT '',
+            taken_date TEXT NOT NULL DEFAULT '',
+            taken_time TEXT NOT NULL DEFAULT '',
+            current_status TEXT NOT NULL DEFAULT 'original',
+            current_path TEXT NOT NULL DEFAULT '',
+            current_hash TEXT NOT NULL DEFAULT '',
+            history_note TEXT NOT NULL DEFAULT '',
+            first_synced_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS lifelog_location_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL DEFAULT '',
+            device_name TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT 'passive',
+            place_label TEXT NOT NULL DEFAULT '',
+            wifi_ssid TEXT NOT NULL DEFAULT '',
+            wifi_bssid TEXT NOT NULL DEFAULT '',
+            latitude REAL NOT NULL DEFAULT 0.0,
+            longitude REAL NOT NULL DEFAULT 0.0,
+            accuracy_m REAL NOT NULL DEFAULT 0.0,
+            battery_pct INTEGER NOT NULL DEFAULT -1,
+            log_date TEXT NOT NULL,
+            log_time TEXT NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            dedup_key TEXT NOT NULL UNIQUE
+        );
+        CREATE INDEX IF NOT EXISTS idx_location_logs_date ON lifelog_location_logs(log_date, timestamp_ms);
+        CREATE TABLE IF NOT EXISTS kakao_update_requests (
+            room_name TEXT PRIMARY KEY,
+            pending_noti_count INTEGER NOT NULL DEFAULT 1,
+            last_sender TEXT NOT NULL DEFAULT '',
+            last_message_preview TEXT NOT NULL DEFAULT '',
+            last_noti_date TEXT NOT NULL DEFAULT '',
+            last_noti_time TEXT NOT NULL DEFAULT '',
+            last_noti_ts INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS kakao_auto_channels (
+            channel_name TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT ''
+        );
         ",
     )
     .map_err(|e| e.to_string())?;
@@ -220,29 +268,46 @@ fn seed_default_meta_and_base_folders(conn: &Connection) {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM base_folders", [], |r| r.get(0))
         .unwrap_or(0);
+    let docs_root = detect_default_docs_root_dir();
+    let git_root = detect_default_git_root_dir();
+    let pic_root = detect_default_picture_root_dir();
+
     if count == 0 {
-        let root = default_user_root();
         let defaults = vec![
             (
-                "base-data-1",
-                "data",
-                root.join("Data"),
-                "데이터 (아카이브)",
-                "과거 문서, 위키, 미디어 원본 아카이브 및 분류 대기 문서",
+                "base-projects-1",
+                "projects",
+                docs_root.join("Projects"),
+                "프로젝트 (Docs/Projects)",
+                "폴더별 main.md 기반 프로젝트 관리 볼트",
             ),
             (
                 "base-diary-1",
                 "diary",
-                root.join("Diary"),
-                "일기",
+                docs_root.join("Diary"),
+                "일기 (Docs/Diary)",
                 "매일의 작업/일상 기록 및 구글 캘린더 1:1 동기화 폴더",
             ),
             (
-                "base-projects-1",
-                "projects",
-                root.join("Projects"),
-                "프로젝트",
-                "폴더별 main.md 기반 프로젝트 관리 폴더",
+                "base-data-1",
+                "data",
+                docs_root.clone(),
+                "Docs (통합 문서 · 아카이브)",
+                "Docs 통합 문서 루트 및 Mobile 라이프로그 아카이브",
+            ),
+            (
+                "base-git-1",
+                "git",
+                git_root,
+                "Git (개발 프로젝트)",
+                "개발 프로젝트 참고용 코드/문서 폴더 (UUID 미주입)",
+            ),
+            (
+                "base-picture-1",
+                "picture",
+                pic_root,
+                "Picture (사진첩)",
+                "내 장치들의 사진/영상 및 과거 사진 통합 저장소",
             ),
         ];
         for (id, role, path, label, purpose) in defaults {
@@ -251,6 +316,237 @@ fn seed_default_meta_and_base_folders(conn: &Connection) {
                 "INSERT INTO base_folders (id, role, path, label, purpose, enabled) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
                 params![id, role, path.to_string_lossy().to_string(), label, purpose],
             );
+        }
+        let _ = fs::create_dir_all(docs_root.join("Mobile"));
+        invalidate_cached_data_base_path();
+    } else {
+        // 기존 DB가 레거시 OneDrive 개별 폴더(Projects, Diary, iseohyunDocs)를 가리키고 있고,
+        // 새 Docs 통합 구조(docs_root/Projects/main.md, docs_root/Diary, docs_root/Mobile)가 존재하면 자동 마이그레이션 수행
+        let old_proj: Option<String> = conn
+            .query_row(
+                "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        let old_diary: Option<String> = conn
+            .query_row(
+                "SELECT path FROM base_folders WHERE role = 'diary' AND enabled = 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        let old_data: Option<String> = conn
+            .query_row(
+                "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+
+        let new_proj_dir = docs_root.join("Projects");
+        let new_diary_dir = docs_root.join("Diary");
+        let new_mobile_dir = docs_root.join("Mobile");
+
+        let old_proj_missing_main = old_proj
+            .as_ref()
+            .map(|p| !Path::new(p).join("main.md").is_file())
+            .unwrap_or(true);
+        let new_docs_ready =
+            new_proj_dir.join("main.md").is_file() && new_diary_dir.is_dir() && new_mobile_dir.is_dir();
+
+        if old_proj_missing_main && new_docs_ready {
+            let new_proj_str = new_proj_dir.to_string_lossy().to_string();
+            let new_diary_str = new_diary_dir.to_string_lossy().to_string();
+            let new_docs_str = docs_root.to_string_lossy().to_string();
+
+            let _ = conn.execute(
+                "UPDATE base_folders SET path = ?1, label = '프로젝트 (Docs/Projects)' WHERE role = 'projects'",
+                params![new_proj_str],
+            );
+            let _ = conn.execute(
+                "UPDATE base_folders SET path = ?1, label = '일기 (Docs/Diary)' WHERE role = 'diary'",
+                params![new_diary_str],
+            );
+            let _ = conn.execute(
+                "UPDATE base_folders SET path = ?1, label = 'Docs (통합 문서 · 아카이브)' WHERE role = 'data'",
+                params![new_docs_str],
+            );
+
+            // files 테이블 내의 구 경로를 새 Docs 하위 경로(및 소문자 mobile -> 대문자 Mobile)로 일괄 매핑
+            if let Ok(mut stmt) = conn.prepare("SELECT uuid, full_path FROM files") {
+                let rows: Vec<(String, String)> = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for (u, fp) in rows {
+                    let mut updated_fp: Option<String> = None;
+                    if let Some(ref op) = old_proj {
+                        if let Ok(rel) = Path::new(&fp).strip_prefix(Path::new(op)) {
+                            let candidate = new_proj_dir.join(rel);
+                            if candidate.is_file() {
+                                updated_fp = Some(candidate.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                    if updated_fp.is_none() {
+                        if let Some(ref od) = old_diary {
+                            if let Ok(rel) = Path::new(&fp).strip_prefix(Path::new(od)) {
+                                let candidate = new_diary_dir.join(rel);
+                                if candidate.is_file() {
+                                    updated_fp = Some(candidate.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                    if updated_fp.is_none() {
+                        if let Some(ref odata) = old_data {
+                            if let Ok(rel) = Path::new(&fp).strip_prefix(Path::new(odata)) {
+                                let rel_str = rel.to_string_lossy().to_string();
+                                let remapped_rel = if rel_str.starts_with("mobile\\")
+                                    || rel_str.starts_with("mobile/")
+                                {
+                                    format!("Mobile{}", &rel_str[6..])
+                                } else {
+                                    rel_str
+                                };
+                                let candidate = docs_root.join(&remapped_rel);
+                                if candidate.is_file() {
+                                    updated_fp = Some(candidate.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(nfp) = updated_fp {
+                        let _ = conn.execute(
+                            "UPDATE files SET full_path = ?1 WHERE uuid = ?2",
+                            params![nfp, u],
+                        );
+                    }
+                }
+            }
+            invalidate_cached_data_base_path();
+        }
+
+        // git 또는 picture 베이스 폴더가 아직 없으면 기본 등록
+        let has_git: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM base_folders WHERE role = 'git'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if has_git == 0 && git_root.is_dir() {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO base_folders (id, role, path, label, purpose, enabled) VALUES ('base-git-1', 'git', ?1, 'Git (개발 프로젝트)', '개발 프로젝트 참고용 코드/문서 폴더 (UUID 미주입)', 1)",
+                params![git_root.to_string_lossy().to_string()],
+            );
+        }
+
+        let has_pic: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM base_folders WHERE role = 'picture'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if has_pic == 0 {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO base_folders (id, role, path, label, purpose, enabled) VALUES ('base-picture-1', 'picture', ?1, 'Picture (사진첩)', '내 장치들의 사진/영상 및 과거 사진 통합 저장소', 1)",
+                params![pic_root.to_string_lossy().to_string()],
+            );
+        }
+    }
+
+    repair_moved_files_table_paths(conn);
+}
+
+/// `base_folders`가 3대 카테고리(`Docs`·`Git`·`Picture`)로 구성되었거나 볼트 폴더가 이동된 경우,
+/// `files` 테이블의 `full_path`, `relative_path`, `role`을 실제 디스크상의 `Docs/Projects`, `Docs/Diary`, `Docs` 경로와 일치하도록 자동 보정합니다.
+pub(crate) fn repair_moved_files_table_paths(conn: &Connection) {
+    let proj_base = PathBuf::from(projects_base_path_string(conn));
+    let diary_base = PathBuf::from(diary_base_path_string(conn));
+    let data_base = PathBuf::from(data_base_path_string(conn));
+
+    let Ok(mut stmt) = conn.prepare("SELECT uuid, full_path, relative_path, role FROM files") else {
+        return;
+    };
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (u, fp, rel_path, role) in rows {
+        let norm_rel = rel_path.replace('/', "\\");
+        let mut target_role = role.clone();
+        let mut target_rel = norm_rel.clone();
+        let mut target_fp: Option<PathBuf> = None;
+
+        if role == "projects" {
+            let cand = proj_base.join(&norm_rel);
+            if cand.is_file() {
+                target_fp = Some(cand);
+            }
+        } else if role == "diary" {
+            let cand = diary_base.join(&norm_rel);
+            if cand.is_file() {
+                target_fp = Some(cand);
+            }
+        } else if role == "data" {
+            let lower_rel = norm_rel.to_ascii_lowercase();
+            if lower_rel.starts_with("projects\\") && norm_rel.len() > 9 {
+                let stripped = norm_rel[9..].to_string();
+                let cand = proj_base.join(&stripped);
+                if cand.is_file() {
+                    target_role = "projects".to_string();
+                    target_rel = stripped;
+                    target_fp = Some(cand);
+                }
+            } else if lower_rel.starts_with("diary\\") && norm_rel.len() > 6 {
+                let stripped = norm_rel[6..].to_string();
+                let cand = diary_base.join(&stripped);
+                if cand.is_file() {
+                    target_role = "diary".to_string();
+                    target_rel = stripped;
+                    target_fp = Some(cand);
+                }
+            } else {
+                let remapped = if norm_rel.starts_with("mobile\\") {
+                    format!("Mobile{}", &norm_rel[6..])
+                } else {
+                    norm_rel.clone()
+                };
+                let cand = data_base.join(&remapped);
+                if cand.is_file() {
+                    target_rel = remapped;
+                    target_fp = Some(cand);
+                }
+            }
+        }
+
+        if let Some(nfp_buf) = target_fp {
+            let nfp_str = nfp_buf.to_string_lossy().to_string();
+            if nfp_str != fp || target_rel != rel_path || target_role != role {
+                let _ = conn.execute(
+                    "DELETE FROM files WHERE full_path = ?1 AND uuid != ?2",
+                    params![nfp_str, u],
+                );
+                let _ = conn.execute(
+                    "UPDATE files SET full_path = ?1, relative_path = ?2, role = ?3 WHERE uuid = ?4",
+                    params![nfp_str, target_rel, target_role, u],
+                );
+            }
+        } else if !Path::new(&fp).is_file() {
+            let _ = conn.execute("DELETE FROM files WHERE uuid = ?1", params![u]);
         }
     }
 }

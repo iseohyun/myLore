@@ -104,7 +104,7 @@ export function useLifelogAndFinance({
   // 라이프로그 수집 대쉬보드 2개 탭 (설정 | 휴대폰데이터) 및 휴대폰 데이터 사이드바 상태
   const [lifelogDashboardTab, setLifelogDashboardTab] = useState<
     'settings' | 'chat' | 'records' | 'pc_activity'
-  >('settings');
+  >('chat');
   const [mobileSidebarTab, setMobileSidebarTab] = useState<LifelogSourceType>(
     'kakaotalk'
   );
@@ -125,6 +125,8 @@ export function useLifelogAndFinance({
   const [contactsMap, setContactsMap] = useState<Record<string, string>>({});
   const [smsRawEditMode, setSmsRawEditMode] = useState<boolean>(false);
   const [isRetryingCalls, setIsRetryingCalls] = useState<boolean>(false);
+  const [filterUnverifiedCallsOnly, setFilterUnverifiedCallsOnly] =
+    useState<boolean>(false);
   const [selectedLifelogMsgId, setSelectedLifelogMsgId] = useState<
     number | null
   >(null);
@@ -430,6 +432,9 @@ export function useLifelogAndFinance({
       setRightSidebarOpen(true);
       void refreshMobilePairingInfo();
       void refreshAllLifelogMessages();
+    } else if (activeTabPath === 'mylore://dashboard/settings') {
+      setRightSidebarOpen(true);
+      void refreshMobilePairingInfo();
     } else if (activeTabPath === 'mylore://dashboard/finance') {
       void refreshFinanceData();
     } else if (isMobileDataSidebarMode) {
@@ -726,6 +731,8 @@ export function useLifelogAndFinance({
     setSmsRawEditMode,
     isRetryingCalls,
     setIsRetryingCalls,
+    filterUnverifiedCallsOnly,
+    setFilterUnverifiedCallsOnly,
     selectedLifelogMsgId,
     setSelectedLifelogMsgId,
     smsBubbleScrollRef,

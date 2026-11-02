@@ -14,6 +14,7 @@ import {
   getGeminiApiKeyStatus,
   openExternalUrlInChrome,
   removePairedMobileDevice,
+  retryPendingCallTranscriptions,
   saveAndVerifyGeminiApiKey,
   saveAppSettings,
   sendMobileUdpWakeBroadcast,
@@ -21,8 +22,15 @@ import {
   triggerFullMobileResync,
 } from '../../services/tauriClient';
 import { calculateAiRemainingPercent } from '../../utils/appearancePresets';
+import {
+  CallPromptManagerPanel,
+  LocationMovementTrackerPanel,
+  MediaOriginRegistryPanel,
+  MultiLlmSettingsRows,
+} from './LifelogMilestonePanels';
 
 export interface LifelogSettingsTabProps {
+  sectionFilter?: 'all' | 'sync_setting' | 'sync_status' | 'ai_setting';
   mobilePairing: MobilePairingPayload;
   setMobilePairing: React.Dispatch<React.SetStateAction<MobilePairingPayload | null>>;
   qrDataUrl: string;
@@ -44,6 +52,7 @@ export interface LifelogSettingsTabProps {
 }
 
 export function LifelogSettingsTab({
+  sectionFilter = 'all',
   mobilePairing,
   setMobilePairing,
   qrDataUrl,
@@ -96,6 +105,13 @@ export function LifelogSettingsTab({
     geminiStatus?.retryAfterAt
   );
 
+  const showSyncSetting =
+    sectionFilter === 'all' || sectionFilter === 'sync_setting';
+  const showSyncStatus =
+    sectionFilter === 'all' || sectionFilter === 'sync_status';
+  const showAiSetting =
+    sectionFilter === 'all' || sectionFilter === 'ai_setting';
+
   return (
     <div
       style={{
@@ -108,301 +124,378 @@ export function LifelogSettingsTab({
         gap: '16px',
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          padding: '8px 0 4px 0',
-        }}
-      >
+      {showSyncSetting && (
         <div
           style={{
-            padding: '12px',
-            backgroundColor: '#ffffff',
-            borderRadius: '10px',
-            border: '2px solid var(--accent-primary)',
             display: 'flex',
-            flexDirection: 'column',
+            justifyContent: 'center',
             alignItems: 'center',
-            boxShadow: '0 6px 18px rgba(0, 0, 0, 0.25)',
+            padding: '8px 0 4px 0',
           }}
-          title="기본 카메라 앱으로 촬영 시 myLore Sync 앱이 열리며 즉시 연결됩니다 (myloresync://pair?data=...)"
         >
-          {qrDataUrl ? (
-            <img
-              src={qrDataUrl}
-              alt="myLore Sync Pairing QR Code"
-              style={{ width: '200px', height: '200px', display: 'block' }}
-            />
-          ) : (
-            <div
-              style={{
-                width: '200px',
-                height: '200px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#334155',
-                fontSize: '12px',
-              }}
-            >
-              QR 생성 중...
-            </div>
-          )}
+          <div
+            style={{
+              padding: '12px',
+              backgroundColor: '#ffffff',
+              borderRadius: '10px',
+              border: '2px solid var(--accent-primary)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              boxShadow: '0 6px 18px rgba(0, 0, 0, 0.25)',
+            }}
+            title="기본 카메라 앱으로 촬영 시 myLore Sync 앱이 열리며 즉시 연결됩니다 (myloresync://pair?data=...)"
+          >
+            {qrDataUrl ? (
+              <img
+                src={qrDataUrl}
+                alt="myLore Sync Pairing QR Code"
+                style={{ width: '200px', height: '200px', display: 'block' }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '200px',
+                  height: '200px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#334155',
+                  fontSize: '12px',
+                }}
+              >
+                QR 생성 중...
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table className="data-table" style={{ marginBottom: 0 }}>
-          <thead>
-            <tr>
-              <th style={{ width: '170px' }}>항목</th>
-              <th>설정 값 및 인라인 제어</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td style={{ fontWeight: 700 }}>호스트 이름</td>
-              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                {mobilePairing.pcName}
-              </td>
-            </tr>
+      {showSyncStatus && sectionFilter === 'sync_status' && (
+        <>
+          <div
+            style={{
+              padding: '14px 16px',
+              backgroundColor: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '8px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '10px',
+            }}
+          >
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '14px' }}>
+                🔄 모바일 동기화 워터마크 및 전체 재동기화 제어
+              </div>
+              <div
+                style={{
+                  fontSize: '12px',
+                  color: 'var(--text-secondary)',
+                  marginTop: '3px',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                알림 워터마크: {mobilePairing.lastNotiTs || 0} | 문자 워터마크:{' '}
+                {mobilePairing.lastSmsTs || 0} | 통화 워터마크:{' '}
+                {mobilePairing.lastCallTs || 0}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                className="toolbar-btn primary"
+                onClick={async () => {
+                  const wakeMsg = await sendMobileUdpWakeBroadcast();
+                  setStatusMessage(`📡 모바일 동기화 깨우기 신호 전송: ${wakeMsg}`);
+                }}
+              >
+                📡 지금 동기화 깨우기 (UDP 18444)
+              </button>
+              <button
+                className="toolbar-btn"
+                onClick={async () => {
+                  try {
+                    const updated = await triggerFullMobileResync();
+                    setMobilePairing(updated);
+                    const msg =
+                      '🔄 과거 모든 데이터 재수집(Full Resync) 신호가 송출되었으며 동기화 워터마크가 초기화되었습니다.';
+                    setStatusMessage(msg);
+                    setReconcileResultMsg(msg);
+                  } catch (err) {
+                    setStatusMessage(`전체 재수집 요청 오류: ${String(err)}`);
+                  }
+                }}
+              >
+                🔄 과거 모든 데이터 받아오기
+              </button>
+            </div>
+          </div>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>IPv4 주소</td>
-              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                {mobilePairing.ips.join(', ')}
-              </td>
-            </tr>
+          <MediaOriginRegistryPanel />
+          <LocationMovementTrackerPanel />
+        </>
+      )}
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>포트</td>
-              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                {mobilePairing.port} (UDP 브로드캐스트: 18444)
-              </td>
-            </tr>
+      {(showSyncSetting || showAiSetting) && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="data-table" style={{ marginBottom: 0 }}>
+            <thead>
+              <tr>
+                <th style={{ width: '170px' }}>항목</th>
+                <th>설정 값 및 인라인 제어</th>
+              </tr>
+            </thead>
+            <tbody>
+              {showSyncSetting && (
+                <>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>호스트 이름</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                      {mobilePairing.pcName}
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>토큰</td>
-              <td>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <code
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '12px',
-                      padding: '3px 8px',
-                      backgroundColor: 'var(--bg-primary)',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border-color)',
-                    }}
-                  >
-                    {mobilePairing.token}
-                  </code>
-                  <button
-                    className="toolbar-btn primary"
-                    onClick={async () => {
-                      await refreshMobilePairingInfo();
-                      const wakeMsg = await sendMobileUdpWakeBroadcast();
-                      const guideMsg = `📲 다른 기기 추가 연결 준비 완료: 상단 QR 코드를 추가할 휴대폰의 기본 카메라로 스캔하세요. (기존 기기 연결 유지됨 | ${wakeMsg})`;
-                      setStatusMessage(guideMsg);
-                      setReconcileResultMsg(guideMsg);
-                    }}
-                    title="기존 페어링된 기기를 유지한 채 새로운 모바일 기기를 추가로 등록합니다"
-                  >
-                    📱 다른 기기 연결
-                  </button>
-                  <button
-                    className="toolbar-btn"
-                    onClick={async () => {
-                      try {
-                        const updated = await triggerFullMobileResync();
-                        setMobilePairing(updated);
-                        const msg =
-                          '🔄 과거 모든 데이터 재수집(Full Resync) 신호(UDP 18444 & force_full_sync)가 송출되었으며 동기화 워터마크가 초기화되었습니다.';
-                        setStatusMessage(msg);
-                        setReconcileResultMsg(msg);
-                      } catch (err) {
-                        setStatusMessage(`전체 재수집 요청 오류: ${String(err)}`);
-                      }
-                    }}
-                    title="모바일 기기의 동기화 워터마크를 초기화하여 과거의 모든 카톡·알림·문자·통화·연락처 데이터를 처음부터 다시 받아옵니다"
-                  >
-                    🔄 과거 모든 데이터 받아오기
-                  </button>
-                </div>
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>IPv4 주소</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                      {mobilePairing.ips.join(', ')}
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>현재 NAT Wi-Fi (SSID)</td>
-              <td>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    flexWrap: 'wrap',
-                  }}
-                >
-                  <code
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '12.5px',
-                      fontWeight: 700,
-                      padding: '3px 10px',
-                      backgroundColor: 'var(--bg-primary)',
-                      borderRadius: '6px',
-                      border: '1px solid var(--border-color)',
-                      color: mobilePairing.ssid ? '#4ade80' : 'var(--text-muted)',
-                    }}
-                  >
-                    {mobilePairing.ssid
-                      ? `📶 ${mobilePairing.ssids.join(', ')}`
-                      : '감지된 Wi-Fi 없음'}
-                  </code>
-                  {mobilePairing.ssid && (
-                    <span
-                      style={{
-                        fontSize: '11.5px',
-                        color: 'var(--text-secondary)',
-                      }}
-                    >
-                      ({mobilePairing.wifiAuth || 'WPA2'}
-                      {mobilePairing.hasWifiPassword
-                        ? ' · 접속 키 QR 자동 포함됨'
-                        : ' · 접속 키 없음'}
-                      )
-                    </span>
-                  )}
-                  <button
-                    className="toolbar-btn"
-                    onClick={async () => {
-                      await refreshMobilePairingInfo();
-                      const msg = '🔄 서버의 현재 NAT Wi-Fi SSID 및 QR 코드를 다시 검색하여 갱신했습니다.';
-                      setStatusMessage(msg);
-                      setReconcileResultMsg(msg);
-                    }}
-                    title="서버가 현재 연결된 NAT의 Wi-Fi SSID와 접속 키를 다시 검색하여 QR 코드에 갱신합니다"
-                  >
-                    🔄 Wi-Fi 재검색
-                  </button>
-                </div>
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>포트</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                      {mobilePairing.port} (UDP 브로드캐스트: 18444)
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>등록 기기명</td>
-              <td>
-                {mobilePairing.pairedDevices.length === 0 ? (
-                  <span style={{ color: 'var(--text-muted)' }}>
-                    미등록 (상단 QR 코드를 휴대폰 카메라로 스캔하세요)
-                  </span>
-                ) : (
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                    {mobilePairing.pairedDevices.map((dev) => (
-                      <span
-                        key={dev.deviceId}
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>토큰</td>
+                    <td>
+                      <div
                         style={{
-                          display: 'inline-flex',
+                          display: 'flex',
                           alignItems: 'center',
-                          gap: '6px',
-                          padding: '3px 10px',
-                          backgroundColor: 'var(--bg-primary)',
-                          border: '1px solid var(--border-color)',
-                          borderRadius: '6px',
-                          fontWeight: 700,
+                          gap: '8px',
+                          flexWrap: 'wrap',
                         }}
                       >
-                        <span>📱 {dev.deviceName}</span>
+                        <code
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12px',
+                            padding: '3px 8px',
+                            backgroundColor: 'var(--bg-primary)',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-color)',
+                          }}
+                        >
+                          {mobilePairing.token}
+                        </code>
+                        <button
+                          className="toolbar-btn primary"
+                          onClick={async () => {
+                            await refreshMobilePairingInfo();
+                            const wakeMsg = await sendMobileUdpWakeBroadcast();
+                            const guideMsg = `📲 다른 기기 추가 연결 준비 완료: 상단 QR 코드를 추가할 휴대폰의 기본 카메라로 스캔하세요. (기존 기기 연결 유지됨 | ${wakeMsg})`;
+                            setStatusMessage(guideMsg);
+                            setReconcileResultMsg(guideMsg);
+                          }}
+                          title="기존 페어링된 기기를 유지한 채 새로운 모바일 기기를 추가로 등록합니다"
+                        >
+                          📱 다른 기기 연결
+                        </button>
                         <button
                           className="toolbar-btn"
-                          style={{
-                            padding: '1px 6px',
-                            fontSize: '11px',
-                            color: '#f87171',
-                            borderColor: 'rgba(248, 113, 113, 0.4)',
-                          }}
                           onClick={async () => {
-                            const updated = await removePairedMobileDevice(
-                              dev.deviceId
-                            );
-                            setMobilePairing(updated);
-                            const msg = `🗑️ 기기 '${dev.deviceName}' (${dev.deviceId}) 연결이 제거되었습니다.`;
+                            try {
+                              const updated = await triggerFullMobileResync();
+                              setMobilePairing(updated);
+                              const msg =
+                                '🔄 과거 모든 데이터 재수집(Full Resync) 신호(UDP 18444 & force_full_sync)가 송출되었으며 동기화 워터마크가 초기화되었습니다.';
+                              setStatusMessage(msg);
+                              setReconcileResultMsg(msg);
+                            } catch (err) {
+                              setStatusMessage(`전체 재수집 요청 오류: ${String(err)}`);
+                            }
+                          }}
+                          title="모바일 기기의 동기화 워터마크를 초기화하여 과거의 모든 카톡·알림·문자·통화·연락처 데이터를 처음부터 다시 받아옵니다"
+                        >
+                          🔄 과거 모든 데이터 받아오기
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>현재 NAT Wi-Fi (SSID)</td>
+                    <td>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <code
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12.5px',
+                            fontWeight: 700,
+                            padding: '3px 10px',
+                            backgroundColor: 'var(--bg-primary)',
+                            borderRadius: '6px',
+                            border: '1px solid var(--border-color)',
+                            color: mobilePairing.ssid ? '#4ade80' : 'var(--text-muted)',
+                          }}
+                        >
+                          {mobilePairing.ssid
+                            ? `📶 ${mobilePairing.ssids.join(', ')}`
+                            : '감지된 Wi-Fi 없음'}
+                        </code>
+                        {mobilePairing.ssid && (
+                          <span
+                            style={{
+                              fontSize: '11.5px',
+                              color: 'var(--text-secondary)',
+                            }}
+                          >
+                            ({mobilePairing.wifiAuth || 'WPA2'}
+                            {mobilePairing.hasWifiPassword
+                              ? ' · 접속 키 QR 자동 포함됨'
+                              : ' · 접속 키 없음'}
+                            )
+                          </span>
+                        )}
+                        <button
+                          className="toolbar-btn"
+                          onClick={async () => {
+                            await refreshMobilePairingInfo();
+                            const msg = '🔄 서버의 현재 NAT Wi-Fi SSID 및 QR 코드를 다시 검색하여 갱신했습니다.';
                             setStatusMessage(msg);
                             setReconcileResultMsg(msg);
                           }}
-                          title={`${dev.deviceName} (${dev.deviceId}) 기기 등록 해제`}
+                          title="서버가 현재 연결된 NAT의 Wi-Fi SSID와 접속 키를 다시 검색하여 QR 코드에 갱신합니다"
                         >
-                          기기 제거
+                          🔄 Wi-Fi 재검색
                         </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </td>
-            </tr>
+                      </div>
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>기기 ID</td>
-              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                {mobilePairing.pairedDevices.length === 0
-                  ? '-'
-                  : mobilePairing.pairedDevices
-                      .map((d) => `${d.deviceName}: ${d.deviceId}`)
-                      .join(' | ')}
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>등록 기기명</td>
+                    <td>
+                      {mobilePairing.pairedDevices.length === 0 ? (
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          미등록 (상단 QR 코드를 휴대폰 카메라로 스캔하세요)
+                        </span>
+                      ) : (
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          {mobilePairing.pairedDevices.map((dev) => (
+                            <span
+                              key={dev.deviceId}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                padding: '3px 10px',
+                                backgroundColor: 'var(--bg-primary)',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: '6px',
+                                fontWeight: 700,
+                              }}
+                            >
+                              <span>📱 {dev.deviceName}</span>
+                              <button
+                                className="toolbar-btn"
+                                style={{
+                                  padding: '1px 6px',
+                                  fontSize: '11px',
+                                  color: '#f87171',
+                                  borderColor: 'rgba(248, 113, 113, 0.4)',
+                                }}
+                                onClick={async () => {
+                                  const updated = await removePairedMobileDevice(
+                                    dev.deviceId
+                                  );
+                                  setMobilePairing(updated);
+                                  const msg = `🗑️ 기기 '${dev.deviceName}' (${dev.deviceId}) 연결이 제거되었습니다.`;
+                                  setStatusMessage(msg);
+                                  setReconcileResultMsg(msg);
+                                }}
+                                title={`${dev.deviceName} (${dev.deviceId}) 기기 등록 해제`}
+                              >
+                                기기 제거
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>모델 버전</td>
-              <td>
-                {mobilePairing.pairedDevices.length === 0
-                  ? '-'
-                  : mobilePairing.pairedDevices
-                      .map((d) => `${d.deviceName}: ${d.model}`)
-                      .join(' | ')}
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>기기 ID</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                      {mobilePairing.pairedDevices.length === 0
+                        ? '-'
+                        : mobilePairing.pairedDevices
+                            .map((d) => `${d.deviceName}: ${d.deviceId}`)
+                            .join(' | ')}
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>최초 페어링</td>
-              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
-                {mobilePairing.pairedDevices.length === 0
-                  ? '-'
-                  : mobilePairing.pairedDevices
-                      .map((d) => `${d.deviceName}: ${d.pairedAt}`)
-                      .join(' | ')}
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>모델 버전</td>
+                    <td>
+                      {mobilePairing.pairedDevices.length === 0
+                        ? '-'
+                        : mobilePairing.pairedDevices
+                            .map((d) => `${d.deviceName}: ${d.model}`)
+                            .join(' | ')}
+                    </td>
+                  </tr>
 
-            <tr>
-              <td style={{ fontWeight: 700 }}>최근 페어링</td>
-              <td
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: '12px',
-                  color:
-                    mobilePairing.pairedDevices.length > 0
-                      ? '#4ade80'
-                      : 'var(--text-muted)',
-                  fontWeight: 600,
-                }}
-              >
-                {mobilePairing.pairedDevices.length === 0
-                  ? '-'
-                  : mobilePairing.pairedDevices
-                      .map((d) => `${d.deviceName}: ${d.lastSeenAt}`)
-                      .join(' | ')}
-              </td>
-            </tr>
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>최초 페어링</td>
+                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
+                      {mobilePairing.pairedDevices.length === 0
+                        ? '-'
+                        : mobilePairing.pairedDevices
+                            .map((d) => `${d.deviceName}: ${d.pairedAt}`)
+                            .join(' | ')}
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td style={{ fontWeight: 700 }}>최근 페어링</td>
+                    <td
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '12px',
+                        color:
+                          mobilePairing.pairedDevices.length > 0
+                            ? '#4ade80'
+                            : 'var(--text-muted)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {mobilePairing.pairedDevices.length === 0
+                        ? '-'
+                        : mobilePairing.pairedDevices
+                            .map((d) => `${d.deviceName}: ${d.lastSeenAt}`)
+                            .join(' | ')}
+                    </td>
+                  </tr>
+                </>
+              )}
+
+              {showAiSetting && (
+                <>
 
             <tr>
               <td style={{ fontWeight: 700 }}>Gemini API 키</td>
@@ -511,6 +604,20 @@ export function LifelogSettingsTab({
                     </button>
                   )}
                 </div>
+              </td>
+            </tr>
+
+            <MultiLlmSettingsRows setStatusMessage={setStatusMessage} />
+
+            <tr>
+              <td style={{ fontWeight: 700 }}>통화 분석 프롬프트 설정</td>
+              <td>
+                <CallPromptManagerPanel
+                  compactInDashboard={true}
+                  appSettings={appSettings}
+                  onSettingsUpdated={setAppSettings}
+                  setStatusMessage={setStatusMessage}
+                />
               </td>
             </tr>
 
@@ -782,11 +889,38 @@ export function LifelogSettingsTab({
                       한도 적용
                     </button>
                     <button
+                      className="toolbar-btn primary"
+                      style={{ padding: '3px 10px', fontSize: '11.5px' }}
+                      onClick={async () => {
+                        setStatusMessage(
+                          '⚡ 대기 중인 통화 녹음 AI 분석을 즉시 재시도합니다...'
+                        );
+                        try {
+                          const stat = await retryPendingCallTranscriptions();
+                          setGeminiStatus(stat);
+                          window.dispatchEvent(
+                            new CustomEvent('mylore-multi-llm-updated')
+                          );
+                          setStatusMessage(
+                            '✅ 대기 통화 AI 분석 재시도가 실행되었습니다.'
+                          );
+                        } catch (err) {
+                          setStatusMessage(`재시도 오류: ${String(err)}`);
+                        }
+                      }}
+                      title="5시간 대기 중이더라도 사용자가 직접 클릭하면 즉시 API 호출을 다시 시도합니다 (실패 시 다시 5시간 대기)"
+                    >
+                      ⚡ 대기 통화 지금 즉시 재도전
+                    </button>
+                    <button
                       className="toolbar-btn"
                       style={{ padding: '3px 10px', fontSize: '11.5px' }}
                       onClick={async () => {
                         const stat = await getGeminiApiKeyStatus();
                         setGeminiStatus(stat);
+                        window.dispatchEvent(
+                          new CustomEvent('mylore-multi-llm-updated')
+                        );
                         setStatusMessage(
                           `🔄 AI 잔여량 상태가 갱신되었습니다 (AI: ${calculateAiRemainingPercent(stat.todayUsedTokens, dailyLimit, stat.retryAfterAt)}).`
                         );
@@ -821,9 +955,12 @@ export function LifelogSettingsTab({
                 </div>
               </td>
             </tr>
-          </tbody>
-        </table>
-      </div>
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

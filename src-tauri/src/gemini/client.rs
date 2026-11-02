@@ -12,42 +12,61 @@ pub(crate) fn resolve_local_appdata_gemini_key_path() -> PathBuf {
 pub(crate) fn read_local_gemini_api_key_full() -> (String, String, String) {
     let secret_path = resolve_local_appdata_gemini_key_path();
     if let Ok(raw) = fs::read_to_string(&secret_path) {
-        if let Ok(jv) = serde_json::from_str::<serde_json::Value>(&raw) {
-            let k = jv
-                .get("api_key")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let v_at = jv
-                .get("verified_at")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let model = jv
-                .get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("gemini-3.8-flash")
-                .trim()
-                .to_string();
-            return (
-                k,
-                v_at,
-                if model.is_empty() {
-                    "gemini-3.8-flash".to_string()
-                } else {
-                    model
-                },
-            );
+        if let Ok(mut jv) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let k = jv.get("api_key").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let v_at = jv.get("verified_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let raw_model = jv.get("model").and_then(|v| v.as_str()).unwrap_or("gemini-flash-lite-latest").trim().to_string();
+            let normalized_model = if raw_model.is_empty()
+                || matches!(
+                    raw_model.as_str(),
+                    "gemini-3.8-flash" | "gemini-3.7-flash" | "gemini-2.5-flash" | "gemini-2.5-flash-lite" | "gemini-2.0-flash" | "gemini-2.0-flash-lite"
+                ) {
+                "gemini-flash-lite-latest".to_string()
+            } else {
+                raw_model.clone()
+            };
+            if normalized_model != raw_model {
+                if let Some(obj) = jv.as_object_mut() {
+                    obj.insert("model".to_string(), serde_json::json!(normalized_model.clone()));
+                    if let Ok(s) = serde_json::to_string_pretty(&jv) {
+                        let _ = fs::write(&secret_path, s);
+                    }
+                }
+            }
+            return (k, v_at, normalized_model);
         }
     }
-    (String::new(), String::new(), "gemini-3.8-flash".to_string())
+    (String::new(), String::new(), "gemini-flash-lite-latest".to_string())
+}
+
+pub(crate) fn persist_active_gemini_model(active_model: &str) {
+    let clean = active_model.trim().trim_start_matches("models/");
+    if clean.is_empty() {
+        return;
+    }
+    let secret_path = resolve_local_appdata_gemini_key_path();
+    if let Ok(raw) = fs::read_to_string(&secret_path) {
+        if let Ok(mut jv) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let cur = jv.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            if cur != clean {
+                if let Some(obj) = jv.as_object_mut() {
+                    obj.insert("model".to_string(), serde_json::json!(clean));
+                    if let Ok(s) = serde_json::to_string_pretty(&jv) {
+                        let _ = fs::write(&secret_path, s);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn read_local_gemini_api_key() -> (String, String) {
     let (k, v_at, _) = read_local_gemini_api_key_full();
     (k, v_at)
 }
+
+static GEMINI_USAGE_FILE_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
 
 pub(crate) fn resolve_local_appdata_gemini_usage_path() -> PathBuf {
     let dir = app_data_dir();
@@ -56,10 +75,12 @@ pub(crate) fn resolve_local_appdata_gemini_usage_path() -> PathBuf {
 }
 
 /// Gemini API 응답의 `usageMetadata` 에서 반환된 토큰 사용량을 당일/누적 기준으로 기록합니다.
-/// (API 호출이 성공한 시점이므로 기존의 5시간 쿼터 락은 해제된 것으로 간주하여 날짜 변경 시 새 날짜로 갱신합니다.)
+/// - 일일 토큰 한도(`ai_daily_token_limit`)를 100% 이상 소진(`0.0%` 잔여)한 경우 자동으로 5시간 타임리밋(`quota_retry_after_ms`)을 설정합니다.
 pub(crate) fn record_gemini_token_usage(used_tokens: i64) {
+    let _g = GEMINI_USAGE_FILE_LOCK.lock().ok();
     let usage_path = resolve_local_appdata_gemini_usage_path();
-    let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let now = chrono::Local::now();
+    let today_str = now.format("%Y-%m-%d").to_string();
     let (mut today_tokens, mut total_tokens, mut today_reqs, _) =
         read_gemini_token_usage_with_lock(false);
 
@@ -68,14 +89,21 @@ pub(crate) fn record_gemini_token_usage(used_tokens: i64) {
     total_tokens += add_tok;
     today_reqs += 1;
 
+    let daily_limit = read_ai_daily_token_limit(None);
+    let quota_retry_ms = if today_tokens >= daily_limit {
+        (now + chrono::Duration::hours(5)).timestamp_millis()
+    } else {
+        0
+    };
+
     let save_json = serde_json::json!({
         "today_date": today_str,
         "today_used_tokens": today_tokens,
         "total_used_tokens": total_tokens,
         "today_request_count": today_reqs,
         "last_request_tokens": add_tok,
-        "quota_retry_after_ms": 0,
-        "updated_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+        "quota_retry_after_ms": quota_retry_ms,
+        "updated_at": now.format("%Y-%m-%d %H:%M:%S").to_string()
     });
     if let Ok(s) = serde_json::to_string_pretty(&save_json) {
         let _ = fs::write(&usage_path, s);
@@ -84,6 +112,7 @@ pub(crate) fn record_gemini_token_usage(used_tokens: i64) {
 
 /// 5시간 쿼터 락 설정/해제 시 `gemini_usage.json` 에도 `quota_retry_after_ms` 를 동기화합니다.
 pub(crate) fn sync_gemini_usage_lock_state(retry_after_ms: i64) {
+    let _g = GEMINI_USAGE_FILE_LOCK.lock().ok();
     let usage_path = resolve_local_appdata_gemini_usage_path();
     if let Ok(raw) = fs::read_to_string(&usage_path) {
         if let Ok(mut jv) = serde_json::from_str::<serde_json::Value>(&raw) {
@@ -111,29 +140,13 @@ pub(crate) fn read_gemini_token_usage_with_lock(external_lock_active: bool) -> (
     if let Ok(raw) = fs::read_to_string(&usage_path) {
         if let Ok(jv) = serde_json::from_str::<serde_json::Value>(&raw) {
             let saved_date = jv.get("today_date").and_then(|v| v.as_str()).unwrap_or("");
-            let total_tok = jv
-                .get("total_used_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let last_tok = jv
-                .get("last_request_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let saved_retry_after_ms = jv
-                .get("quota_retry_after_ms")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let total_tok = jv.get("total_used_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            let last_tok = jv.get("last_request_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+            let saved_retry_after_ms = jv.get("quota_retry_after_ms").and_then(|v| v.as_i64()).unwrap_or(0);
             let is_locked = external_lock_active || (saved_retry_after_ms > now_ms);
-
             if saved_date == today_str || is_locked {
-                let today_tok = jv
-                    .get("today_used_tokens")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                let today_req = jv
-                    .get("today_request_count")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
+                let today_tok = jv.get("today_used_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                let today_req = jv.get("today_request_count").and_then(|v| v.as_i64()).unwrap_or(0);
                 return (today_tok, total_tok, today_req, last_tok);
             } else {
                 return (0, total_tok, 0, last_tok);
@@ -166,7 +179,7 @@ pub(crate) fn mask_gemini_api_key(raw: &str) -> String {
     }
 }
 
-static GEMINI_HTTP_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
+pub(crate) static GEMINI_HTTP_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
     use std::time::Duration;
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
     ureq::Agent::config_builder()
@@ -242,10 +255,11 @@ pub(crate) fn discover_available_gemini_model(api_key: &str) -> Option<String> {
     fallback_candidate
 }
 
-pub(crate) fn call_gemini_generate_content_single_model(
+pub(crate) fn call_gemini_generate_content_single_model_ext(
     api_key: &str,
     model_name: &str,
     body_bytes: &[u8],
+    record_usage: bool,
 ) -> Result<String, String> {
     let clean_model = model_name.trim().trim_start_matches("models/");
     let url = format!(
@@ -294,31 +308,32 @@ pub(crate) fn call_gemini_generate_content_single_model(
         return Err("Gemini로부터 빈 응답을 받았습니다.".to_string());
     }
 
-    // Gemini 응답의 usageMetadata 에서 실제 소비된 토큰 수 추출 및 누적 기록
-    if let Some(usage) = jv.get("usageMetadata") {
-        let prompt_tok = usage
-            .get("promptTokenCount")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let cand_tok = usage
-            .get("candidatesTokenCount")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let total_tok = usage
-            .get("totalTokenCount")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(prompt_tok + cand_tok);
-        record_gemini_token_usage(total_tok);
-    } else {
-        record_gemini_token_usage(0);
+    if record_usage {
+        if let Some(usage) = jv.get("usageMetadata") {
+            let prompt_tok = usage.get("promptTokenCount").and_then(|v| v.as_i64()).unwrap_or(0);
+            let cand_tok = usage.get("candidatesTokenCount").and_then(|v| v.as_i64()).unwrap_or(0);
+            let total_tok = usage.get("totalTokenCount").and_then(|v| v.as_i64()).unwrap_or(prompt_tok + cand_tok);
+            record_gemini_token_usage(total_tok);
+        } else {
+            record_gemini_token_usage(0);
+        }
     }
 
     Ok(text.trim().to_string())
 }
 
-pub(crate) fn call_gemini_generate_content_with_model(
+pub(crate) fn call_gemini_generate_content_single_model(
+    api_key: &str,
+    model_name: &str,
+    body_bytes: &[u8],
+) -> Result<String, String> {
+    call_gemini_generate_content_single_model_ext(api_key, model_name, body_bytes, true)
+}
+
+pub(crate) fn call_gemini_generate_content_with_model_ext(
     api_key: &str,
     request_json: &serde_json::Value,
+    record_usage: bool,
 ) -> Result<(String, String), String> {
     let body_bytes = serde_json::to_vec(request_json).map_err(|e| e.to_string())?;
 
@@ -326,18 +341,15 @@ pub(crate) fn call_gemini_generate_content_with_model(
     let mut candidates: Vec<String> = Vec::new();
     for m in [
         saved_model.as_str(),
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-transcribe",
         "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
     ] {
         let trimmed = m.trim().trim_start_matches("models/").to_string();
-        if !trimmed.is_empty()
-            && !trimmed.contains("2.5-flash")
-            && !candidates.contains(&trimmed)
-        {
+        if !trimmed.is_empty() && !trimmed.contains("2.5-flash") && !candidates.contains(&trimmed) {
             candidates.push(trimmed);
         }
     }
@@ -355,8 +367,9 @@ pub(crate) fn call_gemini_generate_content_with_model(
         }
         tried.push(model.clone());
 
-        match call_gemini_generate_content_single_model(api_key, &model, &body_bytes) {
+        match call_gemini_generate_content_single_model_ext(api_key, &model, &body_bytes, record_usage) {
             Ok(text) => {
+                persist_active_gemini_model(&model);
                 return Ok((text, model));
             }
             Err(err_msg) => {
@@ -364,16 +377,12 @@ pub(crate) fn call_gemini_generate_content_with_model(
                     first_primary_err = format!("[{}] {}", model, err_msg);
                 }
                 last_err = format!("[{}] {}", model, err_msg);
-                // API 키 자체가 잘못된 경우에는 즉시 중단
+                // API 키 자체가 무효한 경우에만 즉시 중단하고, 개별 모델 일일 쿼터(예: gemini-3.8-flash 20회 제한) 도달 시에는 다음 Flash/Transcribe 후보 모델로 자동 폴백
                 if err_msg.contains("API key not valid") || err_msg.contains("API_KEY_INVALID") {
                     return Err(format!("Gemini API 오류: {}", err_msg));
                 }
-                // 구글 에러 메시지가 권장 모델을 안내한 경우(예: Please update your code to use models/gemini-3.8-flash) 즉시 후보 최우선 추가
                 if let Some(rec_model) = extract_recommended_model_from_error(&err_msg) {
-                    if !rec_model.contains("2.5-flash")
-                        && !tried.contains(&rec_model)
-                        && !candidates.contains(&rec_model)
-                    {
+                    if !rec_model.contains("2.5-flash") && !tried.contains(&rec_model) && !candidates.contains(&rec_model) {
                         candidates.insert(idx, rec_model);
                     }
                 }
@@ -381,11 +390,13 @@ pub(crate) fn call_gemini_generate_content_with_model(
         }
     }
 
-    // 모든 기본 후보가 실패한 경우 계정에 실제 활성화된 모델 목록을 조회하여 자동 폴백
     if let Some(discovered) = discover_available_gemini_model(api_key) {
         if !tried.contains(&discovered) {
-            match call_gemini_generate_content_single_model(api_key, &discovered, &body_bytes) {
-                Ok(text) => return Ok((text, discovered)),
+            match call_gemini_generate_content_single_model_ext(api_key, &discovered, &body_bytes, record_usage) {
+                Ok(text) => {
+                    persist_active_gemini_model(&discovered);
+                    return Ok((text, discovered));
+                }
                 Err(err_msg) => {
                     last_err = format!("[{}] {}", discovered, err_msg);
                 }
@@ -393,12 +404,24 @@ pub(crate) fn call_gemini_generate_content_with_model(
         }
     }
 
-    let final_err = if !first_primary_err.is_empty() {
-        first_primary_err
-    } else {
-        last_err
-    };
+    let final_err = if !last_err.is_empty() { last_err } else { first_primary_err };
     Err(format!("Gemini API 오류: {}", final_err))
+}
+
+pub(crate) fn call_gemini_generate_content_with_model(
+    api_key: &str,
+    request_json: &serde_json::Value,
+) -> Result<(String, String), String> {
+    call_gemini_generate_content_with_model_ext(api_key, request_json, true)
+}
+
+pub(crate) fn call_gemini_generate_content_ext(
+    api_key: &str,
+    request_json: &serde_json::Value,
+    record_usage: bool,
+) -> Result<String, String> {
+    let (text, _) = call_gemini_generate_content_with_model_ext(api_key, request_json, record_usage)?;
+    Ok(text)
 }
 
 pub(crate) fn call_gemini_generate_content(
@@ -409,94 +432,9 @@ pub(crate) fn call_gemini_generate_content(
     Ok(text)
 }
 
-pub(crate) fn transcribe_call_audio_with_gemini(
-    api_key: &str,
-    audio_bytes: &[u8],
-    file_name: &str,
-    contact_label: &str,
-    user_requirement: Option<&str>,
-    user_profile: Option<&str>,
-) -> Result<String, String> {
-    if audio_bytes.is_empty() {
-        return Err("오디오 바이트가 비어 있습니다.".to_string());
-    }
+fn resolve_audio_mime_type(file_name: &str) -> &'static str {
     let lower = file_name.to_lowercase();
-    let mime_type = if lower.ends_with(".mp3") {
-        "audio/mp3"
-    } else if lower.ends_with(".amr") {
-        "audio/amr"
-    } else if lower.ends_with(".wav") {
-        "audio/wav"
-    } else if lower.ends_with(".ogg") {
-        "audio/ogg"
-    } else if lower.ends_with(".aac") {
-        "audio/aac"
-    } else {
-        "audio/mp4" // .m4a 기본값
-    };
-
-    let profile_text = user_profile
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영");
-    let profile_section = format!(
-        "\n\n[👤 사용자(통화 당사자 '나') 개인화 참고 정보]\n\
-         - {}\n\
-         - 주의: 대화 중 사용자의 이름(예: '서현', '정서현')이나 배경 정보가 발화될 때 통화 상대방 이름({})이나 유사 발음의 엉뚱한 인명으로 오인식·치환하지 말고, 위 사용자 개인화 정보를 정확히 참고하여 전사 및 요약하세요.",
-        profile_text, contact_label
-    );
-
-    let req_section = match user_requirement.map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        Some(req_text) => format!(
-            "\n\n[🔥 사용자 추가 요구사항 (반드시 최우선으로 반영할 것)]\n- {}\n위 사용자 추가 요구사항을 요약 및 스크립트 작성에 반드시 반영해 주세요.",
-            req_text
-        ),
-        None => String::new(),
-    };
-
-    let b64_audio = base64_encode(audio_bytes);
-    let prompt = format!(
-        "다음 스마트폰 통화 녹음 음성을 듣고 한국어로 정확하게 분석하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 작성해 주세요 (통화 상대방 이름: {} — 전화번호나 날짜 없이 순수 이름만 표시):\n\n\
-         ## 💡 요약\n\
-         - (통화 목적, 주요 합의 사항, 일정/장소/금액 등 핵심 내용을 1~3줄 불릿 포인트로 명확히 요약)\n\n\
-         ## 📜 스크립트\n\
-         - **[00:00:00] 나**: (실제 발화 내용)\n\
-         - **[00:00:04] {}**: (실제 발화 내용)\n\
-         (반드시 모든 문장마다 해당 문장이 시작되는 오디오 재생 오프셋 시각을 `[00:00:00]` 즉 `[HH:MM:SS]` 8자리 포맷으로 표시하고, 대화 상대방 이름은 전화번호나 날짜 없이 `{}` 이름만 표시하여 시간 순서대로 빠짐없이 작성){}{}",
-        contact_label, contact_label, contact_label, profile_section, req_section
-    );
-
-    let req_json = serde_json::json!({
-        "contents": [{
-            "parts": [
-                { "text": prompt },
-                {
-                    "inline_data": {
-                        "mime_type": mime_type,
-                        "data": b64_audio
-                    }
-                }
-            ]
-        }]
-    });
-
-    call_gemini_generate_content(api_key, &req_json)
-}
-
-/// 독백녹음(음성메모) 또는 회의녹음 음성을 분석하여 **음성메모·회의록 톤**으로 요약 및 스크립트를 생성합니다.
-pub(crate) fn transcribe_voice_recording_with_gemini(
-    api_key: &str,
-    audio_bytes: &[u8],
-    file_name: &str,
-    recording_source: &str,
-    user_requirement: Option<&str>,
-    user_profile: Option<&str>,
-) -> Result<String, String> {
-    if audio_bytes.is_empty() {
-        return Err("오디오 바이트가 비어 있습니다.".to_string());
-    }
-    let lower = file_name.to_lowercase();
-    let mime_type = if lower.ends_with(".mp3") {
+    if lower.ends_with(".mp3") {
         "audio/mp3"
     } else if lower.ends_with(".amr") {
         "audio/amr"
@@ -508,8 +446,91 @@ pub(crate) fn transcribe_voice_recording_with_gemini(
         "audio/aac"
     } else {
         "audio/mp4"
-    };
+    }
+}
 
+pub(crate) fn transcribe_call_audio_with_gemini_ext(
+    api_key: &str,
+    audio_bytes: &[u8],
+    file_name: &str,
+    contact_label: &str,
+    user_requirement: Option<&str>,
+    user_profile: Option<&str>,
+    custom_prompt_template: Option<&str>,
+    record_usage: bool,
+) -> Result<String, String> {
+    if audio_bytes.is_empty() {
+        return Err("오디오 바이트가 비어 있습니다.".to_string());
+    }
+    let mime_type = resolve_audio_mime_type(file_name);
+    let profile_text = user_profile
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영");
+    let profile_section = format!(
+        "\n\n[👤 사용자(통화 당사자 '나') 개인화 참고 정보]\n\
+         - {}\n\
+         - 주의: 대화 중 사용자의 이름(예: '서현', '정서현')이나 배경 정보가 발화될 때 통화 상대방 이름({})이나 유사 발음의 엉뚱한 인명으로 오인식·치환하지 말고, 위 사용자 개인화 정보를 정확히 참고하여 전사 및 요약하세요.",
+        profile_text, contact_label
+    );
+    let req_section = match user_requirement.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(req_text) => format!(
+            "\n\n[🔥 사용자 추가 요구사항 (반드시 최우선으로 반영할 것)]\n- {}\n위 사용자 추가 요구사항을 요약 및 스크립트 작성에 반드시 반영해 주세요.",
+            req_text
+        ),
+        None => String::new(),
+    };
+    let base_template = custom_prompt_template
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(default_call_analysis_prompt);
+    let rendered_base = base_template.replace("{contact_name}", contact_label);
+    let prompt = format!("{}{}{}", rendered_base, profile_section, req_section);
+    let req_json = serde_json::json!({
+        "contents": [{
+            "parts": [
+                { "text": prompt },
+                { "inline_data": { "mime_type": mime_type, "data": base64_encode(audio_bytes) } }
+            ]
+        }]
+    });
+    call_gemini_generate_content_ext(api_key, &req_json, record_usage)
+}
+
+pub(crate) fn transcribe_call_audio_with_gemini(
+    api_key: &str,
+    audio_bytes: &[u8],
+    file_name: &str,
+    contact_label: &str,
+    user_requirement: Option<&str>,
+    user_profile: Option<&str>,
+    custom_prompt_template: Option<&str>,
+) -> Result<String, String> {
+    transcribe_call_audio_with_gemini_ext(
+        api_key,
+        audio_bytes,
+        file_name,
+        contact_label,
+        user_requirement,
+        user_profile,
+        custom_prompt_template,
+        true,
+    )
+}
+
+pub(crate) fn transcribe_voice_recording_with_gemini_ext(
+    api_key: &str,
+    audio_bytes: &[u8],
+    file_name: &str,
+    recording_source: &str,
+    user_requirement: Option<&str>,
+    user_profile: Option<&str>,
+    record_usage: bool,
+) -> Result<String, String> {
+    if audio_bytes.is_empty() {
+        return Err("오디오 바이트가 비어 있습니다.".to_string());
+    }
+    let mime_type = resolve_audio_mime_type(file_name);
     let profile_text = user_profile
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
@@ -520,7 +541,6 @@ pub(crate) fn transcribe_voice_recording_with_gemini(
          - 주의: 발화 내용 중 본인 이름(예: '서현', '정서현')이나 배경 정보가 언급될 때 엉뚱한 인명으로 오인식하지 말고 위 개인화 참고 정보를 기준으로 정확히 전사 및 요약하세요.",
         profile_text
     );
-
     let req_section = match user_requirement.map(|s| s.trim()).filter(|s| !s.is_empty()) {
         Some(req_text) => format!(
             "\n\n[🔥 사용자 추가 요구사항 (반드시 최우선으로 반영할 것)]\n- {}\n위 사용자 추가 요구사항을 요약 및 스크립트 작성에 반드시 반영해 주세요.",
@@ -528,8 +548,6 @@ pub(crate) fn transcribe_voice_recording_with_gemini(
         ),
         None => String::new(),
     };
-
-    let b64_audio = base64_encode(audio_bytes);
     let prompt = format!(
         "다음 음성녹음 파일(출처: {}, 파일명: {})은 사용자의 독백 음성메모 또는 대면 회의 녹음입니다.\n\
          음성메모·회의록 전문 톤(Voice Memo & Meeting Minutes Tone)을 적극 활용하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 한국어로 작성해 주세요:\n\n\
@@ -541,46 +559,55 @@ pub(crate) fn transcribe_voice_recording_with_gemini(
          - **[00:00:00] 발화**: (문장마다 해당 문장이 시작되는 오디오 재생 오프셋 시각을 반드시 `[00:00:00]` 즉 `[HH:MM:SS]` 포맷으로 표시하여 시간 순서대로 빠짐없이 기록){}{}",
         recording_source, file_name, profile_section, req_section
     );
-
     let req_json = serde_json::json!({
         "contents": [{
             "parts": [
                 { "text": prompt },
-                {
-                    "inline_data": {
-                        "mime_type": mime_type,
-                        "data": b64_audio
-                    }
-                }
+                { "inline_data": { "mime_type": mime_type, "data": base64_encode(audio_bytes) } }
             ]
         }]
     });
+    call_gemini_generate_content_ext(api_key, &req_json, record_usage)
+}
 
-    call_gemini_generate_content(api_key, &req_json)
+pub(crate) fn transcribe_voice_recording_with_gemini(
+    api_key: &str,
+    audio_bytes: &[u8],
+    file_name: &str,
+    recording_source: &str,
+    user_requirement: Option<&str>,
+    user_profile: Option<&str>,
+) -> Result<String, String> {
+    transcribe_voice_recording_with_gemini_ext(
+        api_key,
+        audio_bytes,
+        file_name,
+        recording_source,
+        user_requirement,
+        user_profile,
+        true,
+    )
 }
 
 /// LLM 토큰 부족/한도 초과 발생 시 고갈 시점과 5시간(`5 * 3600 * 1000` ms) 후 자동 재시도 시점을 DB에 기록합니다.
 pub(crate) fn record_gemini_quota_exhaustion(conn: &Connection, err_msg: &str) -> (String, String) {
     let now = chrono::Local::now();
     let now_ms = now.timestamp_millis();
-    let retry_ms = now_ms + 5 * 3600 * 1000; // 5시간 후 재시도
+    let retry_ms = now_ms + 5 * 3600 * 1000;
     let exhausted_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
     let (retry_d, retry_t) = epoch_ms_to_local_date_time(retry_ms);
     let retry_str = format!("{} {}", retry_d, retry_t);
-
     for (k, v) in [
         ("gemini_quota_exhausted_at_ms", now_ms.to_string()),
         ("gemini_quota_retry_after_ms", retry_ms.to_string()),
         ("gemini_last_quota_error", err_msg.to_string()),
     ] {
         let _ = conn.execute(
-            "INSERT INTO mobile_sync_meta (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO mobile_sync_meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![k, v],
         );
     }
     sync_gemini_usage_lock_state(retry_ms);
-
     (exhausted_str, retry_str)
 }
 
@@ -591,12 +618,15 @@ pub(crate) fn clear_gemini_quota_exhaustion(conn: &Connection) {
         "gemini_last_quota_error",
     ] {
         let _ = conn.execute(
-            "INSERT INTO mobile_sync_meta (key, value) VALUES (?1, '0')
-             ON CONFLICT(key) DO UPDATE SET value = '0'",
+            "INSERT INTO mobile_sync_meta (key, value) VALUES (?1, '0') ON CONFLICT(key) DO UPDATE SET value = '0'",
             params![k],
         );
     }
-    sync_gemini_usage_lock_state(0);
+    let (today_tok, _, _, _) = read_gemini_token_usage_with_lock(false);
+    let daily_limit = read_ai_daily_token_limit(Some(conn));
+    if today_tok < daily_limit {
+        sync_gemini_usage_lock_state(0);
+    }
 }
 
 /// `ai_*.log` 파일(최근 2개 파일)을 역순으로 스캔하여 가장 최근의 AI 이벤트가
@@ -679,7 +709,6 @@ pub(crate) fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection
                 |r| r.get::<_, i64>(0),
             )
             .unwrap_or(0) as usize;
-
         if rt_ms > now_ms {
             is_quota_locked = true;
             sync_gemini_usage_lock_state(rt_ms);
@@ -690,24 +719,16 @@ pub(crate) fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection
             let (d, t) = epoch_ms_to_local_date_time(rt_ms);
             retry_str = format!("{} {}", d, t);
             last_err = conn
-                .query_row(
-                    "SELECT value FROM mobile_sync_meta WHERE key = 'gemini_last_quota_error'",
-                    [],
-                    |r| r.get::<_, String>(0),
-                )
+                .query_row("SELECT value FROM mobile_sync_meta WHERE key = 'gemini_last_quota_error'", [], |r| r.get::<_, String>(0))
                 .ok()
                 .filter(|s| s != "0")
                 .unwrap_or_default();
         } else if rt_ms > 0 {
-            // 5시간 락 시각이 경과한 경우 만료된 락 상태를 해제하여 날짜 변경분 사용량 갱신 허용
             clear_gemini_quota_exhaustion(conn);
         }
     }
-
-    // DB에 락이 없거나 누락된 경우에도 ai_*.log 에서 5시간 락이 감지되면 반영
     if !is_quota_locked {
-        if let Some((log_rt_ms, log_ex_str, log_rt_str, log_err)) = detect_quota_lock_from_ai_logs()
-        {
+        if let Some((log_rt_ms, log_ex_str, log_rt_str, log_err)) = detect_quota_lock_from_ai_logs() {
             if log_rt_ms > now_ms {
                 is_quota_locked = true;
                 exhausted_str = log_ex_str;
@@ -717,30 +738,46 @@ pub(crate) fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection
             }
         }
     }
-
-    // gemini_usage.json 에 저장된 quota_retry_after_ms 가 아직 유효한 경우에도 폴백으로 반영
     if !is_quota_locked {
         let usage_path = resolve_local_appdata_gemini_usage_path();
         if let Ok(raw) = fs::read_to_string(&usage_path) {
             if let Ok(jv) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let saved_rt_ms = jv
-                    .get("quota_retry_after_ms")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
+                let saved_rt_ms = jv.get("quota_retry_after_ms").and_then(|v| v.as_i64()).unwrap_or(0);
                 if saved_rt_ms > now_ms {
                     is_quota_locked = true;
                     let (d, t) = epoch_ms_to_local_date_time(saved_rt_ms);
                     retry_str = format!("{} {}", d, t);
-                    let ex_ms = saved_rt_ms - 5 * 60 * 60 * 1000;
-                    let (ed, et) = epoch_ms_to_local_date_time(ex_ms);
+                    let (ed, et) = epoch_ms_to_local_date_time(saved_rt_ms - 5 * 60 * 60 * 1000);
                     exhausted_str = format!("{} {}", ed, et);
                 }
             }
         }
     }
-
     let (today_used_tokens, total_used_tokens, today_request_count, last_request_tokens) =
         read_gemini_token_usage_with_lock(is_quota_locked);
+    let daily_limit = read_ai_daily_token_limit(conn_opt);
+    if !is_quota_locked && today_used_tokens >= daily_limit {
+        let usage_path = resolve_local_appdata_gemini_usage_path();
+        let mut base_ex_ms = now_ms;
+        if let Ok(raw) = fs::read_to_string(&usage_path) {
+            if let Ok(jv) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(upd_str) = jv.get("updated_at").and_then(|v| v.as_str()) {
+                    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(upd_str.trim(), "%Y-%m-%d %H:%M:%S") {
+                        if let Some(dt) = ndt.and_local_timezone(chrono::Local).earliest() {
+                            base_ex_ms = dt.timestamp_millis();
+                        }
+                    }
+                }
+            }
+        }
+        let computed_rt_ms = base_ex_ms + 5 * 60 * 60 * 1000;
+        let final_rt_ms = if computed_rt_ms > now_ms { computed_rt_ms } else { now_ms + 5 * 60 * 60 * 1000 };
+        let (rd, rt) = epoch_ms_to_local_date_time(final_rt_ms);
+        retry_str = format!("{} {}", rd, rt);
+        let (ed, et) = epoch_ms_to_local_date_time(base_ex_ms);
+        exhausted_str = format!("{} {}", ed, et);
+        sync_gemini_usage_lock_state(final_rt_ms);
+    }
 
     GeminiApiKeyStatus {
         has_key: !key.is_empty(),
@@ -759,3 +796,185 @@ pub(crate) fn build_gemini_api_key_status_with_conn(conn_opt: Option<&Connection
         auto_call_transcription: auto_transcribe,
     }
 }
+
+#[tauri::command]
+pub(crate) fn get_gemini_api_key_status(state: State<'_, AppState>) -> Result<GeminiApiKeyStatus, String> {
+    let conn = open_db(&state.db_path).ok();
+    Ok(build_gemini_api_key_status_with_conn(conn.as_ref()))
+}
+
+#[tauri::command]
+pub(crate) async fn set_auto_call_transcription(
+    enabled: bool,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<GeminiApiKeyStatus, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&db_path)?;
+        let setting_path = resolve_projects_setting_json_path(&conn);
+        let mut settings = if setting_path.exists() {
+            fs::read_to_string(&setting_path)
+                .ok()
+                .and_then(|r| serde_json::from_str::<MyLoreAppSettings>(&r).ok())
+                .unwrap_or_default()
+        } else {
+            MyLoreAppSettings::default()
+        };
+        settings.auto_call_transcription = enabled;
+        settings.settings_file_path = setting_path.to_string_lossy().to_string();
+        if let Ok(json_str) = serde_json::to_string_pretty(&settings) {
+            let _ = fs::write(&setting_path, json_str);
+        }
+        let _ = app.emit("app-settings-updated", &settings);
+
+        if enabled {
+            let db_clone = db_path.clone();
+            let app_clone = app.clone();
+            thread::spawn(move || {
+                let _ = process_pending_call_transcriptions(&db_clone, Some(&app_clone), false);
+            });
+        }
+
+        Ok(build_gemini_api_key_status_with_conn(Some(&conn)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn save_and_verify_gemini_api_key(
+    api_key: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<GeminiApiKeyStatus, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let secret_path = resolve_local_appdata_gemini_key_path();
+        let trimmed = api_key.trim().to_string();
+
+        if trimmed.is_empty() {
+            let _ = fs::remove_file(&secret_path);
+            let conn = open_db(&db_path).ok();
+            return Ok(build_gemini_api_key_status_with_conn(conn.as_ref()));
+        }
+
+        let test_req = serde_json::json!({
+            "contents": [{
+                "parts": [{ "text": "Reply with OK" }]
+            }],
+            "generationConfig": {
+                "maxOutputTokens": 8
+            }
+        });
+        let (_, active_model) = call_gemini_generate_content_with_model(&trimmed, &test_req)?;
+
+        let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let save_json = serde_json::json!({
+            "api_key": trimmed,
+            "verified_at": now_str,
+            "model": active_model
+        });
+        fs::write(
+            &secret_path,
+            serde_json::to_string_pretty(&save_json).unwrap_or_default(),
+        )
+        .map_err(|e| format!("보안 키 파일 저장 실패: {}", e))?;
+
+        if let Ok(conn) = open_db(&db_path) {
+            clear_gemini_quota_exhaustion(&conn);
+        }
+
+        let db_clone = db_path.clone();
+        let app_clone = app.clone();
+        thread::spawn(move || {
+            let _ = process_pending_call_transcriptions(&db_clone, Some(&app_clone), true);
+        });
+
+        let conn = open_db(&db_path).ok();
+        Ok(build_gemini_api_key_status_with_conn(conn.as_ref()))
+    })
+    .await
+    .map_err(|e| format!("백그라운드 검증 스레드 오류: {}", e))?
+}
+
+#[tauri::command]
+pub(crate) async fn transcribe_local_audio_file(
+    audio_path: String,
+    contact_name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let db_path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (api_key, _) = read_local_gemini_api_key();
+        if api_key.is_empty() {
+            return Err(
+                "등록된 Gemini API 키가 없습니다. 먼저 Gemini API 키를 등록해 주세요.".to_string(),
+            );
+        }
+        let src_path = PathBuf::from(&audio_path);
+        if !src_path.exists() {
+            return Err(format!("오디오 파일을 찾을 수 없습니다: {}", audio_path));
+        }
+        let raw_bytes = fs::read(&src_path).map_err(|e| format!("파일 읽기 오류: {}", e))?;
+        let (audio_bytes, repaired) = strip_multipart_prefix_if_present(&raw_bytes);
+        if repaired {
+            let _ = fs::write(&src_path, &audio_bytes);
+        }
+        let file_name = src_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "CallRec.m4a".to_string());
+        let file_stem = src_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "통화상대".to_string());
+
+        let conn = open_db(&db_path)?;
+        let user_profile = read_ai_user_profile(&conn);
+        let contacts_map = load_mobile_contacts_map(&conn);
+        let (parsed_contact, rec_date, rec_time) =
+            parse_call_audio_filename_meta(&file_stem, &contacts_map);
+        let contact_label = if contact_name.trim().is_empty() {
+            parsed_contact
+        } else {
+            extract_clean_contact_name(contact_name.trim(), &contacts_map)
+        };
+
+        let calls_dir = get_archive_mobile_dir(&conn, "calls");
+        let audio_dir = calls_dir.join("audio");
+        let _ = fs::create_dir_all(&audio_dir);
+        let dest_audio = audio_dir.join(&file_name);
+        if src_path != dest_audio {
+            let _ = fs::write(&dest_audio, &audio_bytes);
+        }
+
+        let combined_profile =
+            match build_contact_ai_context_for_target(&conn, &contact_label, false) {
+                Some(ctx) => format!("{}{}", user_profile, ctx),
+                None => user_profile.clone(),
+            };
+        let call_prompt_tpl = read_call_analysis_prompt(&conn);
+
+        match transcribe_call_audio_with_gemini(
+            &api_key, &audio_bytes, &file_name, &contact_label, None, Some(&combined_profile), Some(&call_prompt_tpl),
+        ) {
+            Ok(transcript) => {
+                write_call_recording_markdown(&conn, &file_name, &contact_label, &rec_date, &rec_time, Some(&transcript), None);
+                clear_gemini_quota_exhaustion(&conn);
+                upsert_single_recording_into_lifelog_db(&conn, false, &file_stem, &contact_label, &rec_date, &rec_time, Some(&transcript), "", "");
+                log_gemini("INFO", &format!("[Gemini] {} 스크립트 생성 완료", sanitize_filename_stem(&file_stem)));
+                Ok(transcript)
+            }
+            Err(err_msg) => {
+                let (ex_str, rt_str) = record_gemini_quota_exhaustion(&conn, &err_msg);
+                write_call_recording_markdown(&conn, &file_name, &contact_label, &rec_date, &rec_time, None, Some((&ex_str, &rt_str, &err_msg)));
+                upsert_single_recording_into_lifelog_db(&conn, false, &file_stem, &contact_label, &rec_date, &rec_time, None, "", "");
+                Err(format!("{} (토큰 부족/오류 기록 완료 · 5시간 후인 {} 에 자동 재시도 예약)", err_msg, rt_str))
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("백그라운드 음성 변환 스레드 오류: {}", e))?
+}
+

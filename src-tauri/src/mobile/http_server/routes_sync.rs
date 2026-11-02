@@ -542,3 +542,160 @@ pub(crate) fn handle_sync_app_usage(mut request: tiny_http::Request, db_path: Pa
         }),
     );
 }
+
+/// `else if url_path == "/api/v1/sync/location-logs"`
+/// M#4 Step 1: 모바일 기기의 배터리 절약형 GPS · Wi-Fi 접속/해제 동선 로깅 수신
+pub(crate) fn handle_sync_location_logs(mut request: tiny_http::Request, db_path: PathBuf) {
+    let mut body_str = String::new();
+    let _ = request.as_reader().read_to_string(&mut body_str);
+    if !check_request_token_fast(&request, &db_path) {
+        respond_json(
+            request,
+            401,
+            serde_json::json!({ "ok": false, "error": "Invalid X-MyLore-Token" }),
+        );
+        return;
+    }
+
+    let json_val: serde_json::Value =
+        serde_json::from_str(&body_str).unwrap_or(serde_json::json!({}));
+    let (dev_id, dev_name) = extract_request_device_headers(&request, Some(&json_val));
+
+    let empty_vec = Vec::new();
+    let items = json_val
+        .get("items")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty_vec);
+
+    let mut inserted_count = 0usize;
+    let mut max_ts = 0i64;
+
+    if let Ok(conn) = open_db(&db_path) {
+        if items.is_empty() {
+            // 단일 객체 요청 지원
+            let event_type = json_val
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("passive");
+            let place_label = json_val
+                .get("place_label")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let wifi_ssid = json_val
+                .get("wifi_ssid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let wifi_bssid = json_val
+                .get("wifi_bssid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let lat = json_val
+                .get("latitude")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let lng = json_val
+                .get("longitude")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let acc = json_val
+                .get("accuracy_m")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let bat = json_val
+                .get("battery_pct")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1) as i32;
+            let ts = json_val.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+            if !wifi_ssid.is_empty() || lat.abs() > 0.0001 || !place_label.is_empty() {
+                if insert_location_movement_log(
+                    &conn,
+                    &dev_id,
+                    &dev_name,
+                    event_type,
+                    place_label,
+                    wifi_ssid,
+                    wifi_bssid,
+                    lat,
+                    lng,
+                    acc,
+                    bat,
+                    ts,
+                ) {
+                    inserted_count += 1;
+                }
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+            }
+        } else {
+            for item in items {
+                let event_type = item
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("passive");
+                let place_label = item
+                    .get("place_label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let wifi_ssid = item
+                    .get("wifi_ssid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let wifi_bssid = item
+                    .get("wifi_bssid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let lat = item.get("latitude").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let lng = item
+                    .get("longitude")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let acc = item
+                    .get("accuracy_m")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let bat = item
+                    .get("battery_pct")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(-1) as i32;
+                let ts = item.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+                if insert_location_movement_log(
+                    &conn,
+                    &dev_id,
+                    &dev_name,
+                    event_type,
+                    place_label,
+                    wifi_ssid,
+                    wifi_bssid,
+                    lat,
+                    lng,
+                    acc,
+                    bat,
+                    ts,
+                ) {
+                    inserted_count += 1;
+                }
+                if ts > max_ts {
+                    max_ts = ts;
+                }
+            }
+        }
+    }
+
+    log_comm(
+        "INFO",
+        &format!(
+            "[POST /api/v1/sync/location-logs] 기기={} 신규 동선 로깅 {}건 적재",
+            dev_name, inserted_count
+        ),
+    );
+    respond_json(
+        request,
+        200,
+        serde_json::json!({
+            "ok": true,
+            "inserted_count": inserted_count,
+            "last_location_ts": max_ts
+        }),
+    );
+}

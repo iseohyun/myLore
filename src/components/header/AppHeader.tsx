@@ -105,11 +105,11 @@ export function AppHeader(props: AppHeaderProps) {
             activeTabPath === 'mylore://dashboard/logs' ? 'active' : ''
           }`}
           onClick={() => openDashboardTab('logs')}
-          title={`로그 기록 조회 대쉬보드 (${
+          title={`의사결재 대쉬보드 · 결재창 (${
             getShortcutLabel('toggle_log_terminal') || 'Ctrl+`'
           })`}
         >
-          📋
+          ⚖️
         </button>
         <button
           className={`hamburger-menu-btn ${

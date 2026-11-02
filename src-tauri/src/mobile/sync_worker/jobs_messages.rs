@@ -2,6 +2,29 @@
 
 use crate::*;
 
+/// 시스템 노이즈/지속 상태바 알림(무선/유선 충전 중 배터리 잔량 갱신, 동기화 앱 자체 포그라운드 알림 등) 여부 판별
+fn is_noisy_system_notification(pkg: &str, title: &str, text: &str) -> bool {
+    let p = pkg.trim();
+    if p == "com.iseohyun.mylore.sync" {
+        return true;
+    }
+    if p == "com.android.systemui" || p == "android" {
+        let combined = format!("{} {}", title, text);
+        if combined.contains("충전 중")
+            || combined.contains("충전완료")
+            || combined.contains("충전 완료")
+            || combined.contains("무선 충전")
+            || combined.contains("고속 충전")
+            || combined.contains("초고속 충전")
+            || combined.contains("USB을(를) 충전")
+            || combined.contains("배터리 충전")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// `SyncWorkerJob::Notifications` 처리
 pub(crate) fn handle_notifications_job(
     app_handle: &AppHandle,
@@ -26,12 +49,40 @@ pub(crate) fn handle_notifications_job(
         if ts > max_ts {
             max_ts = ts;
         }
+        if is_noisy_system_notification(&pkg, &title, &text) {
+            skipped += 1;
+            continue;
+        }
         let (sent_date, sent_time) = epoch_ms_to_local_date_time(ts);
-        let dedup_raw = format!(
+        // 초(SS) 단위 재발행으로 인해 동일 날짜·동일 내용의 상태바 알림이 신규 알림으로 무한 적재되는 것을 방지하기 위해
+        // (pkg, sent_date, title, text) 기준으로 중복 키를 생성하고 기존 sent_time 포함 키도 함께 대조합니다.
+        let dedup_day_raw = format!("noti|{}|{}|{}|{}", pkg, sent_date, title, text);
+        let dedup_key = blake3::hash(dedup_day_raw.as_bytes()).to_hex().to_string();
+        let legacy_dedup_raw = format!(
             "noti|{}|{}|{}|{}|{}",
             pkg, sent_date, sent_time, title, text
         );
-        let dedup_key = blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
+        let legacy_dedup_key = blake3::hash(legacy_dedup_raw.as_bytes())
+            .to_hex()
+            .to_string();
+
+        let already_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM lifelog_messages
+                 WHERE source = 'notification'
+                   AND (dedup_key = ?1 OR dedup_key = ?2
+                        OR (room_or_sender = ?3 AND sent_date = ?4 AND sender = ?5 AND message = ?6))
+                 LIMIT 1",
+                params![dedup_key, legacy_dedup_key, pkg, sent_date, title, text],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if already_exists {
+            skipped += 1;
+            continue;
+        }
+
         let affected = conn
             .execute(
                 "INSERT OR IGNORE INTO lifelog_messages
@@ -45,44 +96,49 @@ pub(crate) fn handle_notifications_job(
             .unwrap_or(0);
         if affected > 0 {
             downloaded += 1;
+            if pkg.trim() != "com.kakao.talk" {
+                let ym = if sent_date.len() >= 7 {
+                    &sent_date[..7]
+                } else {
+                    "2026-10"
+                };
+                let md_line = format!(
+                    "- **[{}] [{}] {}**: {}",
+                    sent_time,
+                    pkg,
+                    title.replace('\n', " "),
+                    text.replace('\n', " ")
+                );
+                md_coalesced
+                    .entry((
+                        "notifications".to_string(),
+                        format!("{}_알람내역", ym),
+                        format!("[모바일 알람/알림 내역] {}", ym),
+                        "[\"알람\", \"알림\", \"알람내역\", \"푸시알림\", \"상단바알림\"]".to_string(),
+                    ))
+                    .or_default()
+                    .push((sent_date.clone(), md_line));
+            }
+
+            let _ = try_insert_finance_from_mobile_text(
+                &conn,
+                &pkg,
+                &title,
+                &text,
+                &sent_date,
+                &sent_time,
+                "모바일 실시간 푸시 알림 적재",
+            );
         } else {
             skipped += 1;
         }
-        let ym = if sent_date.len() >= 7 {
-            &sent_date[..7]
-        } else {
-            "2026-10"
-        };
-        let md_line = format!(
-            "- **[{}] [{}] {}**: {}",
-            sent_time,
-            pkg,
-            title.replace('\n', " "),
-            text.replace('\n', " ")
-        );
-        md_coalesced
-            .entry((
-                "notifications".to_string(),
-                format!("{}_알람내역", ym),
-                format!("[모바일 알람/알림 내역] {}", ym),
-                "[\"알람\", \"알림\", \"알람내역\", \"푸시알림\", \"상단바알림\"]".to_string(),
-            ))
-            .or_default()
-            .push((sent_date.clone(), md_line));
-
-        let _ = try_insert_finance_from_mobile_text(
-            &conn,
-            &pkg,
-            &title,
-            &text,
-            &sent_date,
-            &sent_time,
-            "모바일 실시간 푸시 알림 적재",
-        );
     }
+    let _ = process_and_consume_kakao_notifications(&conn);
     if max_ts > 0 {
         set_meta_i64_max(&conn, "last_noti_ts", max_ts);
-        mark_domain_sync_state_unacked(&conn, "notification", max_ts, None);
+        if downloaded > 0 {
+            mark_domain_sync_state_unacked(&conn, "notification", max_ts, None);
+        }
         if !dev_id.is_empty() {
             let _ = conn.execute(
                 "UPDATE paired_devices SET last_noti_ts = MAX(COALESCE(last_noti_ts, 0), ?1) WHERE device_id = ?2",
@@ -90,26 +146,41 @@ pub(crate) fn handle_notifications_job(
             );
         }
     }
-    let pct = emit_live_service_sync_progress(
-        &app_handle,
-        "notification",
-        current_index,
-        total_count,
-        skipped,
-        downloaded,
-        Some(&format!(
-            "알림 {}/{}건 처리 중",
+    if downloaded > 0 {
+        let pct = emit_live_service_sync_progress(
+            &app_handle,
+            "notification",
             current_index,
-            total_count
-        )),
-    );
-    log_sync(
-        "INFO",
-        &format!(
-            "[Notifications] 알림 {}/{}건 적재 ({}% · 신규 {}건, 중복 {}건)",
-            current_index, total_count, pct, downloaded, skipped
-        ),
-    );
+            total_count,
+            skipped,
+            downloaded,
+            Some(&format!(
+                "알림 {}/{}건 처리 중 (신규 {}건)",
+                current_index,
+                total_count,
+                downloaded
+            )),
+        );
+        log_sync(
+            "INFO",
+            &format!(
+                "[Notifications] 알림 {}/{}건 적재 ({}% · 신규 {}건, 중복/시스템무시 {}건)",
+                current_index, total_count, pct, downloaded, skipped
+            ),
+        );
+    } else {
+        // 신규 알림이 0건(모두 시스템 충전 알림 또는 기보유 중복 알림)인 경우 진행률 바를 다시 running으로 깨우지 않고 조용히 스킵 반영
+        let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
+        if let Ok(mut guard) = mutex.lock() {
+            if let Some(st) = guard.steps.iter_mut().find(|s| s.key == "notification") {
+                st.skipped_count = st.skipped_count.saturating_add(skipped);
+                st.total_count = st.total_count.max(st.skipped_count + st.downloaded_count);
+                st.percent = 100;
+                st.status = "done".to_string();
+                rebuild_step_segments(st);
+            }
+        }
+    }
 }
 
 /// `SyncWorkerJob::Sms` 처리
@@ -546,6 +617,7 @@ pub(crate) fn handle_kakao_chat_job(
         raw_text.len() as u64,
         0,
     );
+    let _ = process_and_consume_kakao_notifications(&conn);
 
     let eff_kakao_watermark = eff_msg_ts.max(now_ms);
     set_meta_i64_max(&conn, "last_kakao_ts", eff_kakao_watermark);

@@ -390,7 +390,7 @@ export function MenuBar({
       },
     },
     {
-      label: '📋 로그 대쉬보드 열기',
+      label: '⚖️ 의사결재 대쉬보드 (결재창) 열기',
       shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
       action: () => openDashboardTab('logs'),
     },
@@ -580,7 +580,7 @@ export function MenuBar({
       action: () => openDashboardTab('diary'),
     },
     {
-      label: '📋 로그 대쉬보드',
+      label: '⚖️ 의사결재 대쉬보드 (결재창)',
       shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
       action: () => openDashboardTab('logs'),
     },

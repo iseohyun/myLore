@@ -32,6 +32,19 @@ pub(crate) fn handle_open_files(
     respond_json(request, 200, serde_json::json!({ "ok": true }));
 }
 
+/// 분리된 독립 AI 큐 워커 프로세스(`--ai-queue-worker`)가 메인 프로세스(살아있을 경우)로 완료/재시도 이벤트를 전달하는 내부 IPC 엔드포인트
+pub(crate) fn handle_internal_ai_event(
+    mut request: tiny_http::Request,
+    app_handle: AppHandle,
+) {
+    let mut body_str = String::new();
+    let _ = request.as_reader().read_to_string(&mut body_str);
+    if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&body_str) {
+        let _ = app_handle.emit("mobile-sync-event", payload);
+    }
+    respond_json(request, 200, serde_json::json!({ "ok": true }));
+}
+
 /// `else if url_path == "/api/v1/status" || url_path == "/api/v1/sync/watermarks"`
 pub(crate) fn handle_status_and_watermarks(
     mut request: tiny_http::Request,
@@ -561,15 +574,33 @@ pub(crate) fn handle_batch_init(mut request: tiny_http::Request, app_handle: App
             None,
         )
     } else {
-        emit_live_service_sync_progress(
-            &app_handle,
-            service,
-            0,
-            total_count.max(1),
-            0,
-            0,
-            Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
-        )
+        // 이미 해당 단계가 100% 완료(done)된 상태에서 소량 실시간 알림/문자 batch-init이 도착한 경우
+        // 0%로 되돌려 진행률 바가 깜빡이지 않도록 기존 완료 상태를 유지합니다.
+        let already_done = LIVE_SYNC_PROGRESS
+            .get_or_init(|| Mutex::new(default_live_sync_progress()))
+            .lock()
+            .ok()
+            .and_then(|g| {
+                let nk = normalize_sync_service_key(service);
+                g.steps
+                    .iter()
+                    .find(|s| s.key == nk)
+                    .map(|s| s.status == "done" && s.percent >= 100)
+            })
+            .unwrap_or(false);
+        if already_done {
+            100
+        } else {
+            emit_live_service_sync_progress(
+                &app_handle,
+                service,
+                0,
+                total_count.max(1),
+                0,
+                0,
+                Some(&format!("총 {}건 전송 준비 완료 (0%)", total_count)),
+            )
+        }
     };
     log_comm(
         "INFO",
@@ -722,7 +753,8 @@ pub(crate) fn handle_check_hashes(mut request: tiny_http::Request, db_path: Path
                         |_| Ok(true),
                     )
                     .unwrap_or(false);
-                if exists_in_sync || exists_in_media {
+                let exists_in_origin: bool = is_hash_in_origin_registry(&conn, &h);
+                if exists_in_sync || exists_in_media || exists_in_origin {
                     mark_hash_synced_in_memory(&h);
                 } else {
                     missing_hashes.push(h);

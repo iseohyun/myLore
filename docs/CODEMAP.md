@@ -53,7 +53,7 @@ flowchart LR
 | `/api/v1/sync/batch-init` | `handle_batch_init` | `routes_core.rs` |
 | `/api/v1/pair/confirm` | `handle_pair_confirm` | `routes_core.rs` |
 | `/api/v1/sync/check-hashes` | `handle_check_hashes` | `routes_core.rs` |
-| `/api/v1/sync/notifications` · `sms` · `call-logs` · `kakao-chats` · `contacts` · `app-usage` | `handle_sync_*` | `routes_sync.rs` |
+| `/api/v1/sync/notifications` · `sms` · `call-logs` · `kakao-chats` · `contacts` · `app-usage` · `location-logs` | `handle_sync_*` | `routes_sync.rs` |
 | `/api/v1/sync/call-recordings` · `media` · `samsung-health` | `handle_sync_*` | `routes_media.rs` |
 | `/api/v1/local-media` | `handle_local_media` | `routes_media.rs` |
 | 그 외 (Chrome App Mode 정적 파일) | `handle_static_or_fallback` | `routes_media.rs` |
@@ -75,20 +75,34 @@ SQLite 메타 DB 연결, 스키마 생성/마이그레이션 및 `mobile_sync_me
 - **커맨드**: `get_all_finance_transactions`, `parse_notification_into_finance`, `import_finance_rows`
 - **함수**: `try_insert_finance_from_mobile_text`
 
-### `src-tauri/src/gemini/client.rs` (590줄)
+### `src-tauri/src/gemini/client.rs` (990줄)
 
 Gemini API 클라이언트: `ureq` (`native-tls-no-default` + `PlatformVerifier` + `x-goog-api-key` 헤더) 인메모리 HTTP 호출, API 키/토큰 사용량 저장, 모델 폴백, 음성 → 텍스트 변환, 쿼터 상태.
 
 - **전역 상태**: `GEMINI_HTTP_AGENT`
-- **함수**: `resolve_local_appdata_gemini_key_path`, `read_local_gemini_api_key_full`, `read_local_gemini_api_key`, `resolve_local_appdata_gemini_usage_path`, `record_gemini_token_usage`, `read_gemini_token_usage`, `is_auto_call_transcription_enabled`, `mask_gemini_api_key`, `extract_recommended_model_from_error`, `discover_available_gemini_model`, `call_gemini_generate_content_single_model`, `call_gemini_generate_content_with_model`, `call_gemini_generate_content`, `transcribe_call_audio_with_gemini`, `transcribe_voice_recording_with_gemini`, `record_gemini_quota_exhaustion`, `clear_gemini_quota_exhaustion`, `build_gemini_api_key_status_with_conn`
+- **커맨드**: `get_gemini_api_key_status`, `set_auto_call_transcription`, `save_and_verify_gemini_api_key`, `transcribe_local_audio_file`
+- **함수**: `resolve_local_appdata_gemini_key_path`, `read_local_gemini_api_key_full`, `read_local_gemini_api_key`, `resolve_local_appdata_gemini_usage_path`, `record_gemini_token_usage`, `read_gemini_token_usage`, `is_auto_call_transcription_enabled`, `mask_gemini_api_key`, `extract_recommended_model_from_error`, `discover_available_gemini_model`, `call_gemini_generate_content_single_model`, `call_gemini_generate_content_with_model`, `call_gemini_generate_content`, `transcribe_call_audio_with_gemini`, `transcribe_voice_recording_with_gemini`, `record_gemini_quota_exhaustion`, `clear_gemini_quota_exhaustion`, `detect_quota_lock_from_ai_logs`, `build_gemini_api_key_status_with_conn`
 
-### `src-tauri/src/gemini/transcription.rs` (707줄)
+### `src-tauri/src/gemini/mod.rs` (401줄)
 
-통화 녹음 자동 스크립트화 워커 및 Gemini 관련 Tauri 커맨드.
+통화 AI 변환 주간 통계(`get_call_ai_transcription_stats`) 및 의사결재 대시보드용 통화 스크립트 검토 목록(`get_call_approval_items`) 조회 커맨드.
 
-- **커맨드**: `retry_pending_call_transcriptions`, `get_gemini_api_key_status`, `set_auto_call_transcription`, `transcribe_single_call_item`, `update_call_transcript_stage`, `save_and_verify_gemini_api_key`, `transcribe_local_audio_file`
-- **함수**: `process_pending_call_transcriptions`, `spawn_call_transcript_retry_worker`
+- **커맨드**: `get_call_ai_transcription_stats`, `get_call_approval_items`
+
+### `src-tauri/src/gemini/transcription.rs` (969줄)
+
+통화 녹음 자동 스크립트화 워커 및 멀티 AI 에이전트 순차 배분(`execute_distributed_call_transcription`) Tauri 커맨드.
+
+- **커맨드**: `retry_pending_call_transcriptions`, `transcribe_single_call_item`, `update_call_transcript_stage`
+- **함수**: `process_pending_call_transcriptions`, `spawn_call_transcript_retry_worker`, `execute_distributed_call_transcription`, `extract_existing_valid_script_body`, `inject_llm_provider_into_md`
 - **전역 상태**: `IS_TRANSCRIPTION_RUNNING`
+
+### `src-tauri/src/gemini/multi_llm.rs` (756줄)
+
+다중 LLM(Anthropic Claude, OpenAI GPT, xAI Grok) API 키·기본 모델·토큰 사용량·쿼터 락·크레딧(`$`) 잔액 관리, xAI Management API(`/v1/billing/teams/{team_id}/prepaid/balance`) 및 Anthropic Admin API(`/v1/organizations/cost_report`) 연동, Round-Robin 에이전트 순차 배분(`pick_next_round_robin_agent`) 및 반려/교정 호출(`run_text_agent_call_script_revision_or_refinement`).
+
+- **커맨드**: `get_multi_llm_providers_status`, `set_active_text_llm_provider`, `save_and_verify_llm_provider_key`, `save_llm_provider_billing_config`
+- **함수**: `get_unlocked_available_agents`, `pick_next_round_robin_agent`, `run_text_agent_call_script_revision_or_refinement`, `call_claude_messages_api`, `call_openai_compatible_chat_api`, `fetch_grok_management_prepaid_balance`, `fetch_claude_admin_cost_report`, `estimate_provider_cost_usd`
 
 ### `src-tauri/src/lib.rs` (190줄)
 
@@ -115,12 +129,12 @@ myLore Tauri 백엔드 크레이트 루트.
 - **커맨드**: `get_mobile_contacts_map`, `get_contact_ai_profiles`, `save_contact_ai_profile`
 - **함수**: `normalize_phone_digits`, `load_mobile_contacts_map`, `resolve_contact_display`, `load_contact_ai_profiles_map`, `persist_contact_ai_profiles_to_vault`, `extract_groups_from_profile_text`, `build_contact_ai_context_for_target`
 
-### `src-tauri/src/lifelog/kakao.rs` (443줄)
+### `src-tauri/src/lifelog/kakao.rs` (781줄)
 
-카카오톡 대화 마크다운: 가져오기, 병합 마이그레이션, 미디어 보강, 멀티파트 파싱.
+카카오톡 대화 마크다운: 가져오기, 병합 마이그레이션, 미디어 보강, 멀티파트 파싱, 비즈니스·알림톡 채널 자동 기록 후 알림 삭제, 개인/단톡방 카톡 업데이트 요청 집계 및 해제.
 
-- **커맨드**: `import_kakao_chat_text`
-- **함수**: `migrate_raw_kakao_chat_mds`, `enrich_kakao_markdown_with_media`, `parse_multipart_kakao_payload`, `upsert_kakao_metadata_in_md`
+- **커맨드**: `import_kakao_chat_text`, `get_kakao_update_requests`, `resolve_kakao_update_request`
+- **함수**: `migrate_raw_kakao_chat_mds`, `enrich_kakao_markdown_with_media`, `parse_multipart_kakao_payload`, `upsert_kakao_metadata_in_md`, `is_kakao_business_or_alimtalk_channel`, `auto_record_kakao_channel_message`, `process_and_consume_kakao_notifications`
 
 ### `src-tauri/src/lifelog/parse.rs` (530줄)
 
@@ -138,6 +152,13 @@ ActivityWatch(`aw-watcher-window`, `aw-watcher-afk`) 로컬 DB(`peewee-sqlite.v2
 
 - **커맨드**: `get_pc_activity_summary`
 - **함수**: `resolve_activitywatch_db_path`, `sync_activitywatch_events_to_mylore`
+
+### `src-tauri/src/lifelog/media_and_location.rs` (665줄)
+
+미디어 원본(origin) SHA-256 해시 레지스트리(`media_origin_registry` — 편집·삭제 후 원본 중복 재수신 방지) 및 모바일 GPS·Wi-Fi 동선 로깅·지도(네이버/구글 지도) 동선 추적 모듈.
+
+- **커맨드**: `get_media_origin_registry_summary`, `update_media_origin_status`, `get_location_movement_logs`, `record_location_movement_entry`
+- **함수**: `upsert_media_origin_record`, `is_hash_in_origin_registry`, `reconcile_media_origin_registry_with_disk`, `infer_place_label_from_wifi`, `build_map_tracking_urls`, `insert_location_movement_log`
 
 ### `src-tauri/src/lifelog/recordings.rs` (666줄)
 
@@ -371,6 +392,7 @@ Google Calendar API v3 양방향 동기화 모듈 (OAuth 2.0 PKCE 로컬 콜백 
 | | `components/dashboards/SyncProgressCard.tsx` | 255 | 모바일 동기화 진행률 카드 (단계별 스킵/신규 집계) |
 | | `components/dashboards/LifelogDashboard.tsx` | 230 | 라이프로그 대쉬보드 컨테이너 (`F7`) |
 | | `components/dashboards/LifelogSettingsTab.tsx` | 647 | 라이프로그 대쉬보드 — QR 페어링(Wi-Fi 자동 연결 포함)·SSID·Gemini API 키 설정 탭 |
+| | `components/dashboards/LifelogMilestonePanels.tsx` | 525 | 라이프로그 대쉬보드 마일스톤 패널 — 통화 분석 프롬프트 관리(`CallPromptManagerPanel`), 다중 LLM 연동(`MultiLlmSettingsRows`), 미디어 원본 해시 추적(`MediaOriginRegistryPanel`), GPS·Wi-Fi 동선 및 지도 추적(`LocationMovementTrackerPanel`) |
 | | `components/dashboards/LifelogMobileDataTab.tsx` | 310 | 라이프로그 대쉬보드 — [💬 대화] 탭 (휴대폰 대화·이벤트 데이터 테이블) |
 | | `components/dashboards/LifelogRecordsTab.tsx` | 414 | 라이프로그 대쉬보드 — [🗂️ 기록] 탭 (사진첩·동영상기록·음성녹음·연락처+명함 4개 하위 분류 뷰) |
 | | `components/dashboards/SettingsDashboard.tsx` | 916 | 설정 대쉬보드 컨테이너, 4대 분야 로그 보관일 설정 및 4대 베이스 폴더 경로 관리 |

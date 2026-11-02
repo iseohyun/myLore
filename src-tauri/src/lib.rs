@@ -78,6 +78,15 @@ extern "C" {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 1. 분리된 독립 AI 큐 워커 서브프로세스 모드 (`mylore.exe --ai-queue-worker`):
+    //    메인 GUI 프로세스가 종료되거나 재시작되더라도 DETACHED_PROCESS로 살아남아
+    //    현재 큐의 AI 스크립트 변환을 끝까지 처리한 후 자동 종료됩니다.
+    if std::env::args().any(|a| a.trim() == "--ai-queue-worker") {
+        let force_now = std::env::args().any(|a| a.trim() == "--force-now");
+        run_detached_ai_queue_worker_process(force_now);
+        return;
+    }
+
     let cli_paths = extract_cli_md_paths();
     // 이미 실행 중인 myLore 인스턴스가 있으면 해당 창으로 파일 경로를 전달하고 포커스한 뒤 즉시 종료 (단일 인스턴스)
     if try_forward_to_existing_instance(&cli_paths) {
@@ -164,6 +173,8 @@ pub fn run() {
             parse_notification_into_finance,
             import_finance_rows,
             import_kakao_chat_text,
+            get_kakao_update_requests,
+            resolve_kakao_update_request,
             take_pending_cli_files,
             trash_document,
             restore_trashed_document,
@@ -194,6 +205,18 @@ pub fn run() {
             update_call_transcript_stage,
             save_and_verify_gemini_api_key,
             transcribe_local_audio_file,
+            get_call_ai_transcription_stats,
+            get_call_approval_items,
+            get_ai_queue_dashboard_status,
+            control_ai_queue_worker,
+            get_multi_llm_providers_status,
+            set_active_text_llm_provider,
+            save_and_verify_llm_provider_key,
+            save_llm_provider_billing_config,
+            get_media_origin_registry_summary,
+            update_media_origin_status,
+            get_location_movement_logs,
+            record_location_movement_entry,
             get_service_logs,
             clear_service_logs,
             prune_expired_service_logs,

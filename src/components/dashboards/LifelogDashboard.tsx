@@ -12,12 +12,14 @@ import {
   MobilePairingPayload,
   MobileSyncProgressPayload,
   MyLoreAppSettings,
+  SettingsCategory,
 } from '../../types/mylore';
 import { SyncProgressCard } from './SyncProgressCard';
 import { LifelogSettingsTab } from './LifelogSettingsTab';
 import { LifelogMobileDataTab } from './LifelogMobileDataTab';
 import { LifelogRecordsTab } from './LifelogRecordsTab';
 import { PcActivityTab } from './PcActivityTab';
+import { LocationMovementTrackerPanel } from './LifelogMilestonePanels';
 
 export interface LifelogDashboardProps {
   lifelogDashboardTab: 'settings' | 'chat' | 'records' | 'pc_activity';
@@ -70,6 +72,10 @@ export interface LifelogDashboardProps {
     React.SetStateAction<MobileContextMenuState | null>
   >;
   resolveContactName: (rawNumberOrName: string) => string;
+  openDashboardTab?: (
+    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
+  ) => void;
+  setSettingsCategory?: React.Dispatch<React.SetStateAction<SettingsCategory>>;
 }
 
 export function LifelogDashboard({
@@ -109,6 +115,8 @@ export function LifelogDashboard({
   handleSelectLifelogSidebarItem,
   setMobileContextMenu,
   resolveContactName,
+  openDashboardTab,
+  setSettingsCategory,
 }: LifelogDashboardProps) {
   const chatCount = allLifelogMessages.filter(
     (m) => m.source === 'kakaotalk' || m.source === 'sms' || m.source === 'call'
@@ -120,8 +128,14 @@ export function LifelogDashboard({
     (m) => m.source === 'health'
   ).length;
 
-  const activeMonitoringSubTab: 'pc_log' | 'notification' | 'health' =
-    mobileSidebarTab === 'notification' || mobileSidebarTab === 'health'
+  const activeMonitoringSubTab:
+    | 'pc_log'
+    | 'notification'
+    | 'health'
+    | 'location' =
+    mobileSidebarTab === 'notification' ||
+    mobileSidebarTab === 'health' ||
+    mobileSidebarTab === 'location'
       ? mobileSidebarTab
       : 'pc_log';
 
@@ -161,18 +175,6 @@ export function LifelogDashboard({
           >
             <button
               className={`toolbar-btn ${
-                lifelogDashboardTab === 'settings' ? 'primary' : ''
-              }`}
-              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
-              onClick={() => {
-                setLifelogDashboardTab('settings');
-                refreshMobilePairingInfo();
-              }}
-            >
-              ⚙️ 설정
-            </button>
-            <button
-              className={`toolbar-btn ${
                 lifelogDashboardTab === 'chat' ? 'primary' : ''
               }`}
               style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
@@ -191,8 +193,9 @@ export function LifelogDashboard({
                 }
                 refreshAllLifelogMessages();
               }}
+              title={`통화 · 문자 · 카카오톡 (${chatCount}건)`}
             >
-              💬 대화 ({chatCount}건)
+              💬 통화
             </button>
             <button
               className={`toolbar-btn ${
@@ -211,8 +214,9 @@ export function LifelogDashboard({
                 }
                 refreshAllLifelogMessages();
               }}
+              title="녹음 · 사진/영상 · 연락처"
             >
-              🗂️ 기록 (녹음·사진/영상·연락처)
+              🗂️ 기록
             </button>
             <button
               className={`toolbar-btn ${
@@ -225,26 +229,46 @@ export function LifelogDashboard({
                 if (
                   mobileSidebarTab !== 'pc_log' &&
                   mobileSidebarTab !== 'notification' &&
-                  mobileSidebarTab !== 'health'
+                  mobileSidebarTab !== 'health' &&
+                  mobileSidebarTab !== 'location'
                 ) {
                   setMobileSidebarTab('pc_log');
                 }
                 refreshAllLifelogMessages();
               }}
+              title="PC로그 · M로그 · 헬스 · 동선"
             >
-              📊 모니터링 (PC로그·M로그·헬스)
+              📊 모니터링
+            </button>
+            <button
+              className={`toolbar-btn ${
+                lifelogDashboardTab === 'settings' ? 'primary' : ''
+              }`}
+              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
+              onClick={() => {
+                refreshMobilePairingInfo();
+                if (openDashboardTab && setSettingsCategory) {
+                  setSettingsCategory('sync_setting');
+                  openDashboardTab('settings');
+                } else {
+                  setLifelogDashboardTab('settings');
+                }
+              }}
+              title="환경설정 대시보드의 Sync Setting / AI Setting 하위 메뉴로 이동합니다"
+            >
+              ⚙️ 동기화·AI 설정
             </button>
           </div>
         </div>
       </div>
 
+      <SyncProgressCard
+        mobileSyncProgress={mobileSyncProgress}
+        setMobileSyncProgress={setMobileSyncProgress}
+      />
+
       {lifelogDashboardTab === 'settings' && (
         <>
-          <SyncProgressCard
-            mobileSyncProgress={mobileSyncProgress}
-            setMobileSyncProgress={setMobileSyncProgress}
-          />
-
           {reconcileResultMsg && (
             <div
               style={{
@@ -371,10 +395,24 @@ export function LifelogDashboard({
               >
                 🏃 헬스 ({healthCount})
               </button>
+              <button
+                className={`toolbar-btn ${
+                  activeMonitoringSubTab === 'location' ? 'primary' : ''
+                }`}
+                onClick={() => setMobileSidebarTab('location')}
+              >
+                📍 동선 (GPS·Wi-Fi)
+              </button>
             </div>
           </div>
 
           {activeMonitoringSubTab === 'pc_log' && <PcActivityTab />}
+
+          {activeMonitoringSubTab === 'location' && (
+            <LocationMovementTrackerPanel
+              allLifelogMessages={allLifelogMessages}
+            />
+          )}
 
           {activeMonitoringSubTab === 'notification' && (
             <LifelogMobileDataTab

@@ -133,6 +133,20 @@ export const THEME_PRESETS: Record<
   },
 };
 
+export const DEFAULT_CALL_ANALYSIS_PROMPT = `다음 스마트폰 통화 녹음 음성을 듣고 한국어로 정확하게 분석하여 반드시 아래의 2개 마크다운 섹션(\`## 💡 요약\`, \`## 📜 스크립트\`) 구조로 작성해 주세요 (통화 상대방 이름: {contact_name} — 전화번호나 날짜 없이 순수 이름만 표시):
+
+## 💡 요약
+- (통화 목적, 주요 합의 사항, 일정/장소/금액 등 핵심 내용을 1~3줄 불릿 포인트로 명확히 요약)
+
+## 📜 스크립트
+- **[00:00:00] 나**: (실제 발화 내용)
+- **[00:00:04] {contact_name}**: (실제 발화 내용)
+
+[⏱️ 대화 시각(타임스탬프) 정밀 매칭 및 연락처 관계 열람 정책]
+1. 초반 통화 연결음·침묵 구간을 정확히 계산하여 각 문장의 첫 음절이 실제로 들리는 오디오 재생 오프셋 시각을 \`[HH:MM:SS]\` 8자리 포맷으로 정확히 표기하세요 (문장과 대화 시각의 타이밍 일치 필수).
+2. 대화 상대방 이름은 전화번호나 날짜 없이 \`{contact_name}\` 이름만 표시하여 시간 순서대로 빠짐없이 전사하세요.
+3. 하단에 첨부된 [👤 사용자 개인화 참고 정보]와 [📇 연락처 당사자 관계 · 소속 모임 배경지식]을 열람하여 호칭, 인명, 모임 구성원, 직업/거주지 맥락을 기준으로 발음 오인식을 교정하되, 실제 녹음에서 발화되지 않은 사실은 임의로 지어내지 마세요.`;
+
 export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   f11ViewerMode: 'detached',
   autoSaveEnabled: true,
@@ -142,8 +156,13 @@ export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   autoCallTranscription: true,
   aiUserProfile:
     '이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영',
+  callAnalysisPrompt: DEFAULT_CALL_ANALYSIS_PROMPT,
   aiDailyTokenLimit: 1000000,
   statusBarShowAi: true,
+  statusBarShowGemini: true,
+  statusBarShowClaude: true,
+  statusBarShowOpenai: true,
+  statusBarShowGrok: true,
   statusBarShowTrash: true,
   statusBarShowAutoSave: true,
   statusBarShowPort: true,
@@ -162,6 +181,12 @@ export const DEFAULT_APP_SETTINGS: MyLoreAppSettings = {
   logRetentionVersionDays: 30,
   logRetentionSystemDays: 30,
   logRetentionAiDays: 30,
+  topicFolderDocs: '',
+  topicFolderProjects: 'Projects',
+  topicFolderDiary: 'Diary',
+  topicFolderMobile: 'Mobile',
+  topicFolderGit: 'C:\\git',
+  topicFolderPicture: '',
   settingsFilePath:
     '%USERPROFILE%\\Documents\\myLore\\Projects\\.myLore\\setting.json',
 };

@@ -7,6 +7,8 @@ import {
   BaseFolderConfig,
   BaseFolderRole,
   BatchScanSummary,
+  CallAiTranscriptionStats,
+  CallApprovalItem,
   DetachedPreviewState,
   DocumentPayload,
   FileNode,
@@ -15,9 +17,12 @@ import {
   GoogleCalendarSyncResult,
   GoogleCalendarSyncStatus,
   LifelogMessage,
+  LocationMovementSummary,
   MediaInboxItem,
+  MediaOriginRegistrySummary,
   MobilePairingPayload,
   MobileSyncProgressPayload,
+  MultiLlmProvidersStatus,
   MyLoreAppSettings,
   PcActivitySummaryPayload,
   ScanProgressPayload,
@@ -84,19 +89,9 @@ export async function startBatchUuidScan(): Promise<ScanProgressPayload> {
     return await invoke<ScanProgressPayload>('start_batch_uuid_scan');
   }
   return {
-    isRunning: false,
-    phase: 'done',
-    totalFiles: 0,
-    alreadyRegistered: 0,
-    pendingFiles: 0,
-    completedFiles: 0,
-    startPercent: 100,
-    currentPercent: 100,
-    uuidsInjected: 0,
-    mediaIndexed: 0,
-    linksIndexed: 0,
-    currentFile: '',
-    etaSeconds: 0,
+    isRunning: false, phase: 'done', totalFiles: 0, alreadyRegistered: 0, pendingFiles: 0,
+    completedFiles: 0, startPercent: 100, currentPercent: 100, uuidsInjected: 0, mediaIndexed: 0,
+    linksIndexed: 0, currentFile: '', etaSeconds: 0,
   };
 }
 
@@ -105,19 +100,9 @@ export async function getScanProgress(): Promise<ScanProgressPayload> {
     return await invoke<ScanProgressPayload>('get_scan_progress');
   }
   return {
-    isRunning: false,
-    phase: 'idle',
-    totalFiles: 0,
-    alreadyRegistered: 0,
-    pendingFiles: 0,
-    completedFiles: 0,
-    startPercent: 0,
-    currentPercent: 0,
-    uuidsInjected: 0,
-    mediaIndexed: 0,
-    linksIndexed: 0,
-    currentFile: '',
-    etaSeconds: 0,
+    isRunning: false, phase: 'idle', totalFiles: 0, alreadyRegistered: 0, pendingFiles: 0,
+    completedFiles: 0, startPercent: 0, currentPercent: 0, uuidsInjected: 0, mediaIndexed: 0,
+    linksIndexed: 0, currentFile: '', etaSeconds: 0,
   };
 }
 
@@ -125,12 +110,7 @@ export async function scanAndInjectUuids(): Promise<BatchScanSummary> {
   if (isTauriEnv()) {
     return await invoke<BatchScanSummary>('scan_and_inject_uuids');
   }
-  return {
-    scannedFiles: 0,
-    uuidsInjected: 0,
-    mediaIndexed: 0,
-    linksIndexed: 0,
-  };
+  return { scannedFiles: 0, uuidsInjected: 0, mediaIndexed: 0, linksIndexed: 0 };
 }
 
 export async function getVirtualTree(): Promise<FileNode[]> {
@@ -508,6 +488,7 @@ export {
   FONT_FAMILY_PRESETS,
   THEME_PRESETS,
   DEFAULT_APP_SETTINGS,
+  DEFAULT_CALL_ANALYSIS_PROMPT,
   applyAppSettingsToDocument,
 } from '../utils/appearancePresets';
 import { DEFAULT_APP_SETTINGS } from '../utils/appearancePresets';
@@ -806,116 +787,177 @@ export async function transcribeLocalAudioFile(
   return '데모 환경 통화 녹음 스크립트 변환 결과입니다.';
 }
 
-export async function getServiceLogs(params?: {
-  serviceFilter?: string | null;
-  limit?: number;
-}): Promise<ServiceLogsPayload> {
+export async function getCallAiTranscriptionStats(): Promise<CallAiTranscriptionStats> {
+  if (isTauriEnv()) return await invoke<CallAiTranscriptionStats>('get_call_ai_transcription_stats');
+  return { totalAudioCalls: 0, completedCalls: 0, remainingCalls: 0, dailyStats: [] };
+}
+
+export async function getCallApprovalItems(): Promise<CallApprovalItem[]> {
+  if (isTauriEnv()) return await invoke<CallApprovalItem[]>('get_call_approval_items');
+  return [];
+}
+
+export async function getKakaoUpdateRequests(): Promise<import('../types/mylore').KakaoUpdateRequestItem[]> {
+  if (isTauriEnv()) return await invoke('get_kakao_update_requests');
+  return [];
+}
+
+export async function resolveKakaoUpdateRequest(
+  roomName: string,
+  action: 'dismiss' | 'mark_auto_channel' | 'clear_all'
+): Promise<import('../types/mylore').KakaoUpdateRequestItem[]> {
+  if (isTauriEnv()) return await invoke('resolve_kakao_update_request', { roomName, action });
+  return [];
+}
+
+export async function getServiceLogs(params?: { serviceFilter?: string | null; limit?: number }): Promise<ServiceLogsPayload> {
   if (isTauriEnv()) {
     return await invoke<ServiceLogsPayload>('get_service_logs', {
-      serviceFilter: params?.serviceFilter ?? null,
-      limit: params?.limit ?? 300,
+      serviceFilter: params?.serviceFilter ?? null, limit: params?.limit ?? 300,
     });
   }
   return {
-    logDirPath: '%APPDATA%\\com.iseohyun.mylore\\logs',
-    entries: [],
-    logFiles: [],
-    retentionCommDays: 7,
-    retentionVersionDays: 30,
-    retentionSystemDays: 30,
-    retentionAiDays: 30,
+    logDirPath: '%APPDATA%\\com.iseohyun.mylore\\logs', entries: [], logFiles: [],
+    retentionCommDays: 7, retentionVersionDays: 30, retentionSystemDays: 30, retentionAiDays: 30,
   };
 }
 
-export async function clearServiceLogs(
-  serviceFilter?: string | null
-): Promise<ServiceLogsPayload> {
-  if (isTauriEnv()) {
-    return await invoke<ServiceLogsPayload>('clear_service_logs', {
-      serviceFilter: serviceFilter ?? null,
-    });
-  }
+export async function clearServiceLogs(serviceFilter?: string | null): Promise<ServiceLogsPayload> {
+  if (isTauriEnv()) return await invoke<ServiceLogsPayload>('clear_service_logs', { serviceFilter: serviceFilter ?? null });
   return await getServiceLogs();
 }
 
 export async function pruneExpiredServiceLogs(): Promise<number> {
-  if (isTauriEnv()) {
-    return await invoke<number>('prune_expired_service_logs');
-  }
+  if (isTauriEnv()) return await invoke<number>('prune_expired_service_logs');
   return 0;
 }
 
-export async function getPcActivitySummary(
-  date?: string
-): Promise<PcActivitySummaryPayload> {
-  if (isTauriEnv()) {
-    return await invoke<PcActivitySummaryPayload>('get_pc_activity_summary', {
-      date: date ?? null,
-    });
-  }
+export async function getPcActivitySummary(date?: string): Promise<PcActivitySummaryPayload> {
+  if (isTauriEnv()) return await invoke<PcActivitySummaryPayload>('get_pc_activity_summary', { date: date ?? null });
   return {
-    isAwAvailable: false,
-    awDbPath: '',
-    hostname: 'LocalPC',
+    isAwAvailable: false, awDbPath: '', hostname: 'LocalPC',
     targetDate: date || new Date().toISOString().slice(0, 10),
-    syncedNewEvents: 0,
-    totalStoredEvents: 0,
-    totalWindowSec: 0,
-    activeNotAfkSec: 0,
-    afkSec: 0,
-    eventCount: 0,
-    hourlyBreakdown: new Array(24).fill(0),
-    topApps: [],
-    recentTimeline: [],
-    weeklySummary: [],
+    syncedNewEvents: 0, totalStoredEvents: 0, totalWindowSec: 0,
+    activeNotAfkSec: 0, afkSec: 0, eventCount: 0,
+    hourlyBreakdown: new Array(24).fill(0), topApps: [], recentTimeline: [], weeklySummary: [],
   };
 }
 
 export async function getGoogleCalendarSyncStatus(): Promise<GoogleCalendarSyncStatus> {
-  if (isTauriEnv()) {
-    return await invoke<GoogleCalendarSyncStatus>(
-      'get_google_calendar_sync_status'
-    );
-  }
+  if (isTauriEnv()) return await invoke<GoogleCalendarSyncStatus>('get_google_calendar_sync_status');
   return {
-    isConnected: false,
-    clientId: '',
-    defaultCalendarId: '',
-    lastSyncAt: '',
-    lastError: '',
+    isConnected: false, clientId: '', defaultCalendarId: '', lastSyncAt: '', lastError: '',
     storageLocation: '%APPDATA%\\com.iseohyun.mylore\\google_calendar_secret.json',
   };
 }
 
-export async function syncGoogleCalendarEvents(
-  year?: number,
-  month?: number
-): Promise<GoogleCalendarSyncResult> {
+export async function syncGoogleCalendarEvents(year?: number, month?: number): Promise<GoogleCalendarSyncResult> {
   if (isTauriEnv()) {
-    return await invoke<GoogleCalendarSyncResult>(
-      'sync_google_calendar_events',
-      {
-        year: year ?? null,
-        month: month ?? null,
-      }
-    );
+    return await invoke<GoogleCalendarSyncResult>('sync_google_calendar_events', { year: year ?? null, month: month ?? null });
   }
   return {
-    uploadedCount: 0,
-    downloadedCount: 0,
-    updatedCount: 0,
-    skippedCount: 0,
-    needsAuth: true,
-    message: '브라우저 미리보기 모드입니다.',
-    lastSyncAt: '',
+    uploadedCount: 0, downloadedCount: 0, updatedCount: 0, skippedCount: 0,
+    needsAuth: true, message: '브라우저 미리보기 모드입니다.', lastSyncAt: '',
   };
 }
 
 export async function startGoogleCalendarOauthLogin(): Promise<string> {
-  if (isTauriEnv()) {
-    return await invoke<string>('start_google_calendar_oauth_login');
-  }
+  if (isTauriEnv()) return await invoke<string>('start_google_calendar_oauth_login');
   return '';
+}
+
+export async function getMultiLlmProvidersStatus(): Promise<MultiLlmProvidersStatus> {
+  if (isTauriEnv()) return await invoke<MultiLlmProvidersStatus>('get_multi_llm_providers_status');
+  const emptyProv = (provider: string, displayName: string, modelName: string) => ({
+    provider, displayName, hasKey: false, maskedKey: '', modelName, verifiedAt: '',
+    todayUsedTokens: 0, totalUsedTokens: 0, todayRequestCount: 0, lastError: '',
+  });
+  return {
+    activeTextProvider: 'gemini',
+    storageLocation: '%APPDATA%\\com.iseohyun.mylore\\multi_llm_secrets.json',
+    claude: emptyProv('claude', 'Anthropic Claude', 'claude-3-7-sonnet-latest'),
+    openai: emptyProv('openai', 'OpenAI GPT', 'gpt-4o-mini'),
+    grok: emptyProv('grok', 'xAI Grok', 'grok-3-mini'),
+  };
+}
+
+export async function setActiveTextLlmProvider(provider: string): Promise<MultiLlmProvidersStatus> {
+  if (isTauriEnv()) return await invoke<MultiLlmProvidersStatus>('set_active_text_llm_provider', { provider });
+  return await getMultiLlmProvidersStatus();
+}
+
+export async function saveAndVerifyLlmProviderKey(provider: string, apiKey: string, modelName?: string): Promise<MultiLlmProvidersStatus> {
+  if (isTauriEnv()) {
+    return await invoke<MultiLlmProvidersStatus>('save_and_verify_llm_provider_key', {
+      provider, apiKey, modelName: modelName ?? null,
+    });
+  }
+  return await getMultiLlmProvidersStatus();
+}
+
+export async function saveLlmProviderBillingConfig(params: {
+  provider: string; chargedCreditUsd?: number; adminApiKey?: string; teamId?: string;
+}): Promise<MultiLlmProvidersStatus> {
+  if (isTauriEnv()) {
+    return await invoke<MultiLlmProvidersStatus>('save_llm_provider_billing_config', {
+      provider: params.provider, chargedCreditUsd: params.chargedCreditUsd ?? null,
+      adminApiKey: params.adminApiKey ?? null, teamId: params.teamId ?? null,
+    });
+  }
+  return await getMultiLlmProvidersStatus();
+}
+
+export async function getMediaOriginRegistrySummary(rescanDisk?: boolean): Promise<MediaOriginRegistrySummary> {
+  if (isTauriEnv()) return await invoke<MediaOriginRegistrySummary>('get_media_origin_registry_summary', { rescanDisk: rescanDisk ?? false });
+  return { totalOriginCount: 0, originalKeptCount: 0, editedOrRenamedCount: 0, deletedBlockedCount: 0, items: [] };
+}
+
+export async function updateMediaOriginStatus(params: {
+  originHash: string; status: string; note?: string; deleteDiskFile?: boolean;
+}): Promise<MediaOriginRegistrySummary> {
+  if (isTauriEnv()) {
+    return await invoke<MediaOriginRegistrySummary>('update_media_origin_status', {
+      originHash: params.originHash, status: params.status,
+      note: params.note ?? null, deleteDiskFile: params.deleteDiskFile ?? false,
+    });
+  }
+  return await getMediaOriginRegistrySummary(false);
+}
+
+export async function getLocationMovementLogs(params?: { dateFilter?: string | null; limit?: number }): Promise<LocationMovementSummary> {
+  if (isTauriEnv()) {
+    return await invoke<LocationMovementSummary>('get_location_movement_logs', {
+      dateFilter: params?.dateFilter ?? null, limit: params?.limit ?? 200,
+    });
+  }
+  return { totalLogs: 0, wifiLogsCount: 0, gpsLogsCount: 0, distinctPlaces: [], logs: [] };
+}
+
+export async function recordLocationMovementEntry(params: {
+  eventType: string; placeLabel: string; wifiSsid: string; latitude: number; longitude: number; accuracyM?: number;
+}): Promise<LocationMovementSummary> {
+  if (isTauriEnv()) {
+    return await invoke<LocationMovementSummary>('record_location_movement_entry', {
+      eventType: params.eventType, placeLabel: params.placeLabel, wifiSsid: params.wifiSsid,
+      latitude: params.latitude, longitude: params.longitude, accuracyM: params.accuracyM ?? 10.0,
+    });
+  }
+  return await getLocationMovementLogs();
+}
+
+export async function getAiQueueDashboardStatus(): Promise<import('../types/mylore').AiQueueDashboardPayload> {
+  if (isTauriEnv()) return await invoke('get_ai_queue_dashboard_status');
+  return {
+    workerRunning: false, workerPid: 0, workerHeartbeatAt: '', lockFilePath: '',
+    autoTranscriptionEnabled: true, unlockedAgentCount: 0, totalPendingCount: 0,
+    totalPendingBytes: 0, stage1PendingCount: 0, stage3RevisionCount: 0,
+    completedTodayCount: 0, agentSlots: [], pendingItems: [], recentCompleted: [],
+  };
+}
+
+export async function controlAiQueueWorker(action: 'start_now' | 'stop_worker'): Promise<import('../types/mylore').AiQueueDashboardPayload> {
+  if (isTauriEnv()) return await invoke('control_ai_queue_worker', { action });
+  return await getAiQueueDashboardStatus();
 }
 
 

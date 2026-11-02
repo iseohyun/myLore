@@ -25,16 +25,16 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
         ├─ hooks/      useFileTree · useLifelogAudio · useDocuments · useDocumentActions ·
         │              useLifelogAndFinance · useEditorCommands · useDetachedPreviewAndSettings ·
         │              useAppStartup · useKeybindings
-        ├─ components/ header/ · dashboards/(Diary, Finance, Lifelog, Settings, LogDashboard) · editor/ · sidebar/ · footer/ · modals/ · window/
+        ├─ components/ header/ · dashboards/(Diary, Finance, Lifelog, Settings, AiQueueSection, ApprovalDashboard, LogDashboard) · editor/ · sidebar/(RightSidebar, ApprovalSidebarContent, MobileLifelogSidebar, SidebarSpecialTabs) · footer/ · modals/ · window/
         │  invoke("snake_case_command")      (래퍼: src/services/tauriClient.ts, 타입: src/types/mylore.ts)
         ▼
-[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 67개 등록)
+[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 81개 등록)
         ├─ vault/      문서·스캔·마크다운·휴지통
         ├─ calendar_sync.rs Google Calendar API v3 양방향 동기화(OAuth 2.0 PKCE 로컬 콜백, 신규 일정 업로드, 시작 시/F5 일정 다운로드)
-        ├─ lifelog/    연락처(인물 서술 AI 프로필·소속 모임 컨텍스트 포함)·파서·녹음·카톡·백필·조회·pc_activity(ActivityWatch 연동) (+ parse_tests.rs)
-        ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화
+        ├─ lifelog/    연락처(인물 서술 AI 프로필·소속 모임 컨텍스트 포함)·파서·녹음·카톡·백필·조회·pc_activity(ActivityWatch 연동)·media_and_location(원본 해시 DB·GPS/Wi-Fi 동선) (+ parse_tests.rs)
+        ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화·multi_llm(Claude/GPT/Grok 다중 LLM 연동 및 $ 크레딧 잔액 관리)
         ├─ mobile/     페어링(현재 Wi-Fi SSID·비밀번호 자동 탐지)·인증·저장소·진행률·헬스·ack_state (+ pairing_tests.rs)
-        │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media (session-plan, complete, ack 포함)
+        │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media (session-plan, complete, ack, location-logs 포함)
         │   └─ sync_worker/  큐·배치 루프(mod.rs) → jobs_messages / jobs_meta / jobs_files
         ├─ logger.rs   4대 분야 로그 수집(%APPDATA%\com.iseohyun.mylore\logs\{분야}_YYYYMMDD.log · comm/version/system/ai) 및 보관일(통신 7일 / 기타 30일) 자동 정리
         ├─ paths.rs    메타 DB(%APPDATA%\com.iseohyun.mylore)·기본 폴더 해석·레거시 DB 이전 (+ paths_tests.rs)

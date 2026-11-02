@@ -750,14 +750,7 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
 }
 
 fn resolve_diary_base_folder(conn: &Connection) -> Result<(String, PathBuf), String> {
-    let (base_id, base_path_str): (String, String) = conn
-        .query_row(
-            "SELECT id, path FROM base_folders WHERE role = 'diary' AND enabled = 1 LIMIT 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|_| "일기(diary) 베이스 폴더가 설정되어 있지 않습니다.".to_string())?;
-    let p = PathBuf::from(&base_path_str);
+    let (base_id, p) = resolve_role_base_folder(conn, "diary")?;
     let _ = fs::create_dir_all(&p);
     Ok((base_id, p))
 }

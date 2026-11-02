@@ -8,14 +8,7 @@ pub(crate) fn build_document_payload(conn: &Connection, full_path: &Path) -> Res
     }
     let full_path_str = full_path.to_string_lossy().to_string();
 
-    let mut stmt = conn
-        .prepare("SELECT id, role, path FROM base_folders WHERE enabled = 1")
-        .map_err(|e| e.to_string())?;
-    let folders: Vec<(String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let folders = resolve_effective_vault_folders(conn, true);
 
     let mut matched_role = "data".to_string();
     let mut matched_base_id = "base-data-1".to_string();
@@ -150,14 +143,27 @@ pub(crate) async fn read_document_by_uuid(
     let db_path = state.db_path.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&db_path)?;
-        let full_path: String = conn
+        let (full_path, rel_path, role): (String, String, String) = conn
             .query_row(
-                "SELECT full_path FROM files WHERE uuid = ?1",
+                "SELECT full_path, relative_path, role FROM files WHERE uuid = ?1",
                 params![uuid],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|_| format!("UUID({})에 해당하는 문서를 찾을 수 없습니다.", uuid))?;
-        build_document_payload(&conn, Path::new(&full_path))
+
+        let primary_path = PathBuf::from(&full_path);
+        if primary_path.exists() {
+            return build_document_payload(&conn, &primary_path);
+        }
+
+        if let Ok((_, role_base)) = resolve_role_base_folder(&conn, &role) {
+            let fallback_path = role_base.join(rel_path.replace('/', "\\"));
+            if fallback_path.exists() {
+                return build_document_payload(&conn, &fallback_path);
+            }
+        }
+
+        build_document_payload(&conn, &primary_path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -233,15 +239,8 @@ pub(crate) fn create_new_document(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let base_path_str: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = ?1 AND enabled = 1 LIMIT 1",
-            params![params.role],
-            |r| r.get(0),
-        )
-        .map_err(|_| format!("역할({})에 해당하는 베이스 폴더가 설정되어 있지 않습니다.", params.role))?;
-
-    let base_path = Path::new(&base_path_str);
+    let (_, base_path_buf) = resolve_role_base_folder(&conn, &params.role)?;
+    let base_path = base_path_buf.as_path();
     let _ = fs::create_dir_all(base_path);
     let new_uuid = Uuid::new_v4().to_string();
 
@@ -481,13 +480,7 @@ pub(crate) fn create_empty_document_in_folder(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let base_path_str: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = ?1 AND enabled = 1 LIMIT 1",
-            params![role],
-            |r| r.get(0),
-        )
-        .map_err(|_| format!("역할({})에 해당하는 베이스 폴더가 설정되어 있지 않습니다.", role))?;
+    let (_, base_path_buf) = resolve_role_base_folder(&conn, &role)?;
 
     let clean_sub_dir = sub_dir
         .unwrap_or_default()
@@ -496,7 +489,7 @@ pub(crate) fn create_empty_document_in_folder(
         .trim_matches(|c| c == '/' || c == '\\')
         .replace('/', "\\");
 
-    let base_path = Path::new(&base_path_str);
+    let base_path = base_path_buf.as_path();
     let target_dir = if clean_sub_dir.is_empty() {
         base_path.to_path_buf()
     } else {
@@ -671,25 +664,27 @@ pub(crate) fn search_in_files(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let mut stmt = conn
-        .prepare("SELECT role, path FROM base_folders WHERE enabled = 1")
-        .map_err(|e| e.to_string())?;
-    let folders: Vec<(String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
+    let folders: Vec<(String, String)> = resolve_effective_vault_folders(&conn, true)
+        .into_iter()
+        .map(|(_, role, path)| (role, path))
         .collect();
 
+    let all_base_paths: Vec<String> = folders.iter().map(|(_, p)| p.clone()).collect();
     let mut results = Vec::new();
     for (role, base_path_str) in folders {
         let base_path = Path::new(&base_path_str);
         if !base_path.exists() {
             continue;
         }
+        let child_bases = collect_child_base_folder_paths(base_path, &all_base_paths);
         for entry in WalkDir::new(base_path)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
+            .filter(|e| {
+                e.file_type().is_file()
+                    && !is_internal_mylore_path(e.path())
+                    && !is_inside_any_child_base_folder(e.path(), &child_bases)
+            })
         {
             let full_path = entry.path();
             if full_path.extension().and_then(|s| s.to_str()) != Some("md") {
@@ -747,25 +742,26 @@ pub(crate) fn replace_in_files(
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let mut stmt = conn
-        .prepare("SELECT path FROM base_folders WHERE enabled = 1")
-        .map_err(|e| e.to_string())?;
-    let folders: Vec<String> = stmt
-        .query_map([], |r| r.get(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
+    let folders: Vec<String> = resolve_effective_vault_folders(&conn, true)
+        .into_iter()
+        .map(|(_, _, path)| path)
         .collect();
 
     let mut modified_files = 0usize;
-    for base_path_str in folders {
-        let base_path = Path::new(&base_path_str);
+    for base_path_str in &folders {
+        let base_path = Path::new(base_path_str);
         if !base_path.exists() {
             continue;
         }
+        let child_bases = collect_child_base_folder_paths(base_path, &folders);
         for entry in WalkDir::new(base_path)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
+            .filter(|e| {
+                e.file_type().is_file()
+                    && !is_internal_mylore_path(e.path())
+                    && !is_inside_any_child_base_folder(e.path(), &child_bases)
+            })
         {
             let full_path = entry.path();
             if full_path.extension().and_then(|s| s.to_str()) != Some("md") {
@@ -848,13 +844,7 @@ pub(crate) fn promote_to_project_folder(
 
     let (uuid_val, _, _) = ensure_uuid_in_markdown_file(src_path, None)?;
 
-    let projects_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(|_| "프로젝트(Projects) 베이스 폴더가 설정되어 있지 않습니다.".to_string())?;
+    let projects_base: String = projects_base_path_string(&conn);
 
     let target_dir = Path::new(&projects_base).join(&project_name);
     fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
@@ -891,13 +881,8 @@ pub(crate) fn move_document_to_role(
     }
     let (uuid_val, _, _) = ensure_uuid_in_markdown_file(src_path, None)?;
 
-    let target_base: String = conn
-        .query_row(
-            "SELECT path FROM base_folders WHERE role = ?1 AND enabled = 1 LIMIT 1",
-            params![target_role],
-            |r| r.get(0),
-        )
-        .map_err(|_| format!("{} 역할의 베이스 폴더를 찾을 수 없습니다.", target_role))?;
+    let (_, target_base_buf) = resolve_role_base_folder(&conn, &target_role)?;
+    let target_base = target_base_buf.to_string_lossy().to_string();
 
     let file_name = new_file_name.unwrap_or_else(|| {
         src_path

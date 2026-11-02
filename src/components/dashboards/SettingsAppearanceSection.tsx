@@ -5,22 +5,61 @@
 import React from 'react';
 import { MyLoreAppSettings, ThemePresetId } from '../../types/mylore';
 import {
+  applyAppSettingsToDocument,
   DEFAULT_APP_SETTINGS,
   FONT_FAMILY_PRESETS,
+  getAppSettings,
   THEME_PRESETS,
 } from '../../services/tauriClient';
+import { DETACHED_PREVIEW_CHANNEL } from '../window/DetachedPreviewWindowView';
 
 export interface SettingsAppearanceSectionProps {
   appSettings: MyLoreAppSettings;
+  setAppSettings?: React.Dispatch<React.SetStateAction<MyLoreAppSettings>>;
+  setStatusMessage?: React.Dispatch<React.SetStateAction<string>>;
   handleUpdateAppSettings: (patch: Partial<MyLoreAppSettings>) => Promise<void>;
   handleApplyThemePreset: (presetId: Exclude<ThemePresetId, 'custom'>) => void;
+  handleToggleF11Viewer?: () => void;
+  setMenuBarExpanded?: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export function SettingsAppearanceSection({
   appSettings,
+  setAppSettings,
+  setStatusMessage,
   handleUpdateAppSettings,
   handleApplyThemePreset,
+  handleToggleF11Viewer,
+  setMenuBarExpanded,
 }: SettingsAppearanceSectionProps) {
+  const handleHotReloadSkin = async () => {
+    try {
+      const fresh = await getAppSettings();
+      setAppSettings?.(fresh);
+      applyAppSettingsToDocument(fresh);
+      if (typeof document !== 'undefined') {
+        document.querySelectorAll('link[rel="stylesheet"]').forEach((el) => {
+          const link = el as HTMLLinkElement;
+          if (link.href) {
+            const base = link.href.split('?')[0];
+            link.href = `${base}?v=${Date.now()}`;
+          }
+        });
+      }
+      try {
+        const bc = new BroadcastChannel(DETACHED_PREVIEW_CHANNEL);
+        bc.postMessage({ type: 'settings', settings: fresh });
+        bc.close();
+      } catch {
+        // ignore
+      }
+      setStatusMessage?.(
+        `🎨 프로그램 재부팅 없이 UI 스킨·CSS 변수 핫 리로드 완료 (테마: ${fresh.themePreset})`
+      );
+    } catch (err) {
+      setStatusMessage?.(`UI 스킨 다시 불러오기 실패: ${String(err)}`);
+    }
+  };
   return (
     <>
       <div
@@ -445,12 +484,21 @@ export function SettingsAppearanceSection({
               테마 프리셋을 선택하거나 배경색, 글자색, 제목색, 강조색, 표 헤더색을 개별 컬러 피커로 자유롭게 커스터마이징하세요.
             </p>
           </div>
-          <button
-            className="toolbar-btn"
-            onClick={() => handleApplyThemePreset('dark_indigo')}
-          >
-            ↺ 기본 다크 인디고 테마로 복원
-          </button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className="toolbar-btn primary"
+              onClick={handleHotReloadSkin}
+              title="프로그램을 재시작하지 않고 setting.json 및 스타일시트(CSS 변수) 스킨만 즉시 다시 불러옵니다"
+            >
+              ⚡ 재부팅 없이 스킨 새로고침 (Hot Reload)
+            </button>
+            <button
+              className="toolbar-btn"
+              onClick={() => handleApplyThemePreset('dark_indigo')}
+            >
+              ↺ 기본 다크 인디고 테마로 복원
+            </button>
+          </div>
         </div>
 
         <div
@@ -651,14 +699,16 @@ export function SettingsAppearanceSection({
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
-            marginBottom: '10px',
+            paddingBottom: '16px',
+            marginBottom: '16px',
+            borderBottom: '1px solid var(--border-color)',
             flexWrap: 'wrap',
-            gap: '8px',
+            gap: '12px',
           }}
         >
           <div>
             <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
-              👤 AI 개인화 참고 설정 (`aiUserProfile`) 및 일일 예상 토큰 한도 (`aiDailyTokenLimit`)
+              🕒 통화·라이프로그 시간 표시 형식 (`lifelogTimeFormat`) 및 실패 통화 글자색 (`failedCallTextColor`)
             </h3>
             <p
               style={{
@@ -667,99 +717,250 @@ export function SettingsAppearanceSection({
                 marginTop: '2px',
               }}
             >
-              통화·음성녹음 스크립트화 등 AI 분석 시 사용자 본인(<code>나</code>)의 이름·출생년도·거주지·취미를 프롬프트에 자동 첨부하여 인명 오인식(예: 서현→대원)을 방지합니다.
+              우측 사이드바(<kbd>Ctrl+B</kbd>) 통화 탭의 이벤트 시간 표시 형식과 통화 실패(부재중·거절·0초) 시 글자색을 설정합니다.
             </p>
           </div>
-          <button
-            className="toolbar-btn"
-            onClick={() =>
-              handleUpdateAppSettings({
-                aiUserProfile: DEFAULT_APP_SETTINGS.aiUserProfile,
-                aiDailyTokenLimit: DEFAULT_APP_SETTINGS.aiDailyTokenLimit,
-                callPlaybackSpeed: DEFAULT_APP_SETTINGS.callPlaybackSpeed,
-              })
-            }
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              flexWrap: 'wrap',
+            }}
           >
-            ↺ AI 개인화 기본값 복원
-          </button>
+            <input
+              className="input-field"
+              style={{
+                width: '175px',
+                fontSize: '12px',
+                fontFamily: 'var(--font-mono)',
+              }}
+              value={appSettings.lifelogTimeFormat || 'MM-DD(ddd) hh:mm'}
+              onChange={(e) =>
+                handleUpdateAppSettings({
+                  lifelogTimeFormat: e.target.value,
+                })
+              }
+              placeholder="MM-DD(ddd) hh:mm"
+            />
+            <input
+              type="color"
+              value={
+                /^#[0-9a-fA-F]{6}$/.test(
+                  appSettings.failedCallTextColor || '#b91c1c'
+                )
+                  ? appSettings.failedCallTextColor || '#b91c1c'
+                  : '#b91c1c'
+              }
+              onChange={(e) =>
+                handleUpdateAppSettings({
+                  failedCallTextColor: e.target.value,
+                })
+              }
+              style={{
+                width: '28px',
+                height: '26px',
+                border: 'none',
+                padding: 0,
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            />
+          </div>
         </div>
-
-        <textarea
-          className="ai-profile-textarea"
-          value={
-            appSettings.aiUserProfile || DEFAULT_APP_SETTINGS.aiUserProfile
-          }
-          onChange={(e) =>
-            handleUpdateAppSettings({ aiUserProfile: e.target.value })
-          }
-          placeholder="이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영"
-        />
 
         <div
           style={{
             display: 'flex',
-            alignItems: 'center',
             justifyContent: 'space-between',
-            gap: '12px',
+            alignItems: 'center',
+            paddingBottom: '16px',
+            marginBottom: '16px',
+            borderBottom: '1px solid var(--border-color)',
             flexWrap: 'wrap',
-            marginTop: '10px',
+            gap: '12px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                일일 예상 AI 토큰 한도 (상태창 <code>AI: XX.X%</code> 계산 기준):
-              </span>
-              <input
-                type="number"
-                className="input-field"
-                style={{
-                  width: '130px',
-                  padding: '4px 8px',
-                  fontSize: '12px',
-                  fontFamily: 'var(--font-mono)',
-                }}
-                min={10000}
-                step={100000}
-                value={appSettings.aiDailyTokenLimit || 1000000}
-                onChange={(e) =>
-                  handleUpdateAppSettings({
-                    aiDailyTokenLimit: Math.max(
-                      10000,
-                      Number(e.target.value) || 1000000
-                    ),
-                  })
-                }
-              />
-            </div>
+          <div>
+            <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
+              🔗 원본 에디터 ↔ 뷰어 스크롤 자동 동기화 (`scrollSyncEnabled`)
+            </h3>
+            <p
+              style={{
+                fontSize: '12.5px',
+                color: 'var(--text-secondary)',
+                marginTop: '2px',
+              }}
+            >
+              원본 마크다운 에디터의 스크롤이 내려가면 병렬 뷰어 및 전용 독립 뷰어 창의 스크롤이 함께 동기화됩니다.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`toolbar-btn ${
+                appSettings.scrollSyncEnabled ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ scrollSyncEnabled: true })
+              }
+            >
+              ✓ 스크롤 동기화 켜기 (ON)
+            </button>
+            <button
+              className={`toolbar-btn ${
+                !appSettings.scrollSyncEnabled ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ scrollSyncEnabled: false })
+              }
+            >
+              스크롤 동기화 끄기 (OFF)
+            </button>
+          </div>
+        </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                ⏩ 통화 녹음 기본 재생 속도 (`callPlaybackSpeed`):
-              </span>
-              <select
-                className="task-status-select"
-                style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 700 }}
-                value={String(appSettings.callPlaybackSpeed || 1.75)}
-                onChange={(e) =>
-                  handleUpdateAppSettings({
-                    callPlaybackSpeed: parseFloat(e.target.value) || 1.75,
-                  })
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '12px',
+            flexWrap: 'wrap',
+            gap: '8px',
+          }}
+        >
+          <div>
+            <h3 style={{ fontSize: '15.5px', fontWeight: 700 }}>
+              🪟 <kbd>F11</kbd> 뷰어 토글 기본 옵션 (`f11ViewerMode`)
+            </h3>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`toolbar-btn ${
+                appSettings.f11ViewerMode === 'detached' ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ f11ViewerMode: 'detached' })
+              }
+            >
+              🪟 전용 독립 뷰어 (`detached`)
+            </button>
+            <button
+              className={`toolbar-btn ${
+                appSettings.f11ViewerMode === 'split' ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ f11ViewerMode: 'split' })
+              }
+            >
+              📐 병렬 뷰어 (`split`)
+            </button>
+            {handleToggleF11Viewer && (
+              <button
+                className="toolbar-btn"
+                onClick={handleToggleF11Viewer}
+              >
+                ⚡ 지금 F11 테스트
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          padding: '18px',
+          backgroundColor: 'var(--bg-secondary)',
+          border: '1px solid var(--border-color)',
+          borderRadius: '10px',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gap: '16px',
+        }}
+      >
+        <div>
+          <h4
+            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
+          >
+            💾 자동 저장 (`autoSaveEnabled`)
+          </h4>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`toolbar-btn ${
+                appSettings.autoSaveEnabled ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ autoSaveEnabled: true })
+              }
+            >
+              ✓ 자동 저장 ON
+            </button>
+            <button
+              className={`toolbar-btn ${
+                !appSettings.autoSaveEnabled ? 'primary' : ''
+              }`}
+              onClick={() =>
+                handleUpdateAppSettings({ autoSaveEnabled: false })
+              }
+            >
+              자동 저장 OFF
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h4
+            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
+          >
+            ☰ <kbd>F10</kbd> 상단 메뉴바 시작 시 기본 상태
+          </h4>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`toolbar-btn ${
+                !appSettings.defaultMenuBarExpanded ? 'primary' : ''
+              }`}
+              onClick={() => {
+                setMenuBarExpanded?.(false);
+                handleUpdateAppSettings({ defaultMenuBarExpanded: false });
+              }}
+            >
+              ✓ 기본 닫힘 (OFF)
+            </button>
+            <button
+              className={`toolbar-btn ${
+                appSettings.defaultMenuBarExpanded ? 'primary' : ''
+              }`}
+              onClick={() => {
+                setMenuBarExpanded?.(true);
+                handleUpdateAppSettings({ defaultMenuBarExpanded: true });
+              }}
+            >
+              기본 열림 (ON)
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h4
+            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
+          >
+            🖥️ 프로그램 시작 시 기본 편집 화면
+          </h4>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {(['editor', 'split', 'preview'] as const).map((m) => (
+              <button
+                key={m}
+                className={`toolbar-btn ${
+                  appSettings.defaultEditorViewMode === m ? 'primary' : ''
+                }`}
+                onClick={() =>
+                  handleUpdateAppSettings({ defaultEditorViewMode: m })
                 }
               >
-                <option value="0.75">0.75x</option>
-                <option value="1">1.0x</option>
-                <option value="1.25">1.25x</option>
-                <option value="1.5">1.5x</option>
-                <option value="1.75">1.75x (기본)</option>
-                <option value="2">2.0x</option>
-                <option value="2.5">2.5x</option>
-              </select>
-            </div>
+                {m}
+              </button>
+            ))}
           </div>
-          <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-            * 추후 마일스톤(Phase 3)에서 연락처 및 연락처 메모가 AI 분석 참고 데이터로 함께 연동됩니다.
-          </span>
         </div>
       </div>
     </>

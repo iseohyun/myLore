@@ -55,7 +55,11 @@ export function useLifelogAudio({
     if (cat === 'mobile/health' || /[\\/]mobile[\\/]health[\\/]/i.test(fp)) {
       return 'health';
     }
-    if (cat === 'mobile/calls' || /[\\/]mobile[\\/]calls[\\/]/i.test(fp)) {
+    if (
+      cat === 'mobile/calls' ||
+      /[\\/]mobile[\\/]calls[\\/]/i.test(fp) ||
+      Boolean(currentDoc.frontmatter['audio_file'])
+    ) {
       return 'call';
     }
     if (cat === 'mobile/sms' || /[\\/]mobile[\\/]sms[\\/]/i.test(fp)) {
@@ -173,7 +177,6 @@ export function useLifelogAudio({
       charEnd: number;
     }> = [];
     let charCursor = 0;
-    let inScriptSec = false;
 
     for (let idx = 0; idx < lines.length; idx++) {
       const line = lines[idx];
@@ -182,14 +185,7 @@ export function useLifelogAudio({
       const lineCharEnd = charCursor + line.length;
       charCursor = lineCharEnd + 1;
 
-      if (/^#{1,4}\s+.*스크립트/.test(trimmed)) {
-        inScriptSec = true;
-        continue;
-      }
-      if (/^#{1,3}\s+/.test(trimmed) && !trimmed.includes('스크립트')) {
-        inScriptSec = false;
-      }
-      if (!inScriptSec && !trimmed.startsWith('-') && !trimmed.startsWith('*')) {
+      if (!trimmed || /^#{1,6}\s+/.test(trimmed)) {
         continue;
       }
       const sec = parseAudioOffsetSecondsFromLine(trimmed);
@@ -221,11 +217,33 @@ export function useLifelogAudio({
       charStart: number;
       charEnd: number;
     },
-    _forceSelect = false
+    forceSelect = false
   ) => {
     lastProgrammaticAudioScrollMsRef.current = Date.now();
+    const isUserTyping =
+      !forceSelect && Date.now() - lastEditorKeyPressMsRef.current < 2200;
 
-    // 프리뷰 영역에서만 해당 대화 문장으로 스크롤 이동 (에디터 <textarea>의 커서·선택 영역은 건드리지 않아 Ctrl+C/V/A 등 기본 편집 동작 보장)
+    // 1) 에디터 <textarea>에서 현재 재생 중인 문장 Select 및 스크롤 이동 (사용자가 직접 타이핑 중이 아닐 때)
+    if (editorRef.current && !isUserTyping) {
+      const ta = editorRef.current;
+      const totalLines = Math.max(
+        1,
+        bodyText.replace(/\r\n/g, '\n').split('\n').length
+      );
+      const ratio = matchedCue.lineIndex / totalLines;
+      const targetTop = Math.max(
+        0,
+        ratio * ta.scrollHeight - ta.clientHeight * 0.38
+      );
+      ta.scrollTo({ top: targetTop, behavior: 'smooth' });
+      try {
+        ta.setSelectionRange(matchedCue.charStart, matchedCue.charEnd);
+      } catch {
+        // ignore selection errors
+      }
+    }
+
+    // 2) 프리뷰 영역에서 해당 대화 문장으로 스크롤 이동 및 문장 Select
     if (previewPaneRef.current) {
       const pane = previewPaneRef.current;
       const targetNode = pane.querySelector(
@@ -243,7 +261,10 @@ export function useLifelogAudio({
           behavior: 'smooth',
         });
 
-        if (viewMode === 'preview' && typeof window !== 'undefined') {
+        if (
+          typeof window !== 'undefined' &&
+          (!editorRef.current || document.activeElement !== editorRef.current)
+        ) {
           try {
             const sel = window.getSelection();
             if (sel) {

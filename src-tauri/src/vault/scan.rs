@@ -29,6 +29,37 @@ pub(crate) fn get_base_folders(state: State<AppState>) -> Result<Vec<BaseFolderC
     Ok(out)
 }
 
+/// 상위 베이스 폴더(예: `Docs`) 내부에 다른 베이스 폴더(예: `Docs\Projects`, `Docs\Diary`)가 중첩되어 있을 때
+/// 상위 폴더 순회 시 하위 전용 베이스 폴더 경로를 건너뛰기 위한 자식 베이스 폴더 목록을 반환합니다.
+pub(crate) fn collect_child_base_folder_paths(
+    base_path: &Path,
+    all_base_paths: &[String],
+) -> Vec<PathBuf> {
+    let norm_self = base_path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let mut children = Vec::new();
+    for other_str in all_base_paths {
+        let norm_other = other_str.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+        if norm_other != norm_self && norm_other.starts_with(&format!("{}\\", norm_self)) {
+            children.push(PathBuf::from(other_str));
+        }
+    }
+    children
+}
+
+pub(crate) fn is_inside_any_child_base_folder(path: &Path, child_bases: &[PathBuf]) -> bool {
+    if child_bases.is_empty() {
+        return false;
+    }
+    let norm_p = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    for cb in child_bases {
+        let norm_cb = cb.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+        if norm_p == norm_cb || norm_p.starts_with(&format!("{}\\", norm_cb)) {
+            return true;
+        }
+    }
+    false
+}
+
 #[tauri::command]
 pub(crate) fn save_base_folders(
     state: State<AppState>,
@@ -52,6 +83,8 @@ pub(crate) fn save_base_folders(
         )
         .map_err(|e| e.to_string())?;
     }
+    invalidate_cached_data_base_path();
+    repair_moved_files_table_paths(&conn);
     Ok(folders)
 }
 
@@ -90,14 +123,12 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
             };
             // 비마크다운 레코드 정리 (기존 버전에서 쌓인 불필요한 바이너리 레코드 제거)
             let _ = conn.execute("DELETE FROM files WHERE lower(extension) != 'md'", []);
+            repair_moved_files_table_paths(&conn);
 
-            let mut stmt = conn
-                .prepare("SELECT id, role, path FROM base_folders WHERE enabled = 1 AND role != 'git'")
-                .unwrap();
-            let folders: Vec<(String, String, String)> = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-                .unwrap()
-                .filter_map(|r| r.ok())
+            let folders = resolve_effective_vault_folders(&conn, false);
+            let norm_folder_prefixes: Vec<String> = folders
+                .iter()
+                .map(|(_, _, p)| format!("{}\\", normalize_win_path(p).trim_end_matches('\\')))
                 .collect();
 
             let mut reg_stmt = conn.prepare("SELECT uuid, full_path FROM files").unwrap();
@@ -112,8 +143,11 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
             let mut stale_uuids: Vec<String> = Vec::new();
 
             for (u, fp) in rows {
-                if Path::new(&fp).is_file() {
-                    let norm_fp = normalize_win_path(&fp);
+                let norm_fp = normalize_win_path(&fp);
+                let in_active_base = norm_folder_prefixes
+                    .iter()
+                    .any(|pref| norm_fp.starts_with(pref));
+                if Path::new(&fp).is_file() && in_active_base {
                     reg_set.insert(norm_fp.clone());
                     owner_map.insert(u, norm_fp);
                 } else {
@@ -141,16 +175,22 @@ pub(crate) fn start_batch_uuid_scan(app: AppHandle, state: State<AppState>) -> R
         let mut pending_list: Vec<PendingItem> = Vec::new();
         let mut seen_yaml_uuids_on_disk: HashMap<String, String> = HashMap::new();
 
+        let all_base_paths: Vec<String> = folders.iter().map(|(_, _, p)| p.clone()).collect();
         for (base_id, role, base_path_str) in folders {
             let base_path = PathBuf::from(&base_path_str);
             if !base_path.exists() {
                 let _ = fs::create_dir_all(&base_path);
                 continue;
             }
+            let child_bases = collect_child_base_folder_paths(&base_path, &all_base_paths);
             for entry in WalkDir::new(&base_path)
                 .into_iter()
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
+                .filter(|e| {
+                    e.file_type().is_file()
+                        && !is_internal_mylore_path(e.path())
+                        && !is_inside_any_child_base_folder(e.path(), &child_bases)
+                })
             {
                 let full_path = entry.path().to_path_buf();
                 let ext = full_path
@@ -402,28 +442,27 @@ pub(crate) fn get_virtual_tree(state: State<AppState>) -> Result<Vec<FileNode>, 
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
-    let mut stmt = conn
-        .prepare("SELECT id, role, path FROM base_folders WHERE enabled = 1")
-        .map_err(|e| e.to_string())?;
-    let folders: Vec<(String, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let folders = resolve_effective_vault_folders(&conn, true);
 
     let urgent_task_re = cached_regex!(r"(?m)^\s*[-*+]\s+\[[!>]\]\s+");
     let date_prefix_re = cached_regex!(r"^(\d{4}-\d{2}-\d{2})");
 
+    let all_base_paths: Vec<String> = folders.iter().map(|(_, _, p)| p.clone()).collect();
     let mut out = Vec::new();
     for (base_id, role, base_path_str) in folders {
         let base_path = Path::new(&base_path_str);
         if !base_path.exists() {
             continue;
         }
+        let child_bases = collect_child_base_folder_paths(base_path, &all_base_paths);
         for entry in WalkDir::new(base_path)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
+            .filter(|e| {
+                e.file_type().is_file()
+                    && !is_internal_mylore_path(e.path())
+                    && !is_inside_any_child_base_folder(e.path(), &child_bases)
+            })
         {
             let full_path = entry.path();
             let ext = full_path

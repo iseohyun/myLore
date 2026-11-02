@@ -302,6 +302,7 @@ pub(crate) fn handle_media_job(app_handle: &AppHandle, conn: &Connection, job: S
             ),
         );
 
+        let target_path_str = target_path.to_string_lossy().to_string();
         let _ = conn.execute(
             "INSERT OR REPLACE INTO media_inbox
                  (uuid, file_name, full_path, taken_date, taken_time, file_size, content_hash, status)
@@ -309,12 +310,24 @@ pub(crate) fn handle_media_job(app_handle: &AppHandle, conn: &Connection, job: S
             params![
                 media_uuid,
                 file_name,
-                target_path.to_string_lossy().to_string(),
+                target_path_str,
                 taken_date,
                 taken_time,
                 file_bytes.len() as i64,
                 content_hash
             ],
+        );
+        upsert_media_origin_record(
+            &conn,
+            &content_hash,
+            &blake3_hash,
+            &file_name,
+            file_bytes.len() as u64,
+            &dev_id,
+            &dev_name,
+            &taken_date,
+            &taken_time,
+            &target_path_str,
         );
         for h in [&content_hash, &blake3_hash] {
             if !h.is_empty() {
@@ -556,6 +569,7 @@ pub(crate) fn backfill_picture_extern_device_photos(conn: &Connection) {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let (t_date, t_time) = epoch_ms_to_local_date_time(mtime_ms);
+            let fpath_str = fpath.to_string_lossy().to_string();
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO media_inbox
                      (uuid, file_name, full_path, taken_date, taken_time, file_size, content_hash, status)
@@ -563,12 +577,24 @@ pub(crate) fn backfill_picture_extern_device_photos(conn: &Connection) {
                 params![
                     Uuid::new_v4().to_string(),
                     fname,
-                    fpath.to_string_lossy().to_string(),
+                    fpath_str,
                     t_date,
                     t_time,
                     bytes.len() as i64,
                     sha
                 ],
+            );
+            upsert_media_origin_record(
+                conn,
+                &sha,
+                "",
+                &fname,
+                bytes.len() as u64,
+                "",
+                "SM-S901N",
+                &t_date,
+                &t_time,
+                &fpath_str,
             );
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO synced_file_hashes (file_hash, file_name, synced_at)

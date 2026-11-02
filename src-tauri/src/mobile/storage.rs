@@ -5,19 +5,27 @@ use crate::*;
 pub(crate) static CACHED_DATA_BASE_PATH: std::sync::OnceLock<Mutex<String>> =
     std::sync::OnceLock::new();
 
+pub(crate) fn invalidate_cached_data_base_path() {
+    if let Some(lock) = CACHED_DATA_BASE_PATH.get() {
+        if let Ok(mut guard) = lock.lock() {
+            guard.clear();
+        }
+    }
+}
+
 pub(crate) fn get_archive_mobile_dir(conn: &Connection, sub: &str) -> PathBuf {
-    let data_base: String = {
+    let mobile_root: String = {
         let lock = CACHED_DATA_BASE_PATH.get_or_init(|| Mutex::new(String::new()));
         let mut guard = lock.lock().unwrap();
         if guard.is_empty() {
-            let db_p = data_base_path_string(&conn);
-            *guard = db_p.clone();
-            db_p
+            let resolved = resolve_mobile_root_dir(conn).to_string_lossy().to_string();
+            *guard = resolved.clone();
+            resolved
         } else {
             guard.clone()
         }
     };
-    let dir = Path::new(&data_base).join("mobile").join(sub);
+    let dir = Path::new(&mobile_root).join(sub);
     if !dir.exists() {
         let _ = fs::create_dir_all(&dir);
     }

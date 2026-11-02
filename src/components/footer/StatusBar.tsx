@@ -7,11 +7,16 @@ import React, { useEffect, useState } from 'react';
 import {
   DirectCallPlayInfo,
   GeminiApiKeyStatus,
+  MultiLlmProvidersStatus,
   MyLoreAppSettings,
   ScanProgressPayload,
   TrashedFileRecord,
 } from '../../types/mylore';
-import { showInExplorer } from '../../services/tauriClient';
+import {
+  getMultiLlmProvidersStatus,
+  openExternalUrlInChrome,
+  showInExplorer,
+} from '../../services/tauriClient';
 import {
   calculateAiRemainingPercent,
   parseAiQuotaRetryInfo,
@@ -75,9 +80,25 @@ export function StatusBar({
 }: StatusBarProps) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [multiLlmStatus, setMultiLlmStatus] =
+    useState<MultiLlmProvidersStatus | null>(null);
 
   useEffect(() => {
-    if (!geminiStatus?.retryAfterAt) return;
+    const refreshMulti = () => {
+      getMultiLlmProvidersStatus()
+        .then(setMultiLlmStatus)
+        .catch(() => {});
+    };
+    refreshMulti();
+    window.addEventListener('mylore-multi-llm-updated', refreshMulti);
+    const interval = window.setInterval(refreshMulti, 30000);
+    return () => {
+      window.removeEventListener('mylore-multi-llm-updated', refreshMulti);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
     setNowMs(Date.now());
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
@@ -101,27 +122,183 @@ export function StatusBar({
     audioEl.playbackRate = playbackSpeed;
   }, [playbackSpeed, directCallPlayInfo?.audioUrl, callAudioRef]);
 
-  const showAi = appSettings?.statusBarShowAi !== false;
+  const showGemini = appSettings?.statusBarShowGemini !== false;
+  const showClaude = appSettings?.statusBarShowClaude !== false;
+  const showOpenai = appSettings?.statusBarShowOpenai !== false;
+  const showGrok = appSettings?.statusBarShowGrok !== false;
   const showTrash = appSettings?.statusBarShowTrash !== false;
   const showAutoSave = appSettings?.statusBarShowAutoSave !== false;
   const showPort = appSettings?.statusBarShowPort !== false;
 
   const dailyLimit = appSettings?.aiDailyTokenLimit || 1000000;
-  const todayUsed = geminiStatus?.todayUsedTokens || 0;
-  const retryInfo = parseAiQuotaRetryInfo(geminiStatus?.retryAfterAt, nowMs);
-  const aiPctText = calculateAiRemainingPercent(
-    todayUsed,
-    dailyLimit,
-    geminiStatus?.retryAfterAt
-  );
-  const numericPct = parseFloat(aiPctText);
-  const aiBadgeTone =
-    retryInfo.isActive || numericPct <= 15
-      ? 'low'
-      : numericPct <= 40
-        ? 'warn'
-        : '';
-  const aiDisplayText = retryInfo.isActive ? retryInfo.shortText : aiPctText;
+
+  const buildProviderBadgeMeta = (
+    key: 'gemini' | 'claude' | 'openai' | 'grok',
+    label: string,
+    color: string,
+    settingKey:
+      | 'statusBarShowGemini'
+      | 'statusBarShowClaude'
+      | 'statusBarShowOpenai'
+      | 'statusBarShowGrok',
+    visible: boolean,
+    hasKey: boolean,
+    todayTokens: number,
+    todayReqs: number,
+    retryAfterAt: string | undefined,
+    lastError: string | undefined,
+    usageUrl: string,
+    creditDisplayText?: string,
+    remainingCreditUsd?: number,
+    creditExhausted?: boolean
+  ) => {
+    const rawRetry = parseAiQuotaRetryInfo(retryAfterAt, nowMs);
+    const pctText = calculateAiRemainingPercent(
+      todayTokens,
+      dailyLimit,
+      retryAfterAt
+    );
+    const numPct = parseFloat(pctText);
+    const fallbackLockStr = (() => {
+      const d = new Date(nowMs + 5 * 3600 * 1000);
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mi = String(d.getMinutes()).padStart(2, '0');
+      return `${mm}-${dd} ${hh}:${mi}`;
+    })();
+    const isPaidProvider = key !== 'gemini';
+    const effectiveRetryActive = isPaidProvider
+      ? false
+      : (rawRetry.isActive && (todayTokens > 0 || todayReqs > 0)) ||
+        (hasKey && todayTokens >= dailyLimit);
+    const effectiveShortText =
+      rawRetry.isActive && rawRetry.shortText
+        ? rawRetry.shortText
+        : fallbackLockStr;
+
+    const isZeroCredit =
+      isPaidProvider &&
+      (Boolean(creditExhausted) ||
+        creditDisplayText === '0$' ||
+        (remainingCreditUsd !== undefined && remainingCreditUsd <= 0.0001) ||
+        Boolean(
+          lastError &&
+            /no credits|insufficient_quota|credit balance|exhausted|exceeded your current quota|billing|prepaid/i.test(
+              lastError
+            )
+        ));
+
+    const paidDollarStr = isZeroCredit
+      ? '0$'
+      : creditDisplayText ||
+        `${(remainingCreditUsd !== undefined ? remainingCreditUsd : 5.0).toFixed(2)}$`;
+
+    const tone: '' | 'warn' | 'low' = !hasKey
+      ? ''
+      : isPaidProvider
+        ? isZeroCredit ||
+          (remainingCreditUsd !== undefined && remainingCreditUsd <= 0.5)
+          ? 'low'
+          : remainingCreditUsd !== undefined && remainingCreditUsd <= 1.5
+            ? 'warn'
+            : ''
+        : effectiveRetryActive || numPct <= 15
+          ? 'low'
+          : numPct <= 40
+            ? 'warn'
+            : '';
+
+    const displayValue = !hasKey
+      ? '미등록'
+      : isPaidProvider
+        ? paidDollarStr
+        : effectiveRetryActive
+          ? effectiveShortText
+          : pctText;
+
+    return {
+      key,
+      label,
+      color,
+      settingKey,
+      visible,
+      hasKey,
+      todayTokens,
+      todayReqs,
+      retryAfterAt,
+      lastError,
+      usageUrl,
+      isLocked: effectiveRetryActive,
+      isZeroCredit,
+      tone,
+      displayValue,
+    };
+  };
+
+  const providerBadges = [
+    buildProviderBadgeMeta(
+      'gemini',
+      'Gemini',
+      '#4285F4',
+      'statusBarShowGemini',
+      showGemini,
+      Boolean(geminiStatus?.hasKey),
+      geminiStatus?.todayUsedTokens || 0,
+      geminiStatus?.todayRequestCount || 0,
+      geminiStatus?.retryAfterAt,
+      geminiStatus?.lastQuotaError,
+      'https://aistudio.google.com/app/plan_information'
+    ),
+    buildProviderBadgeMeta(
+      'claude',
+      'Claude',
+      '#D97757',
+      'statusBarShowClaude',
+      showClaude,
+      Boolean(multiLlmStatus?.claude?.hasKey),
+      multiLlmStatus?.claude?.todayUsedTokens || 0,
+      multiLlmStatus?.claude?.todayRequestCount || 0,
+      multiLlmStatus?.claude?.retryAfterAt || undefined,
+      multiLlmStatus?.claude?.lastError,
+      'https://console.anthropic.com/settings/billing',
+      multiLlmStatus?.claude?.creditDisplayText,
+      multiLlmStatus?.claude?.remainingCreditUsd,
+      multiLlmStatus?.claude?.creditExhausted
+    ),
+    buildProviderBadgeMeta(
+      'openai',
+      'OpenAI',
+      '#10A37F',
+      'statusBarShowOpenai',
+      showOpenai,
+      Boolean(multiLlmStatus?.openai?.hasKey),
+      multiLlmStatus?.openai?.todayUsedTokens || 0,
+      multiLlmStatus?.openai?.todayRequestCount || 0,
+      multiLlmStatus?.openai?.retryAfterAt || undefined,
+      multiLlmStatus?.openai?.lastError,
+      'https://platform.openai.com/usage',
+      multiLlmStatus?.openai?.creditDisplayText,
+      multiLlmStatus?.openai?.remainingCreditUsd,
+      multiLlmStatus?.openai?.creditExhausted
+    ),
+    buildProviderBadgeMeta(
+      'grok',
+      'Grok',
+      '#A855F7',
+      'statusBarShowGrok',
+      showGrok,
+      Boolean(multiLlmStatus?.grok?.hasKey),
+      multiLlmStatus?.grok?.todayUsedTokens || 0,
+      multiLlmStatus?.grok?.todayRequestCount || 0,
+      multiLlmStatus?.grok?.retryAfterAt || undefined,
+      multiLlmStatus?.grok?.lastError,
+      'https://console.x.ai/',
+      multiLlmStatus?.grok?.creditDisplayText,
+      multiLlmStatus?.grok?.remainingCreditUsd,
+      multiLlmStatus?.grok?.creditExhausted
+    ),
+  ];
 
   const toggleItem = (key: keyof MyLoreAppSettings, currentVal: boolean) => {
     if (!handleUpdateAppSettings) return;
@@ -135,8 +312,8 @@ export function StatusBar({
         onContextMenu={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          const menuWidth = 220;
-          const menuHeight = 165;
+          const menuWidth = 390;
+          const menuHeight = 290;
           const x = Math.min(e.clientX, window.innerWidth - menuWidth - 10);
           const y = Math.max(10, e.clientY - menuHeight);
           setMenuPos({ x, y });
@@ -317,20 +494,46 @@ export function StatusBar({
                   ↩ 휴지통 되돌리기 ({trashHistory.length})
                 </button>
               )}
-              {showAi && (
-                <span
-                  className={`statusbar-ai-badge ${
-                    retryInfo.isActive ? 'low' : aiBadgeTone
-                  }`}
-                  title={
-                    retryInfo.isActive
-                      ? `AI 5시간 쿼터 락 대기 중 (해제 예정: ${geminiStatus?.retryAfterAt}) — 락 해제 전까지 사용량 유지: ${todayUsed.toLocaleString('ko-KR')} / ${dailyLimit.toLocaleString('ko-KR')} 토큰 (${geminiStatus?.todayRequestCount || 0}회 호출)`
-                      : `금일 AI 토큰 사용량: ${todayUsed.toLocaleString('ko-KR')} / ${dailyLimit.toLocaleString('ko-KR')} 토큰 (${geminiStatus?.todayRequestCount || 0}회 호출)`
-                  }
-                >
-                  AI: {aiDisplayText}
-                </span>
-              )}
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  flexWrap: 'nowrap',
+                }}
+              >
+                {providerBadges
+                  .filter((p) => p.visible)
+                  .map((p) => (
+                    <span
+                      key={p.key}
+                      className={`statusbar-ai-badge ${p.tone}`}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                      title={
+                        p.isLocked
+                          ? `[${p.label}] 5시간 대기 락 중 (해제 예정: ${p.retryAfterAt}) — 금일 요청 토큰: ${p.todayTokens.toLocaleString('ko-KR')} 토큰 (${p.todayReqs}회)${p.lastError ? `\n사유: ${p.lastError}` : ''}\n(우클릭하여 ON/OFF 및 Usage 페이지 바로가기)`
+                          : `[${p.label}] 금일 요청 토큰: ${p.todayTokens.toLocaleString('ko-KR')} / ${dailyLimit.toLocaleString('ko-KR')} 토큰 (${p.todayReqs}회 호출)\n(우클릭하여 ON/OFF 및 Usage 페이지 바로가기)`
+                      }
+                    >
+                      <span
+                        style={{
+                          width: '7px',
+                          height: '7px',
+                          borderRadius: '50%',
+                          backgroundColor: p.color,
+                          display: 'inline-block',
+                        }}
+                      />
+                      <span>
+                        {p.label}:{p.displayValue}
+                      </span>
+                    </span>
+                  ))}
+              </div>
               {showAutoSave && (
                 <span>자동저장: {autoSaveEnabled ? 'ON' : 'OFF'}</span>
               )}
@@ -343,20 +546,107 @@ export function StatusBar({
       {menuPos && (
         <div
           className="statusbar-context-menu"
-          style={{ left: `${menuPos.x}px`, top: `${menuPos.y}px` }}
+          style={{
+            left: `${menuPos.x}px`,
+            top: `${menuPos.y}px`,
+            minWidth: '380px',
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="statusbar-context-header">
-            상태창 표시 항목 설정
+            🤖 4대 LLM 경고창 개별 표시 · 금일 토큰 · Usage 바로가기
           </div>
-          <button
-            type="button"
-            className="statusbar-context-item"
-            onClick={() => toggleItem('statusBarShowAi', showAi)}
+          {providerBadges.map((p) => (
+            <div
+              key={p.key}
+              className="statusbar-context-item"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '8px',
+                cursor: 'default',
+              }}
+            >
+              <button
+                type="button"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  padding: 0,
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}
+                onClick={() => toggleItem(p.settingKey, p.visible)}
+                title={`${p.label} 상태창 배지 표시 ON/OFF 전환`}
+              >
+                <span>{p.visible ? '☑️' : '⬜'}</span>
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: p.color,
+                    display: 'inline-block',
+                  }}
+                />
+                <span>
+                  {p.label} ({p.displayValue})
+                </span>
+              </button>
+
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '11.5px',
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  금일{' '}
+                  <strong style={{ color: '#e2e8f0' }}>
+                    {p.todayTokens.toLocaleString('ko-KR')}
+                  </strong>{' '}
+                  토큰 ({p.todayReqs}회)
+                </span>
+                <button
+                  type="button"
+                  className="toolbar-btn"
+                  style={{
+                    padding: '2px 7px',
+                    fontSize: '11px',
+                    lineHeight: 1.2,
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openExternalUrlInChrome(p.usageUrl);
+                    setMenuPos(null);
+                  }}
+                  title={`${p.label} 공식 API Usage / Billing 페이지 열기`}
+                >
+                  ↗ Usage
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <div
+            className="statusbar-context-header"
+            style={{
+              marginTop: '6px',
+              borderTop: '1px solid var(--border-color)',
+              paddingTop: '6px',
+            }}
           >
-            <span>{showAi ? '☑️' : '⬜'}</span>
-            <span>AI 잔여 백분율 (AI: {aiDisplayText})</span>
-          </button>
+            상태창 기타 표시 항목
+          </div>
           <button
             type="button"
             className="statusbar-context-item"

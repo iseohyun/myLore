@@ -301,7 +301,7 @@ export function useDocuments({
       finance: '💳 금융',
       diary: '📅 일정',
       settings: '⚙️ 설정',
-      logs: '📋 로그 기록',
+      logs: '⚖️ 결재창',
     };
     const label = titleMap[dashType];
     if (!label) return null;
@@ -334,7 +334,7 @@ export function useDocuments({
       finance: '💳 금융',
       diary: '📅 일정',
       settings: '⚙️ 설정',
-      logs: '📋 로그 기록',
+      logs: '⚖️ 결재창',
     };
     const label = titleMap[dashType];
     const virtualDoc: DocumentPayload = {

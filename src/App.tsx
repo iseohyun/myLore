@@ -2,14 +2,18 @@
  * @file App.tsx
  * @description 최상위 컴포넌트 진입점(`App`: 독립 뷰어 분기) 및 9개 도메인 훅·24개 UI 컴포넌트를 조합하는 레이아웃 오케스트레이터(`MainApp`).
  */
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  ApprovalCategory,
+  CallApprovalItem,
   ContextMenuState,
   OpenDocumentTab,
   PaletteMode,
   RightSidebarTab,
+  SettingsCategory,
   ViewMode,
 } from './types/mylore';
+import { getCallApprovalItems } from './services/tauriClient';
 import { DetachedPreviewWindowView } from './components/window/DetachedPreviewWindowView';
 import { StatusBar } from './components/footer/StatusBar';
 import { LogTerminalDrawer } from './components/footer/LogTerminalDrawer';
@@ -22,7 +26,7 @@ import { DiaryDashboard } from './components/dashboards/DiaryDashboard';
 import { LifelogDashboard } from './components/dashboards/LifelogDashboard';
 import { FinanceDashboard } from './components/dashboards/FinanceDashboard';
 import { SettingsDashboard } from './components/dashboards/SettingsDashboard';
-import { LogDashboard } from './components/dashboards/LogDashboard';
+import { ApprovalDashboard } from './components/dashboards/ApprovalDashboard';
 import { AppHeader } from './components/header/AppHeader';
 import { DocumentWorkspace } from './components/editor/DocumentWorkspace';
 import { RightSidebar } from './components/sidebar/RightSidebar';
@@ -81,6 +85,22 @@ function MainApp() {
   const [viewMode, setViewMode] = useState<ViewMode>('split');
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [rightTab, setRightTab] = useState<RightSidebarTab>('tree');
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>('folders');
+  const [approvalCategory, setApprovalCategory] =
+    useState<ApprovalCategory>('call_scripts');
+  const [approvalStageFilter, setApprovalStageFilter] = useState<
+    'pending' | 'revising' | 'verified' | 'all'
+  >('pending');
+  const [approvalItems, setApprovalItems] = useState<CallApprovalItem[]>([]);
+  const [selectedApprovalStem, setSelectedApprovalStem] = useState<
+    string | null
+  >(null);
+  const reloadApprovalItems = useCallback(async () => {
+    const items = await getCallApprovalItems();
+    setApprovalItems(items);
+    return items;
+  }, []);
   const [menuBarExpanded, setMenuBarExpanded] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [activeSubMenu, setActiveSubMenu] = useState<string | null>(null);
@@ -115,6 +135,17 @@ function MainApp() {
     setRightSidebarOpen,
     rightTab,
     setRightTab,
+    settingsCategory,
+    setSettingsCategory,
+    approvalCategory,
+    setApprovalCategory,
+    approvalStageFilter,
+    setApprovalStageFilter,
+    approvalItems,
+    setApprovalItems,
+    selectedApprovalStem,
+    setSelectedApprovalStem,
+    reloadApprovalItems,
     menuBarExpanded,
     setMenuBarExpanded,
     activeMenu,
@@ -228,7 +259,7 @@ function MainApp() {
           ) : activeTabPath === 'mylore://dashboard/settings' ? (
             <SettingsDashboard {...ctx} />
           ) : activeTabPath === 'mylore://dashboard/logs' ? (
-            <LogDashboard {...ctx} />
+            <ApprovalDashboard {...ctx} />
           ) : (
             <DocumentWorkspace {...ctx} />
           )}

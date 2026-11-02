@@ -59,30 +59,337 @@ pub(crate) fn default_projects_base_dir() -> PathBuf {
     default_user_root().join("Projects")
 }
 
-/// DB에 등록된 프로젝트 베이스 폴더 경로. 없으면 [`default_projects_base_dir`].
-pub(crate) fn projects_base_path_string(conn: &Connection) -> String {
-    conn.query_row(
-        "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
-        [],
-        |r| r.get(0),
-    )
-    .unwrap_or_else(|_| default_projects_base_dir().to_string_lossy().to_string())
+/// 일기 베이스 폴더가 DB에 없을 때 사용할 기본 경로.
+pub(crate) fn default_diary_base_dir() -> PathBuf {
+    default_user_root().join("Diary")
 }
 
-/// DB에 등록된 데이터(아카이브) 베이스 폴더 경로. 없으면 [`default_data_base_dir`].
+/// DB에 등록된 데이터(아카이브/Docs) 베이스 폴더 경로. 없으면 [`default_data_base_dir`].
 pub(crate) fn data_base_path_string(conn: &Connection) -> String {
     conn.query_row(
         "SELECT path FROM base_folders WHERE role = 'data' AND enabled = 1 LIMIT 1",
         [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| detect_default_docs_root_dir().to_string_lossy().to_string())
+}
+
+/// DB에 등록된 프로젝트 베이스 폴더 경로.
+/// `base_folders`에 별도의 `projects` 행이 없더라도 3대 카테고리(`Docs`) 하위의 `Projects` 폴더를 자동으로 해석합니다.
+pub(crate) fn projects_base_path_string(conn: &Connection) -> String {
+    if let Ok(explicit) = conn.query_row(
+        "SELECT path FROM base_folders WHERE role = 'projects' AND enabled = 1 LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() && Path::new(trimmed).exists() {
+            return trimmed.to_string();
+        }
+    }
+
+    let docs_base = PathBuf::from(data_base_path_string(conn));
+    let default_proj = docs_base.join("Projects");
+    let candidate_setting = default_proj.join(".myLore").join("setting.json");
+    if candidate_setting.is_file() {
+        if let Ok(raw) = fs::read_to_string(&candidate_setting) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(sub) = parsed.get("topicFolderProjects").and_then(|v| v.as_str()) {
+                    let resolved = resolve_topic_sub_or_abs_path(&docs_base, sub, "Projects");
+                    return resolved.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+    if docs_base.exists() || default_proj.exists() {
+        return default_proj.to_string_lossy().to_string();
+    }
+    default_projects_base_dir().to_string_lossy().to_string()
+}
+
+/// DB에 등록된 일기(`diary`) 베이스 폴더 경로.
+/// `base_folders`에 별도의 `diary` 행이 없더라도 3대 카테고리(`Docs`) 하위의 `Diary` 폴더를 자동으로 해석합니다.
+pub(crate) fn diary_base_path_string(conn: &Connection) -> String {
+    if let Ok(explicit) = conn.query_row(
+        "SELECT path FROM base_folders WHERE role = 'diary' AND enabled = 1 LIMIT 1",
+        [],
+        |r| r.get::<_, String>(0),
+    ) {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() && Path::new(trimmed).exists() {
+            return trimmed.to_string();
+        }
+    }
+
+    let docs_base = PathBuf::from(data_base_path_string(conn));
+    let proj_base = PathBuf::from(projects_base_path_string(conn));
+    let setting_path = proj_base.join(".myLore").join("setting.json");
+    if setting_path.is_file() {
+        if let Ok(raw) = fs::read_to_string(&setting_path) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(sub) = parsed.get("topicFolderDiary").and_then(|v| v.as_str()) {
+                    let resolved = resolve_topic_sub_or_abs_path(&docs_base, sub, "Diary");
+                    return resolved.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+    let default_diary = docs_base.join("Diary");
+    if docs_base.exists() || default_diary.exists() {
+        return default_diary.to_string_lossy().to_string();
+    }
+    default_diary_base_dir().to_string_lossy().to_string()
+}
+
+/// 특정 역할(`projects`, `diary`, `data`, `git`, `picture`)에 대응하는 `(base_id, PathBuf)`를 반환합니다.
+/// 3대 카테고리(`Docs`·`Git`·`Picture`)만 `base_folders`에 등록된 경우에도 `Docs/Projects` 및 `Docs/Diary`를 자동 해석합니다.
+pub(crate) fn resolve_role_base_folder(
+    conn: &Connection,
+    role: &str,
+) -> Result<(String, PathBuf), String> {
+    if let Ok((id, path_str)) = conn.query_row(
+        "SELECT id, path FROM base_folders WHERE role = ?1 AND enabled = 1 LIMIT 1",
+        params![role],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ) {
+        let trimmed = path_str.trim();
+        if !trimmed.is_empty() {
+            return Ok((id, PathBuf::from(trimmed)));
+        }
+    }
+    match role {
+        "projects" => Ok((
+            "base-projects-1".to_string(),
+            PathBuf::from(projects_base_path_string(conn)),
+        )),
+        "diary" => Ok((
+            "base-diary-1".to_string(),
+            PathBuf::from(diary_base_path_string(conn)),
+        )),
+        "data" => Ok((
+            "base-data-1".to_string(),
+            PathBuf::from(data_base_path_string(conn)),
+        )),
+        "git" => Ok(("base-git-1".to_string(), detect_default_git_root_dir())),
+        "picture" => Ok((
+            "base-picture-1".to_string(),
+            PathBuf::from(picture_base_path_string(conn)),
+        )),
+        _ => Err(format!(
+            "역할({})에 해당하는 베이스 폴더가 설정되어 있지 않습니다.",
+            role
+        )),
+    }
+}
+
+/// 스캔·가상 파일트리·문서 조회 시 사용할 유효 볼트 폴더 목록 `(id, role, path)`을 반환합니다.
+/// - 사용자가 `base_folders`에 `Docs`(`data`), `Git`(`git`), `Picture`(`picture`) 3개만 등록해 둔 경우에도
+///   `Docs` 하위의 `Projects`(`role = "projects"`)와 `Diary`(`role = "diary"`)를 자동으로 포함합니다.
+/// - 경로 길이가 긴 하위 폴더(`Docs\Projects`, `Docs\Diary`)가 상위 폴더(`Docs`)보다 먼저 매칭되도록 내림차순 정렬합니다.
+pub(crate) fn resolve_effective_vault_folders(
+    conn: &Connection,
+    include_git: bool,
+) -> Vec<(String, String, String)> {
+    let mut folders: Vec<(String, String, String)> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, role, path FROM base_folders WHERE enabled = 1 AND role != 'picture'",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) {
+            for (id, role, path) in rows.flatten() {
+                if !include_git && role == "git" {
+                    continue;
+                }
+                if !path.trim().is_empty() {
+                    folders.push((id, role, path.trim().to_string()));
+                }
+            }
+        }
+    }
+
+    let has_projects = folders.iter().any(|(_, r, _)| r == "projects");
+    if !has_projects {
+        let proj_path = projects_base_path_string(conn);
+        if !proj_path.trim().is_empty() {
+            folders.push((
+                "base-projects-1".to_string(),
+                "projects".to_string(),
+                proj_path,
+            ));
+        }
+    }
+
+    let has_diary = folders.iter().any(|(_, r, _)| r == "diary");
+    if !has_diary {
+        let diary_path = diary_base_path_string(conn);
+        if !diary_path.trim().is_empty() {
+            folders.push(("base-diary-1".to_string(), "diary".to_string(), diary_path));
+        }
+    }
+
+    folders.sort_by(|a, b| b.2.len().cmp(&a.2.len()));
+    folders
+}
+
+/// 사용자 환경에서 3대 카테고리 중 `Docs` 루트 폴더를 자동 탐지합니다.
+/// 1) `%USERPROFILE%\Docs`, `%OneDrive%\Docs`
+/// 2) `%USERPROFILE%` 직속 하위 폴더 중 내부에 `Projects`와 `Diary`(및 `Mobile`)를 함께 가진 통합 문서 폴더
+/// 3) 없으면 [`default_user_root`]
+pub(crate) fn detect_default_docs_root_dir() -> PathBuf {
+    let mut direct_candidates: Vec<PathBuf> = Vec::new();
+    if let Some(up) = env_dir("USERPROFILE") {
+        direct_candidates.push(up.join("Docs"));
+    }
+    for od in [
+        env_dir("OneDrive"),
+        env_dir("OneDriveConsumer"),
+        env_dir("USERPROFILE").map(|p| p.join("OneDrive")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        direct_candidates.push(od.join("Docs"));
+    }
+    for c in &direct_candidates {
+        if c.is_dir() {
+            return c.clone();
+        }
+    }
+
+    if let Some(up) = env_dir("USERPROFILE") {
+        if let Ok(entries) = fs::read_dir(&up) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_dir() {
+                    continue;
+                }
+                let name = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if name.starts_with('.') || name.eq_ignore_ascii_case("OneDrive") {
+                    continue;
+                }
+                if p.join("Projects").is_dir()
+                    && p.join("Diary").is_dir()
+                    && (p.join("Mobile").is_dir() || p.join("mobile").is_dir())
+                {
+                    return p;
+                }
+            }
+        }
+    }
+
+    default_user_root()
+}
+
+/// 사용자 환경에서 3대 카테고리 중 `Git` 루트 폴더를 자동 탐지합니다.
+pub(crate) fn detect_default_git_root_dir() -> PathBuf {
+    let c_git = PathBuf::from(r"C:\git");
+    if c_git.is_dir() {
+        return c_git;
+    }
+    if let Some(up) = env_dir("USERPROFILE") {
+        let up_git = up.join("git");
+        if up_git.is_dir() {
+            return up_git;
+        }
+    }
+    default_user_root().join("Git")
+}
+
+/// 사용자 환경에서 3대 카테고리 중 `Picture` 루트 폴더를 자동 탐지합니다.
+pub(crate) fn detect_default_picture_root_dir() -> PathBuf {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(up) = env_dir("USERPROFILE") {
+        candidates.push(up.join("Picture"));
+    }
+    for od in [
+        env_dir("OneDrive"),
+        env_dir("OneDriveConsumer"),
+        env_dir("USERPROFILE").map(|p| p.join("OneDrive")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        candidates.push(od.join("Picture"));
+    }
+    let docs_root = detect_default_docs_root_dir();
+    if let Some(parent) = docs_root.parent() {
+        candidates.push(parent.join("Picture"));
+    }
+    candidates.push(docs_root.join("Picture"));
+
+    candidates
+        .into_iter()
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| default_user_root().join("Picture"))
+}
+
+/// `Docs` 루트 대비 상대 폴더명(예: `"Projects"`, `"Diary"`, `"Mobile"`) 또는 절대 경로를 `PathBuf`로 해석합니다.
+pub(crate) fn resolve_topic_sub_or_abs_path(
+    docs_root: &Path,
+    sub_or_abs: &str,
+    default_sub: &str,
+) -> PathBuf {
+    let trimmed = sub_or_abs.trim();
+    let effective = if trimmed.is_empty() {
+        default_sub
+    } else {
+        trimmed
+    };
+    let candidate = Path::new(effective);
+    if candidate.is_absolute() || effective.contains(':') || effective.starts_with(r"\\") {
+        candidate.to_path_buf()
+    } else {
+        docs_root.join(effective)
+    }
+}
+
+/// DB에 등록된 사진첩(`picture`) 베이스 폴더 경로. 없으면 자동 탐지된 `Picture` 폴더 경로를 반환합니다.
+pub(crate) fn picture_base_path_string(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT path FROM base_folders WHERE role = 'picture' AND enabled = 1 LIMIT 1",
+        [],
         |r| r.get(0),
     )
-    .unwrap_or_else(|_| default_data_base_dir().to_string_lossy().to_string())
+    .ok()
+    .filter(|s: &String| !s.trim().is_empty())
+    .unwrap_or_else(|| detect_default_picture_root_dir().to_string_lossy().to_string())
+}
+
+/// `Docs` 하위의 모바일 라이프로그 루트 폴더(`{Docs}/Mobile`) 경로를 해석합니다.
+/// 설정(`topic_folder_mobile`, 기본값 `"Mobile"`)을 따르며, 소문자 `mobile`만 존재할 경우에도 호환합니다.
+pub(crate) fn resolve_mobile_root_dir(conn: &Connection) -> PathBuf {
+    let docs_base = PathBuf::from(data_base_path_string(conn));
+    let mobile_sub_cfg = read_topic_folder_mobile(conn);
+    let target = resolve_topic_sub_or_abs_path(&docs_base, &mobile_sub_cfg, "Mobile");
+    if !target.exists() && mobile_sub_cfg.trim().eq_ignore_ascii_case("Mobile") {
+        let legacy_lower = docs_base.join("mobile");
+        if legacy_lower.is_dir() {
+            return legacy_lower;
+        }
+    }
+    let _ = fs::create_dir_all(&target);
+    target
 }
 
 /// 사진첩 동기화 루트 폴더(`Picture\extern`) 경로를 해석합니다.
-/// 프로젝트/데이터 베이스 폴더의 상위 폴더(예: `OneDrive\Picture\extern`) 또는 환경 변수 `OneDrive\Picture\extern`을 우선 사용합니다.
+/// DB에 등록된 `picture` 베이스 폴더 또는 자동 탐지된 `Picture` 루트 하위의 `extern`을 사용합니다.
 pub(crate) fn resolve_picture_extern_root_dir(conn: &Connection) -> PathBuf {
     let mut candidates: Vec<PathBuf> = Vec::new();
+    let configured_pic = PathBuf::from(picture_base_path_string(conn));
+    if !configured_pic.as_os_str().is_empty() {
+        candidates.push(configured_pic);
+    }
     let proj_base = PathBuf::from(projects_base_path_string(conn));
     if let Some(parent) = proj_base.parent() {
         candidates.push(parent.join("Picture"));
@@ -129,7 +436,7 @@ pub(crate) fn resolve_picture_extern_device_dir(
             return String::new();
         }
         // "samsung SM-S901N" 형태이면 모델 코드("SM-S901N")만 추출
-        let stripped = if trimmed.len() > 8 && trimmed[..8].eq_ignore_ascii_case("samsung ") {
+        let stripped = if trimmed.to_ascii_lowercase().starts_with("samsung ") {
             trimmed[8..].trim()
         } else {
             trimmed

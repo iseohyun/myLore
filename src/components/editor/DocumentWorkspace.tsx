@@ -323,17 +323,34 @@ export function DocumentWorkspace({
   }, [docFindMatchRange, findBarMode, smsRawEditMode, viewMode]);
 
   useEffect(() => {
+    if (!isCurrentDocCall || activeAudioLineIndex === null || findBarMode !== 'closed') return;
+    if (Date.now() - lastEditorKeyPressMsRef.current < 2200) return;
+    const activeCue = audioScriptCues.find((c) => c.lineIndex === activeAudioLineIndex);
+    if (!activeCue) return;
+    const ta = editorRef.current;
+    const backdrop = editorBackdropRef.current;
+    if (ta && backdrop) {
+      backdrop.style.width = `${ta.clientWidth}px`;
+      const markEl = backdrop.querySelector('.editor-find-selection-mark') as HTMLElement | null;
+      if (markEl) {
+        const targetTop = Math.max(0, markEl.offsetTop - Math.floor(ta.clientHeight * 0.38));
+        ta.scrollTop = targetTop;
+        backdrop.scrollTop = targetTop;
+      }
+      try {
+        ta.setSelectionRange(activeCue.charStart, activeCue.charEnd);
+      } catch {
+        // ignore
+      }
+    }
+  }, [activeAudioLineIndex, isCurrentDocCall, findBarMode]);
+
+  useEffect(() => {
     const reqFromFm = currentDoc?.frontmatter?.['user_requirement'] || '';
     setCallReqInput(reqFromFm);
-    setIsReqEditorOpen(
-      currentDoc?.frontmatter?.['transcript_status'] === 'needs_revision'
-    );
+    setIsReqEditorOpen(currentDoc?.frontmatter?.['transcript_status'] === 'needs_revision');
     setOptimisticDocStage(null);
-  }, [
-    currentDoc?.fullPath,
-    currentDoc?.frontmatter?.['user_requirement'],
-    currentDoc?.frontmatter?.['transcript_status'],
-  ]);
+  }, [currentDoc?.fullPath, currentDoc?.frontmatter?.['user_requirement'], currentDoc?.frontmatter?.['transcript_status']]);
 
   if (!currentDoc) {
     return (
@@ -728,28 +745,8 @@ export function DocumentWorkspace({
         (currentDoc.frontmatter['transcript_status'] === 'pending_quota' ||
           bodyText.includes('토큰 부족') ||
           bodyText.includes('생성 대기 중')) && (
-          <div
-            style={{
-              margin: '8px 14px 0 14px',
-              padding: '10px 14px',
-              borderRadius: '8px',
-              border: '1.5px solid #ef4444',
-              backgroundColor: 'rgba(239, 68, 68, 0.1)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: '10px',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-                fontSize: '12.5px',
-              }}
-            >
+          <div style={{ margin: '8px 14px 0 14px', padding: '10px 14px', borderRadius: '8px', border: '1.5px solid #ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '12.5px' }}>
               <span style={{ fontWeight: 700, color: '#fca5a5' }}>
                 ⚠️ LLM 토큰 부족/대기로 인해 아직 통화 요약 및 스크립트가 생성되지 않았습니다.
               </span>
@@ -762,16 +759,11 @@ export function DocumentWorkspace({
             <button
               className="toolbar-btn primary"
               disabled={isRetryingCalls}
-              style={{
-                borderColor: '#ef4444',
-                backgroundColor: 'rgba(239, 68, 68, 0.25)',
-              }}
+              style={{ borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.25)' }}
               onClick={async () => {
                 try {
                   setIsRetryingCalls(true);
-                  setStatusMessage(
-                    '🔄 미생성 통화 녹음의 LLM 요약+스크립트 변환을 즉시 재시도합니다...'
-                  );
+                  setStatusMessage('🔄 미생성 통화 녹음의 LLM 요약+스크립트 변환을 즉시 재시도합니다...');
                   const stat = await retryPendingCallTranscriptions();
                   setGeminiStatus(stat);
                   await refreshAllLifelogMessages();
@@ -789,9 +781,7 @@ export function DocumentWorkspace({
                 }
               }}
             >
-              {isRetryingCalls
-                ? '⏳ LLM 변환 재시도 중...'
-                : '🔄 지금 즉시 스크립트 생성 재시도'}
+              {isRetryingCalls ? '⏳ LLM 변환 재시도 중...' : '🔄 지금 즉시 스크립트 생성 재시도'}
             </button>
           </div>
         )}
@@ -806,10 +796,7 @@ export function DocumentWorkspace({
       )}
 
       {isCurrentDocSms && !smsRawEditMode ? (
-        <SmsBubbleView
-          bodyText={bodyText}
-          smsBubbleScrollRef={smsBubbleScrollRef}
-        />
+        <SmsBubbleView bodyText={bodyText} smsBubbleScrollRef={smsBubbleScrollRef} />
       ) : (
         <div className="editor-split-container">
           {(viewMode === 'split' || viewMode === 'editor') && (
@@ -825,31 +812,36 @@ export function DocumentWorkspace({
                   currentDocFullPath={currentDoc.fullPath}
                 />
               )}
-              {findBarMode !== 'closed' && docFindMatchRange && (
-                <div
-                  ref={editorBackdropRef}
-                  className="markdown-textarea-backdrop"
-                  aria-hidden="true"
-                >
-                  {bodyText.slice(0, docFindMatchRange.start)}
-                  <mark className="editor-find-selection-mark">
-                    {bodyText.slice(
-                      docFindMatchRange.start,
-                      docFindMatchRange.end
-                    )}
-                  </mark>
-                  {bodyText.slice(docFindMatchRange.end)}
-                  {'\n'}
-                </div>
-              )}
+              {(() => {
+                const activeCue =
+                  isCurrentDocCall && activeAudioLineIndex !== null
+                    ? audioScriptCues.find((c) => c.lineIndex === activeAudioLineIndex)
+                    : null;
+                const highlightRange =
+                  findBarMode !== 'closed' && docFindMatchRange
+                    ? docFindMatchRange
+                    : activeCue
+                      ? { start: activeCue.charStart, end: activeCue.charEnd }
+                      : null;
+                if (!highlightRange) return null;
+                return (
+                  <div ref={editorBackdropRef} className="markdown-textarea-backdrop" aria-hidden="true">
+                    {bodyText.slice(0, highlightRange.start)}
+                    <mark className="editor-find-selection-mark">
+                      {bodyText.slice(highlightRange.start, highlightRange.end)}
+                    </mark>
+                    {bodyText.slice(highlightRange.end)}
+                    {'\n'}
+                  </div>
+                );
+              })()}
               <textarea
                 ref={editorRef}
                 className="markdown-textarea"
                 value={bodyText}
                 onScroll={(e) => {
                   if (editorBackdropRef.current) {
-                    editorBackdropRef.current.scrollTop =
-                      e.currentTarget.scrollTop;
+                    editorBackdropRef.current.scrollTop = e.currentTarget.scrollTop;
                   }
                   handleEditorScroll(e);
                 }}
@@ -860,27 +852,18 @@ export function DocumentWorkspace({
                   if (linkTrigger && linkCandidates.length > 0) {
                     if (e.key === 'ArrowDown') {
                       e.preventDefault();
-                      setLinkSelectedIndex(
-                        (prev) => (prev + 1) % linkCandidates.length
-                      );
+                      setLinkSelectedIndex((prev) => (prev + 1) % linkCandidates.length);
                       return;
                     }
                     if (e.key === 'ArrowUp') {
                       e.preventDefault();
-                      setLinkSelectedIndex(
-                        (prev) =>
-                          (prev - 1 + linkCandidates.length) %
-                          linkCandidates.length
-                      );
+                      setLinkSelectedIndex((prev) => (prev - 1 + linkCandidates.length) % linkCandidates.length);
                       return;
                     }
                     if (e.key === 'Enter' || e.key === 'Tab') {
                       e.preventDefault();
-                      const chosen =
-                        linkCandidates[linkSelectedIndex] || linkCandidates[0];
-                      if (chosen) {
-                        handleCompleteBracketLink(chosen);
-                      }
+                      const chosen = linkCandidates[linkSelectedIndex] || linkCandidates[0];
+                      if (chosen) handleCompleteBracketLink(chosen);
                       return;
                     }
                     if (e.key === 'Escape') {
@@ -892,9 +875,7 @@ export function DocumentWorkspace({
                   }
                 }}
                 onMouseDown={(e) => {
-                  if (!e.ctrlKey && !e.metaKey) {
-                    lastEditorKeyPressMsRef.current = Date.now();
-                  }
+                  if (!e.ctrlKey && !e.metaKey) lastEditorKeyPressMsRef.current = Date.now();
                   setLinkTrigger(null);
                 }}
                 onChange={(e) => {
@@ -902,42 +883,24 @@ export function DocumentWorkspace({
                   const nextVal = e.target.value;
                   const offset = e.target.selectionStart;
                   setBodyText(nextVal);
-                  const detected = detectBracketLinkTrigger(nextVal, offset);
-                  setLinkTrigger(detected);
+                  setLinkTrigger(detectBracketLinkTrigger(nextVal, offset));
                   setLinkSelectedIndex(0);
-                  if (currentDoc) {
-                    recordEditPosition(currentDoc.fullPath, offset, false);
-                  }
+                  if (currentDoc) recordEditPosition(currentDoc.fullPath, offset, false);
                 }}
                 onClick={(e) => {
-                  if (
-                    (e.ctrlKey || e.metaKey) &&
-                    isCurrentDocCall &&
-                    audioScriptCues.length > 0
-                  ) {
+                  if ((e.ctrlKey || e.metaKey) && isCurrentDocCall && audioScriptCues.length > 0) {
                     const ta = e.currentTarget;
                     if (ta.selectionStart === ta.selectionEnd) {
                       const caret = ta.selectionStart;
-                      const clickedCue = audioScriptCues.find(
-                        (c) => caret >= c.charStart && caret <= c.charEnd
-                      );
-                      if (clickedCue) {
-                        void handleSeekAudioTime(
-                          clickedCue.startSec,
-                          clickedCue.lineIndex
-                        );
-                      }
+                      const clickedCue = audioScriptCues.find((c) => caret >= c.charStart && caret <= c.charEnd);
+                      if (clickedCue) void handleSeekAudioTime(clickedCue.startSec, clickedCue.lineIndex);
                     }
                   }
                 }}
                 onMouseUp={(e) => {
                   if (currentDoc) {
                     lastEditorKeyPressMsRef.current = Date.now();
-                    recordEditPosition(
-                      currentDoc.fullPath,
-                      e.currentTarget.selectionStart,
-                      false
-                    );
+                    recordEditPosition(currentDoc.fullPath, e.currentTarget.selectionStart, false);
                   }
                 }}
                 placeholder="여기에 마크다운 본문을 작성하세요..."
@@ -946,34 +909,19 @@ export function DocumentWorkspace({
           )}
 
           {(viewMode === 'split' || viewMode === 'preview') && (
-            <div
-              ref={previewPaneRef}
-              className="markdown-preview-pane rendered-md"
-            >
+            <div ref={previewPaneRef} className="markdown-preview-pane rendered-md">
               <MarkdownPreviewRenderer
                 bodyText={bodyText}
-                onUpdateTaskStatus={(lineIdx, nextCode) => {
-                  const next = updateTaskStatusInBody(
-                    bodyText,
-                    lineIdx,
-                    nextCode
-                  );
-                  setBodyText(next);
-                }}
+                onUpdateTaskStatus={(lineIdx, nextCode) => setBodyText(updateTaskStatusInBody(bodyText, lineIdx, nextCode))}
                 onNavigateUuid={async (targetUuid) => {
                   try {
-                    const targetDoc = await readDocumentByUuid(targetUuid);
-                    applyLoadedDocument(targetDoc);
+                    applyLoadedDocument(await readDocumentByUuid(targetUuid));
                   } catch (e) {
                     setStatusMessage(`UUID 링크 이동 실패: ${String(e)}`);
                   }
                 }}
-                onNavigateDocName={(docName) => {
-                  void handleNavigateDocByName(docName);
-                }}
-                onOpenExternalUrl={(url) => {
-                  openExternalUrlInChrome(url);
-                }}
+                onNavigateDocName={(docName) => void handleNavigateDocByName(docName)}
+                onOpenExternalUrl={(url) => openExternalUrlInChrome(url)}
                 activeAudioLineIndex={activeAudioLineIndex}
                 onSeekAudioTime={handleSeekAudioTime}
                 onEditSourceLine={(lineIdx) => {
@@ -985,17 +933,14 @@ export function DocumentWorkspace({
                   for (let k = 0; k < Math.min(lineIdx, lines.length); k++) {
                     charOffset += lines[k].length + 1;
                   }
-                  const lineLen = lines[lineIdx]?.length ?? 0;
-                  const targetPos = charOffset + lineLen;
+                  const targetPos = charOffset + (lines[lineIdx]?.length ?? 0);
                   ta.focus();
                   try {
                     ta.setSelectionRange(targetPos, targetPos);
                   } catch {
                     // ignore
                   }
-                  if (currentDoc) {
-                    recordEditPosition(currentDoc.fullPath, targetPos, false);
-                  }
+                  if (currentDoc) recordEditPosition(currentDoc.fullPath, targetPos, false);
                 }}
                 enableAudioTimestampSync={isCurrentDocCall}
               />
@@ -1011,39 +956,19 @@ export function DocumentWorkspace({
               />
 
               {currentDoc.backlinks && currentDoc.backlinks.length > 0 && (
-                <div
-                  style={{
-                    marginTop: '32px',
-                    paddingTop: '16px',
-                    borderTop: '1px solid var(--border-color)',
-                  }}
-                >
-                  <h3 style={{ marginBottom: '10px' }}>
-                    🔄 연결된 양방향 백링크 ({currentDoc.backlinks.length})
-                  </h3>
+                <div style={{ marginTop: '32px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                  <h3 style={{ marginBottom: '10px' }}>🔄 연결된 양방향 백링크 ({currentDoc.backlinks.length})</h3>
                   {currentDoc.backlinks.map((bl, bIdx) => (
                     <div
                       key={bIdx}
                       className="rendered-task-row"
                       style={{ cursor: 'pointer' }}
-                      onClick={async () => {
-                        const d = await readDocument(bl.sourcePath);
-                        applyLoadedDocument(d);
-                      }}
+                      onClick={async () => applyLoadedDocument(await readDocument(bl.sourcePath))}
                     >
-                      <span className={`role-badge ${bl.sourceRole}`}>
-                        {bl.sourceRole}
-                      </span>
+                      <span className={`role-badge ${bl.sourceRole}`}>{bl.sourceRole}</span>
                       <div>
                         <div style={{ fontWeight: 700 }}>{bl.sourceTitle}</div>
-                        <div
-                          style={{
-                            fontSize: '12px',
-                            color: 'var(--text-secondary)',
-                          }}
-                        >
-                          {bl.excerpt}
-                        </div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{bl.excerpt}</div>
                       </div>
                     </div>
                   ))}

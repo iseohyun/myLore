@@ -2,7 +2,7 @@
  * @file mylore.ts
  * @description Rust 백엔드 DTO(`src-tauri/src/models.rs`, `settings.rs`)와 1:1 대응하는 인터페이스 및 프론트엔드 UI 공용 타입 정의.
  */
-export type BaseFolderRole = 'data' | 'diary' | 'projects' | 'git';
+export type BaseFolderRole = 'data' | 'diary' | 'projects' | 'git' | 'picture';
 
 export interface BaseFolderConfig {
   id: string;
@@ -77,7 +77,8 @@ export type LifelogSourceType =
   | 'health'
   | 'media'
   | 'contacts'
-  | 'pc_log';
+  | 'pc_log'
+  | 'location';
 
 export interface LifelogMessage {
   id: number;
@@ -245,8 +246,13 @@ export interface MyLoreAppSettings {
   scrollSyncEnabled: boolean;
   autoCallTranscription: boolean;
   aiUserProfile: string;
+  callAnalysisPrompt?: string;
   aiDailyTokenLimit: number;
   statusBarShowAi: boolean;
+  statusBarShowGemini?: boolean;
+  statusBarShowClaude?: boolean;
+  statusBarShowOpenai?: boolean;
+  statusBarShowGrok?: boolean;
   statusBarShowTrash: boolean;
   statusBarShowAutoSave: boolean;
   statusBarShowPort: boolean;
@@ -273,6 +279,12 @@ export interface MyLoreAppSettings {
   logRetentionVersionDays: number;
   logRetentionSystemDays: number;
   logRetentionAiDays: number;
+  topicFolderDocs?: string;
+  topicFolderProjects?: string;
+  topicFolderDiary?: string;
+  topicFolderMobile?: string;
+  topicFolderGit?: string;
+  topicFolderPicture?: string;
   settingsFilePath: string;
 }
 
@@ -369,6 +381,15 @@ export type ViewMode =
   | 'dashboard_logs';
 
 export type RightSidebarTab = 'tree' | 'search' | 'toc' | 'backlinks' | 'lifelog';
+export type SettingsCategory =
+  | 'folders'
+  | 'appearance'
+  | 'shortcuts'
+  | 'sync_setting'
+  | 'sync_status'
+  | 'ai_setting'
+  | 'ai_queue'
+  | 'system_logs';
 export type PaletteMode = 'closed' | 'files' | 'commands';
 export type FolderSectionMode = 'open' | 'summary' | 'closed';
 
@@ -482,8 +503,189 @@ export interface GoogleCalendarSyncResult {
   lastSyncAt: string;
 }
 
+export interface CallAiDailyStat {
+  date: string;
+  label: string;
+  count: number;
+  geminiCount?: number;
+  claudeCount?: number;
+  openaiCount?: number;
+  grokCount?: number;
+  totalBytes?: number;
+  geminiBytes?: number;
+  claudeBytes?: number;
+  openaiBytes?: number;
+  grokBytes?: number;
+}
 
+export interface CallAiTranscriptionStats {
+  totalAudioCalls: number;
+  completedCalls: number;
+  remainingCalls: number;
+  totalAudioBytes?: number;
+  completedAudioBytes?: number;
+  remainingAudioBytes?: number;
+  dailyStats: CallAiDailyStat[];
+}
 
+export interface LlmProviderConfigStatus {
+  provider: string;
+  displayName: string;
+  hasKey: boolean;
+  maskedKey: string;
+  modelName: string;
+  verifiedAt: string;
+  todayUsedTokens: number;
+  totalUsedTokens: number;
+  todayRequestCount: number;
+  lastError: string;
+  retryAfterAt?: string | null;
+  chargedCreditUsd?: number;
+  spentCreditUsd?: number;
+  remainingCreditUsd?: number;
+  creditDisplayText?: string;
+  creditExhausted?: boolean;
+  hasAdminKey?: boolean;
+  maskedAdminKey?: string;
+  teamId?: string;
+  balanceSource?: string;
+}
 
+export interface MultiLlmProvidersStatus {
+  activeTextProvider: string;
+  storageLocation: string;
+  claude: LlmProviderConfigStatus;
+  openai: LlmProviderConfigStatus;
+  grok: LlmProviderConfigStatus;
+}
 
+export interface MediaOriginRegistryItem {
+  originHash: string;
+  originFileName: string;
+  originFileSize: number;
+  deviceName: string;
+  takenDate: string;
+  takenTime: string;
+  currentStatus: string;
+  currentPath: string;
+  currentHash: string;
+  historyNote: string;
+  firstSyncedAt: string;
+  updatedAt: string;
+}
+
+export interface MediaOriginRegistrySummary {
+  totalOriginCount: number;
+  originalKeptCount: number;
+  editedOrRenamedCount: number;
+  deletedBlockedCount: number;
+  items: MediaOriginRegistryItem[];
+}
+
+export interface LocationMovementLogItem {
+  id: number;
+  deviceId: string;
+  deviceName: string;
+  eventType: string;
+  placeLabel: string;
+  wifiSsid: string;
+  latitude: number;
+  longitude: number;
+  accuracyM: number;
+  batteryPct: number;
+  logDate: string;
+  logTime: string;
+  timestampMs: number;
+  naverMapUrl: string;
+  googleMapUrl: string;
+}
+
+export interface LocationMovementSummary {
+  totalLogs: number;
+  wifiLogsCount: number;
+  gpsLogsCount: number;
+  distinctPlaces: string[];
+  logs: LocationMovementLogItem[];
+}
+
+export type ApprovalCategory = 'call_scripts' | 'kakao_updates' | 'future_design';
+
+export interface KakaoUpdateRequestItem {
+  roomName: string;
+  pendingNotiCount: number;
+  lastSender: string;
+  lastMessagePreview: string;
+  lastNotiDate: string;
+  lastNotiTime: string;
+  lastNotiTs: number;
+  lastSyncedDate: string;
+  mdPath: string;
+  updatedAt: string;
+}
+
+export interface CallApprovalItem {
+  safeStem: string;
+  fileStem: string;
+  fileName: string;
+  contactName: string;
+  recDate: string;
+  recTime: string;
+  stage: number;
+  llmProvider: string;
+  userRequirement: string;
+  summaryText: string;
+  scriptMarkdown: string;
+  mdPath: string;
+  audioPath: string;
+  isVoiceMemo: boolean;
+  updatedAt: string;
+}
+
+export interface AiQueueAgentSlotStatus {
+  provider: string;
+  displayName: string;
+  isUsable: boolean;
+  statusLabel: string;
+  creditOrQuotaText: string;
+  todayRequestCount: number;
+  todayUsedTokens: number;
+}
+
+export interface AiQueuePendingItem {
+  queueOrder: number;
+  safeStem: string;
+  fileName: string;
+  contactName: string;
+  recDate: string;
+  recTime: string;
+  fileBytes: number;
+  stage: number;
+  isVoiceMemo: boolean;
+  hasExistingScript: boolean;
+  userRequirement: string;
+}
+
+export interface AiQueueRecentCompletedItem {
+  timestamp: string;
+  provider: string;
+  safeStem: string;
+  message: string;
+}
+
+export interface AiQueueDashboardPayload {
+  workerRunning: boolean;
+  workerPid: number;
+  workerHeartbeatAt: string;
+  lockFilePath: string;
+  autoTranscriptionEnabled: boolean;
+  unlockedAgentCount: number;
+  totalPendingCount: number;
+  totalPendingBytes: number;
+  stage1PendingCount: number;
+  stage3RevisionCount: number;
+  completedTodayCount: number;
+  agentSlots: AiQueueAgentSlotStatus[];
+  pendingItems: AiQueuePendingItem[];
+  recentCompleted: AiQueueRecentCompletedItem[];
+}
 
