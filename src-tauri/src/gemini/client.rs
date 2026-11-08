@@ -322,13 +322,8 @@ pub(crate) fn call_gemini_generate_content_single_model_ext(
     Ok(text.trim().to_string())
 }
 
-pub(crate) fn call_gemini_generate_content_single_model(
-    api_key: &str,
-    model_name: &str,
-    body_bytes: &[u8],
-) -> Result<String, String> {
-    call_gemini_generate_content_single_model_ext(api_key, model_name, body_bytes, true)
-}
+pub(crate) static NEXT_GEMINI_MODEL_RR: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 pub(crate) fn call_gemini_generate_content_with_model_ext(
     api_key: &str,
@@ -338,20 +333,21 @@ pub(crate) fn call_gemini_generate_content_with_model_ext(
     let body_bytes = serde_json::to_vec(request_json).map_err(|e| e.to_string())?;
 
     let (_, _, saved_model) = read_local_gemini_api_key_full();
-    let mut candidates: Vec<String> = Vec::new();
-    for m in [
-        saved_model.as_str(),
-        "gemini-flash-lite-latest",
-        "gemini-3.5-transcribe",
-        "gemini-3.5-flash-lite",
+    let verified_fast_pool = [
         "gemini-3.1-flash-lite",
-        "gemini-3.6-flash",
-        "gemini-flash-latest",
-    ] {
-        let trimmed = m.trim().trim_start_matches("models/").to_string();
-        if !trimmed.is_empty() && !trimmed.contains("2.5-flash") && !candidates.contains(&trimmed) {
-            candidates.push(trimmed);
-        }
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+    ];
+    let rr_start = NEXT_GEMINI_MODEL_RR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut candidates: Vec<String> = Vec::new();
+    for i in 0..verified_fast_pool.len() {
+        let m = verified_fast_pool[(rr_start + i) % verified_fast_pool.len()];
+        candidates.push(m.to_string());
+    }
+    let trimmed_saved = saved_model.trim().trim_start_matches("models/").to_string();
+    if !trimmed_saved.is_empty() && !trimmed_saved.contains("2.5-flash") && !candidates.contains(&trimmed_saved) {
+        candidates.push(trimmed_saved);
     }
 
     let mut tried: Vec<String> = Vec::new();
@@ -421,14 +417,6 @@ pub(crate) fn call_gemini_generate_content_ext(
     record_usage: bool,
 ) -> Result<String, String> {
     let (text, _) = call_gemini_generate_content_with_model_ext(api_key, request_json, record_usage)?;
-    Ok(text)
-}
-
-pub(crate) fn call_gemini_generate_content(
-    api_key: &str,
-    request_json: &serde_json::Value,
-) -> Result<String, String> {
-    let (text, _) = call_gemini_generate_content_with_model(api_key, request_json)?;
     Ok(text)
 }
 
@@ -568,25 +556,6 @@ pub(crate) fn transcribe_voice_recording_with_gemini_ext(
         }]
     });
     call_gemini_generate_content_ext(api_key, &req_json, record_usage)
-}
-
-pub(crate) fn transcribe_voice_recording_with_gemini(
-    api_key: &str,
-    audio_bytes: &[u8],
-    file_name: &str,
-    recording_source: &str,
-    user_requirement: Option<&str>,
-    user_profile: Option<&str>,
-) -> Result<String, String> {
-    transcribe_voice_recording_with_gemini_ext(
-        api_key,
-        audio_bytes,
-        file_name,
-        recording_source,
-        user_requirement,
-        user_profile,
-        true,
-    )
 }
 
 /// LLM 토큰 부족/한도 초과 발생 시 고갈 시점과 5시간(`5 * 3600 * 1000` ms) 후 자동 재시도 시점을 DB에 기록합니다.

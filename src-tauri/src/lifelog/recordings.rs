@@ -41,7 +41,7 @@ pub(crate) fn write_call_recording_markdown(
     let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // 기존 파일에 UUID 및 추가 요구사항이 있으면 유지
-    let (existing_uuid, existing_status, existing_req) = if md_path.exists() {
+    let (existing_uuid, _existing_status, existing_req) = if md_path.exists() {
         fs::read_to_string(&md_path)
             .ok()
             .map(|c| {
@@ -60,22 +60,49 @@ pub(crate) fn write_call_recording_markdown(
 
     let (status_str, target_stage, summary_body, script_body) = if let Some(tr) = transcript_opt.filter(|s| !s.trim().is_empty()) {
         let (sum_s, scr_s) = split_summary_and_transcript(tr);
-        let norm_scr = normalize_script_lines_with_timestamps_and_clean_name(
-            &scr_s,
-            contact_display,
-            &raw_stem,
-        );
-        // 스크립팅이 완료(또는 3단계 재스크립팅 완료)되면 2단계(사용자 확인 전: unverified)로 진입/회귀
-        ("unverified", 2u8, sum_s, norm_scr)
-    } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
-        let st = if existing_status == "needs_revision" {
-            ("needs_revision", 3u8)
+        let has_dialogue_lines = scr_s.contains("[00:") || scr_s.contains("] 나**:") || scr_s.contains("**: ");
+        let norm_scr = if scr_s.contains("### 음성인식엔진")
+            || scr_s.contains("### ✨ AI 후처리")
+            || (scr_s.contains("프롬프트 A 스크립트") && scr_s.contains("프롬프트 B 스크립트"))
+            || scr_s.contains("(사용자 선택 채택)")
+            || !has_dialogue_lines
+        {
+            scr_s.trim().to_string()
         } else {
-            ("pending_quota", 1u8)
+            let script_a = enforce_call_script_timetag_and_speaker_rules(
+                &scr_s,
+                contact_display,
+                &raw_stem,
+                None,
+                None,
+            );
+            let script_b = enforce_call_script_timetag_and_speaker_rules_slot_b(
+                &scr_s,
+                contact_display,
+                &raw_stem,
+                None,
+            );
+            format!(
+                "### 🅰️ 프롬프트 A 스크립트\n\n{}\n\n---\n\n### 🅱️ 프롬프트 B 스크립트\n\n{}",
+                script_a.trim(),
+                script_b.trim()
+            )
         };
+        // 통일 4단계: 1.다운로드 -> 2.ASR처리(### 음성인식엔진 완료) -> 3.후처리(### ✨ AI 후처리 완료) -> 4.확인(verified)
+        let has_asr = norm_scr.contains("### 음성인식엔진");
+        let has_post = norm_scr.contains("### ✨ AI 후처리");
+        let (st_str, st_num) = if has_asr && has_post {
+            ("postprocessed", 3u8)
+        } else if has_asr {
+            ("asr_completed", 2u8)
+        } else {
+            ("pending_asr", 1u8)
+        };
+        (st_str, st_num, sum_s, norm_scr)
+    } else if let Some((ex_at, retry_at, err_m)) = quota_error_info {
         (
-            st.0,
-            st.1,
+            "pending_asr",
+            1u8,
             format!(
                 "> ⚠️ **LLM 토큰 부족/한도 초과로 인해 아직 요약이 생성되지 않았습니다.**\n\
                  > - **토큰 고갈 감지 시점**: `{}`\n\
@@ -90,16 +117,11 @@ pub(crate) fn write_call_recording_markdown(
             ),
         )
     } else {
-        let st = if existing_status == "needs_revision" {
-            ("needs_revision", 3u8)
-        } else {
-            ("pending_quota", 1u8)
-        };
         (
-            st.0,
-            st.1,
-            "> ⏳ **LLM 통화 요약 생성 대기 중입니다.** (자동 변환 스케줄러가 순차 처리하거나 5시간 후 자동 재시도합니다.)".to_string(),
-            "> ⏳ **LLM 화자 분리 스크립트 생성 대기 중입니다.**".to_string(),
+            "pending_asr",
+            1u8,
+            "> ⏳ **로컬 ASR(`faster-whisper` + 음성지문) 스크립트 생성 대기 중입니다.**".to_string(),
+            "> ⏳ **로컬 ASR 화자 분리 스크립트 생성 대기 중입니다.**".to_string(),
         )
     };
 
@@ -565,13 +587,63 @@ pub(crate) fn find_call_audio_and_md_ext(
     }
 
     if matched_audio_path.is_none() {
+        let ex_safe = explicit_stem.as_ref().map(|ex| sanitize_filename_stem(ex));
+        let clean_safe = sanitize_filename_stem(clean_room);
+        let raw_safe = sanitize_filename_stem(room_or_sender);
+
+        // 1차: calls_audio_dir 및 rec_audio_dir 전체에서 정확한 safe_stem 일치를 최우선 탐색
+        for (a_dir, p_dir) in [(&calls_audio_dir, &calls_dir), (&rec_audio_dir, &rec_dir)] {
+            if let Ok(entries) = fs::read_dir(a_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    let ext = p
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if !["m4a", "amr", "mp3", "wav", "ogg", "aac"].contains(&ext.as_str()) {
+                        continue;
+                    }
+                    let stem = p
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let safe_stem = sanitize_filename_stem(&stem);
+                    if ex_safe.as_deref() == Some(safe_stem.as_str())
+                        || (!clean_safe.is_empty() && safe_stem == clean_safe)
+                        || (!raw_safe.is_empty() && safe_stem == raw_safe)
+                    {
+                        matched_audio_path = Some(p);
+                        matched_parent_dir = p_dir.clone();
+                        break;
+                    }
+                }
+            }
+            if matched_audio_path.is_some() {
+                break;
+            }
+        }
+    }
+
+    // 요청에 이미 구체적인 통화 일시 스템(_YYYYMMDDHHMMSS 등)이 명시되어 있는지 확인
+    let has_explicit_call_timestamp = explicit_stem
+        .as_deref()
+        .or(Some(clean_room))
+        .and_then(|s| s.rsplit('_').next())
+        .map(|tail| tail.len() >= 12 && tail.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false);
+
+    if matched_audio_path.is_none() && !has_explicit_call_timestamp {
         let contacts_map = load_mobile_contacts_map(conn);
         let target_norm = normalize_phone_digits(clean_room);
         let target_disp = resolve_contact_display(clean_room, &contacts_map);
         let target_key_a = normalize_call_contact_key(clean_room);
         let target_key_b = normalize_call_contact_key(&target_disp);
 
-        for (a_dir, p_dir) in [(&rec_audio_dir, &rec_dir), (&calls_audio_dir, &calls_dir)] {
+        for (a_dir, p_dir) in [(&calls_audio_dir, &calls_dir), (&rec_audio_dir, &rec_dir)] {
             if let Ok(entries) = fs::read_dir(a_dir) {
                 let mut same_date_candidates: Vec<(String, PathBuf)> = Vec::new();
                 let mut any_date_candidates: Vec<(String, PathBuf)> = Vec::new();
@@ -592,21 +664,6 @@ pub(crate) fn find_call_audio_and_md_ext(
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    let safe_stem = sanitize_filename_stem(&stem);
-                    if let Some(ref ex) = explicit_stem {
-                        if safe_stem == sanitize_filename_stem(ex) {
-                            matched_audio_path = Some(p);
-                            matched_parent_dir = p_dir.clone();
-                            break;
-                        }
-                    }
-                    if safe_stem == sanitize_filename_stem(clean_room)
-                        || safe_stem == sanitize_filename_stem(room_or_sender)
-                    {
-                        matched_audio_path = Some(p);
-                        matched_parent_dir = p_dir.clone();
-                        break;
-                    }
                     let (c_disp, r_d, r_t) = parse_call_audio_filename_meta(&stem, &contacts_map);
                     let c_key = normalize_call_contact_key(&c_disp);
                     let stem_digits = normalize_phone_digits(&stem);

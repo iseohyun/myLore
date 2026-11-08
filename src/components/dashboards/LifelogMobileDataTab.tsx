@@ -1,6 +1,8 @@
 /**
  * @file LifelogMobileDataTab.tsx
- * @description 라이프로그 대시보드 [💬 대화] 탭(카톡·문자·통화 3탭) 및 [📊 모니터링] 하위(M로그·헬스) 테이블 뷰.
+ * @description 라이프로그 대시보드 뷰:
+ * - 통화(`call`) 대시보드: 5단계 파이프라인(다운로드% → ASR 변환율% → AI 후처리 및 요약% → 결재대기% → 확정%) 막대그래프 + 최근 7일 LLM 처리량 그래프
+ * - 인물 검색, 통화 분석 프롬프트 관리 패널, 조회된 기록 리스트는 사용자 요청에 따라 제거됨.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -11,14 +13,6 @@ import {
   MobileContextMenuState,
 } from '../../types/mylore';
 import { getCallAiTranscriptionStats } from '../../services/tauriClient';
-import {
-  formatLifelogEventTime,
-  getEffectiveCallTranscriptStage,
-} from '../sidebar/MobileLifelogSidebar';
-import {
-  CallPromptManagerPanel,
-  LocationMovementTrackerPanel,
-} from './LifelogMilestonePanels';
 
 export interface LifelogMobileDataTabProps {
   mobilePersonFilter: string;
@@ -29,7 +23,7 @@ export interface LifelogMobileDataTabProps {
   >;
   mobileSidebarTab?: LifelogSourceType;
   setMobileSidebarTab?: React.Dispatch<React.SetStateAction<LifelogSourceType>>;
-  fixedSource?: 'notification' | 'health';
+  fixedSource?: 'kakaotalk' | 'sms' | 'call' | 'notification' | 'health';
   allLifelogMessages: LifelogMessage[];
   handleSelectLifelogSidebarItem: (m: LifelogMessage) => void;
   setMobileContextMenu: React.Dispatch<
@@ -39,15 +33,12 @@ export interface LifelogMobileDataTabProps {
 }
 
 const SOURCE_LABEL_MAP: Record<string, string> = {
-  kakaotalk: '카톡',
+  kakaotalk: '카카오톡',
   notification: 'M로그',
-  sms: '문자',
+  sms: '문자 (SMS/MMS)',
   call: '통화',
-  recording: '녹음',
+  recording: '음성녹음',
   health: '헬스',
-  media: '사진/영상',
-  contacts: '연락처',
-  pc_log: 'PC로그',
 };
 
 const CHAT_SOURCES = new Set<LifelogSourceType>(['kakaotalk', 'sms', 'call']);
@@ -67,9 +58,7 @@ export function LifelogMobileDataTab({
   mobilePersonFilter,
   setMobilePersonFilter,
   mobileSourceFilter,
-  setMobileSourceFilter,
   mobileSidebarTab,
-  setMobileSidebarTab,
   fixedSource,
   allLifelogMessages,
   handleSelectLifelogSidebarItem,
@@ -91,24 +80,34 @@ export function LifelogMobileDataTab({
     return allLifelogMessages.filter((m) => CHAT_SOURCES.has(m.source));
   }, [allLifelogMessages, fixedSource]);
 
-  const filteredMsgs = useMemo(() => {
-    const q = mobilePersonFilter.trim().toLowerCase();
-    return baseMessages.filter((m) => {
-      if (
-        !fixedSource &&
-        effectiveSource !== 'all' &&
-        m.source !== effectiveSource
-      ) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        (m.roomOrSender || '').toLowerCase().includes(q) ||
-        (m.sender || '').toLowerCase().includes(q) ||
-        (m.message || '').toLowerCase().includes(q)
+  const searchedPersonTrimmed = (mobilePersonFilter || '').trim();
+  const searchedPersonMessages = useMemo(() => {
+    if (!searchedPersonTrimmed) return [];
+    const q = searchedPersonTrimmed.toLowerCase();
+    return baseMessages
+      .filter((m) => {
+        const roomName = resolveContactName(m.roomOrSender || '')
+          .replace(/\s*\([^)]*\)/g, '')
+          .trim()
+          .toLowerCase();
+        const senderName = resolveContactName(m.sender || '')
+          .replace(/\s*\([^)]*\)/g, '')
+          .trim()
+          .toLowerCase();
+        return (
+          roomName.includes(q) ||
+          senderName.includes(q) ||
+          (m.roomOrSender || '').toLowerCase().includes(q) ||
+          (m.sender || '').toLowerCase().includes(q)
+        );
+      })
+      .sort(
+        (a, b) =>
+          (b.sentDate || '').localeCompare(a.sentDate || '') ||
+          (b.sentTime || '').localeCompare(a.sentTime || '') ||
+          b.id - a.id
       );
-    });
-  }, [baseMessages, mobilePersonFilter, effectiveSource, fixedSource]);
+  }, [baseMessages, searchedPersonTrimmed, resolveContactName]);
 
   const [callAiStats, setCallAiStats] =
     useState<CallAiTranscriptionStats | null>(null);
@@ -129,45 +128,67 @@ export function LifelogMobileDataTab({
   const callProgressSummary = useMemo(() => {
     if (effectiveSource !== 'call') return null;
 
-    let fbCompleted = 0;
-    let fbRemaining = 0;
+    let fbAudioCalls = 0;
     const seen = new Set<string>();
+    let audioCallCount = fbAudioCalls;
     for (const m of allLifelogMessages) {
-      if (m.source !== 'call' || !m.hasAudioRecording) continue;
+      if (m.source !== 'call') continue;
+      if (!m.hasAudioRecording) continue;
       const key = `${m.sentDate}-${m.sentTime}-${m.roomOrSender}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const st = getEffectiveCallTranscriptStage(m);
-      if (st === 2 || st === 4) fbCompleted += 1;
-      else if (st === 1 || st === 3) fbRemaining += 1;
+      audioCallCount += 1;
     }
-    const fbTotal = fbCompleted + fbRemaining;
 
-    const totalCalls =
+    const totalAudioCalls =
       callAiStats && callAiStats.totalAudioCalls > 0
         ? callAiStats.totalAudioCalls
-        : fbTotal;
-    const completedCalls =
-      callAiStats && callAiStats.totalAudioCalls > 0
-        ? callAiStats.completedCalls
-        : fbCompleted;
-    const remainingCalls =
-      callAiStats && callAiStats.totalAudioCalls > 0
-        ? callAiStats.remainingCalls
-        : fbRemaining;
+        : audioCallCount;
+    // 통화 녹음이 없이 통화 목록(부재중·수신거절·미녹음 통화)에만 존재하는 항목은 제외하고
+    // 통화 녹음이 존재하는 대상만 파이프라인 모수로 취급
+    const totalCallRecords = Math.max(
+      totalAudioCalls,
+      callAiStats?.totalCallRecords ?? totalAudioCalls
+    );
+    const downloadedCalls = callAiStats?.downloadedCalls ?? totalAudioCalls;
+    const asrConvertedCalls = callAiStats?.asrConvertedCalls ?? 0;
+    const aiPostprocessedCalls = callAiStats?.aiPostprocessedCalls ?? 0;
+    const pendingApprovalCalls = callAiStats?.pendingApprovalCalls ?? 0;
+    const verifiedCalls = callAiStats?.verifiedCalls ?? 0;
 
-    const totalAudioBytes = callAiStats?.totalAudioBytes ?? 0;
-    const completedAudioBytes = callAiStats?.completedAudioBytes ?? 0;
-    const remainingAudioBytes = callAiStats?.remainingAudioBytes ?? 0;
+    const pct = (num: number, den: number) =>
+      den > 0 ? Math.min(100, Math.max(0, (num / den) * 100)) : 0;
 
-    // 진행률도 용량 기준으로 산정 (용량 정보가 없으면 건수 폴백)
-    const progressNum =
-      totalAudioBytes > 0
-        ? (completedAudioBytes / totalAudioBytes) * 100
-        : totalCalls > 0
-          ? (completedCalls / totalCalls) * 100
-          : 100;
-    const progressPct = progressNum.toFixed(1);
+    const pipelineStages = [
+      {
+        key: 'download',
+        label: '1. 다운로드',
+        pct: pct(downloadedCalls, totalCallRecords),
+        countText: `${downloadedCalls} / ${totalCallRecords}건`,
+        color: '#38bdf8',
+      },
+      {
+        key: 'asr',
+        label: '2. ASR처리',
+        pct: pct(asrConvertedCalls, totalAudioCalls),
+        countText: `${asrConvertedCalls} / ${totalAudioCalls}건`,
+        color: '#34d399',
+      },
+      {
+        key: 'postprocess',
+        label: '3. 후처리',
+        pct: pct(aiPostprocessedCalls, totalAudioCalls),
+        countText: `${aiPostprocessedCalls} / ${totalAudioCalls}건 (결재 대기 ${pendingApprovalCalls}건)`,
+        color: '#818cf8',
+      },
+      {
+        key: 'verified',
+        label: '4. 확인',
+        pct: pct(verifiedCalls, totalAudioCalls),
+        countText: `${verifiedCalls} / ${totalAudioCalls}건`,
+        color: '#10b981',
+      },
+    ];
 
     const korWeekdays = ['일', '월', '화', '수', '목', '금', '토'];
     const dailyStats: CallAiDailyStat[] =
@@ -195,62 +216,6 @@ export function LifelogMobileDataTab({
             };
           });
 
-    // 전체 4개사 최근 7일 용량 및 건수 합계
-    const totalWeekBytes = dailyStats.reduce(
-      (acc, d) => acc + (d.totalBytes ?? 0),
-      0
-    );
-    const totalWeekConverted = dailyStats.reduce((acc, d) => acc + d.count, 0);
-
-    // 완료시기(ETA) 산정: 3사(Claude/OpenAI/Grok) 추가구매는 가정하지 않고,
-    // 무료 일일 할당량이 매일 충전되는 Gemini의 일평균 처리 용량(0인 날짜 제외)을 기준으로 산정
-    const geminiActiveDays = dailyStats.filter(
-      (d) => (d.geminiBytes ?? 0) > 0 || (d.geminiCount ?? 0) > 0
-    );
-    const totalGeminiWeekBytes = geminiActiveDays.reduce(
-      (acc, d) => acc + (d.geminiBytes ?? 0),
-      0
-    );
-    const totalGeminiWeekCount = geminiActiveDays.reduce(
-      (acc, d) => acc + (d.geminiCount ?? 0),
-      0
-    );
-    const geminiAvgBytesPerDay =
-      geminiActiveDays.length > 0
-        ? totalGeminiWeekBytes / geminiActiveDays.length
-        : 0;
-    const geminiAvgCountPerDay =
-      geminiActiveDays.length > 0
-        ? totalGeminiWeekCount / geminiActiveDays.length
-        : 0;
-
-    let etaText = 'Gemini 최근 7일 변환 이력 없음';
-    if (remainingAudioBytes <= 0 && remainingCalls <= 0) {
-      etaText = '모두 완료됨';
-    } else if (geminiAvgBytesPerDay > 0 && remainingAudioBytes > 0) {
-      const remainingDays = remainingAudioBytes / geminiAvgBytesPerDay;
-      const etaDate = new Date(
-        Date.now() + remainingDays * 24 * 60 * 60 * 1000
-      );
-      const ey = etaDate.getFullYear();
-      const em = etaDate.getMonth() + 1;
-      const ed = etaDate.getDate();
-      const edow = korWeekdays[etaDate.getDay()];
-      const eh = String(etaDate.getHours()).padStart(2, '0');
-      etaText = `${ey}-${em}-${ed}(${edow}) ${eh}시 종료 예상`;
-    } else if (geminiAvgCountPerDay > 0 && remainingCalls > 0) {
-      const remainingDays = remainingCalls / geminiAvgCountPerDay;
-      const etaDate = new Date(
-        Date.now() + remainingDays * 24 * 60 * 60 * 1000
-      );
-      const ey = etaDate.getFullYear();
-      const em = etaDate.getMonth() + 1;
-      const ed = etaDate.getDate();
-      const edow = korWeekdays[etaDate.getDay()];
-      const eh = String(etaDate.getHours()).padStart(2, '0');
-      etaText = `${ey}-${em}-${ed}(${edow}) ${eh}시 종료 예상`;
-    }
-
     const maxDailyBytes = Math.max(
       1,
       ...dailyStats.map((d) => d.totalBytes ?? 0)
@@ -258,21 +223,8 @@ export function LifelogMobileDataTab({
     const maxDailyCount = Math.max(1, ...dailyStats.map((d) => d.count));
 
     return {
-      totalCalls,
-      completedCalls,
-      remainingCalls,
-      totalAudioBytes,
-      completedAudioBytes,
-      remainingAudioBytes,
-      progressNum,
-      progressPct,
+      pipelineStages,
       dailyStats,
-      geminiActiveDaysCount: geminiActiveDays.length,
-      totalWeekBytes,
-      totalWeekConverted,
-      geminiAvgBytesPerDay,
-      geminiAvgCountPerDay,
-      etaText,
       maxDailyBytes,
       maxDailyCount,
     };
@@ -280,124 +232,69 @@ export function LifelogMobileDataTab({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      <div
-        style={{
-          padding: '12px 16px',
-          backgroundColor: 'var(--bg-secondary)',
-          border: '1px solid var(--border-color)',
-          borderRadius: '10px',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '10px',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            flexWrap: 'wrap',
-          }}
-        >
-          {!fixedSource && (
-            <div style={{ display: 'inline-flex', gap: '4px', flexWrap: 'wrap' }}>
-              {(
-                [
-                  { key: 'kakaotalk', label: '💬 카톡' },
-                  { key: 'sms', label: '✉️ 문자' },
-                  { key: 'call', label: '📞 통화' },
-                ] as const
-              ).map((cat) => (
-                <button
-                  key={cat.key}
-                  className={`toolbar-btn ${
-                    effectiveSource === cat.key ? 'primary' : ''
-                  }`}
-                  style={{
-                    padding: '5px 14px',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                  }}
-                  onClick={() => {
-                    setMobileSourceFilter(cat.key);
-                    setMobileSidebarTab?.(cat.key);
-                  }}
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <span style={{ fontWeight: 700, fontSize: '13px', marginLeft: fixedSource ? '0' : '6px' }}>
-            🔍 인물/키워드 검색:
-          </span>
-          <input
-            className="input-field"
-            style={{ width: '200px' }}
-            value={mobilePersonFilter}
-            onChange={(e) => setMobilePersonFilter(e.target.value)}
-            placeholder="예: 임현정, 캠핑..."
-          />
-          {mobilePersonFilter && (
-            <button
-              className="toolbar-btn"
-              style={{ padding: '4px 10px', fontSize: '12px' }}
-              onClick={() => {
-                setMobilePersonFilter('');
-              }}
-            >
-              ✕ 검색어 해제
-            </button>
-          )}
-        </div>
-      </div>
-
-      {mobilePersonFilter && (
-        <div
-          style={{
-            padding: '10px 14px',
-            backgroundColor: 'rgba(79, 70, 229, 0.16)',
-            border: '1px solid var(--accent-primary)',
-            borderRadius: '8px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span style={{ fontWeight: 700, color: '#c7d2fe' }}>
-            📌 &lsquo;{mobilePersonFilter}&rsquo;님과의{' '}
-            {effectiveSource === 'all'
-              ? '모든 대화 (카톡·문자·통화)'
-              : `'${SOURCE_LABEL_MAP[effectiveSource] || effectiveSource}'`}{' '}
-            검색 결과
-          </span>
-          <button
-            className="toolbar-btn"
-            style={{ padding: '2px 8px', fontSize: '11.5px' }}
-            onClick={() => {
-              setMobilePersonFilter('');
+      {effectiveSource === 'call' && callProgressSummary ? (
+        <>
+          {/* 1. 통화 5단계 파이프라인 막대그래프: 다운로드% -> ASR변환율% -> AI 후처리 및 요약% -> 결재대기% -> 확정% */}
+          <div
+            style={{
+              padding: '16px 18px',
+              backgroundColor: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px',
             }}
           >
-            전체 보기로 복귀
-          </button>
-        </div>
-      )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <strong style={{ fontSize: '14px', color: 'var(--heading-color)' }}>
+                📊 통화 처리 4단계 파이프라인 진행률 (1. 다운로드 → 2. ASR처리 → 3. 후처리 → 4. 확인)
+              </strong>
+            </div>
 
-      <div>
-        {fixedSource === 'notification' && <LocationMovementTrackerPanel />}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {callProgressSummary.pipelineStages.map((st, idx) => (
+                <div key={st.key} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12.5px' }}>
+                    <span style={{ fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: st.color, display: 'inline-block' }} />
+                      {st.label}
+                      {idx < callProgressSummary.pipelineStages.length - 1 && (
+                        <span style={{ color: 'var(--text-muted)', fontSize: '11px', fontWeight: 400 }}>→</span>
+                      )}
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', fontWeight: 700, color: st.color }}>
+                      {st.pct.toFixed(1)}% <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>({st.countText})</span>
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '12px',
+                      borderRadius: '999px',
+                      backgroundColor: 'rgba(148, 163, 184, 0.16)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${Math.max(st.pct > 0 ? 2 : 0, st.pct)}%`,
+                        height: '100%',
+                        backgroundColor: st.color,
+                        borderRadius: '999px',
+                        transition: 'width 0.3s ease',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
 
-        {effectiveSource === 'call' && (
-          <CallPromptManagerPanel compactInDashboard={true} />
-        )}
-
-        {effectiveSource === 'call' && callProgressSummary && (
+          {/* 2. 기존 LLM 처리량 그래프 (상단 요약 설명 삭제, 일별 처리량 막대그래프 유지) */}
           <div
             style={{
               padding: '14px 16px',
-              marginBottom: '12px',
               backgroundColor: 'var(--bg-secondary)',
               border: '1px solid var(--border-color)',
               borderRadius: '10px',
@@ -409,87 +306,10 @@ export function LifelogMobileDataTab({
             <div
               style={{
                 display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: '8px',
-              }}
-            >
-              <div
-                style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}
-                title={`전체 통화 건수: 완료 ${callProgressSummary.completedCalls}건 / 전체 ${callProgressSummary.totalCalls}건 (남은 통화 ${callProgressSummary.remainingCalls}건)\n최근 7일 전체 변환: ${callProgressSummary.totalWeekConverted}건 (${formatBytesSize(callProgressSummary.totalWeekBytes)})\nGemini 일평균(0일 제외 ${callProgressSummary.geminiActiveDaysCount}일): ${formatBytesSize(callProgressSummary.geminiAvgBytesPerDay)}/일 (${callProgressSummary.geminiAvgCountPerDay.toFixed(1)}건/일)`}
-              >
-                <span
-                  style={{
-                    fontSize: '13.5px',
-                    fontWeight: 700,
-                    color: 'var(--heading-color)',
-                  }}
-                >
-                  📊 최근 일주일 AI 변환 통화 수 및 진행 현황 (용량 기준 · 마우스오버 시 건수 표시)
-                </span>
-                <span
-                  style={{
-                    fontSize: '11.5px',
-                    color: 'var(--text-secondary)',
-                  }}
-                >
-                  완료 {formatBytesSize(callProgressSummary.completedAudioBytes)} / 전체 녹음{' '}
-                  {formatBytesSize(callProgressSummary.totalAudioBytes)} · 남은 용량{' '}
-                  <strong style={{ color: '#fca5a5' }}>
-                    {formatBytesSize(callProgressSummary.remainingAudioBytes)}
-                  </strong>{' '}
-                  · 최근 7일 변환 {formatBytesSize(callProgressSummary.totalWeekBytes)} (3사 추가구매 제외 · Gemini 0일 제외{' '}
-                  {callProgressSummary.geminiActiveDaysCount}일 평균{' '}
-                  {formatBytesSize(callProgressSummary.geminiAvgBytesPerDay)}/일 기준 산정)
-                </span>
-              </div>
-              <div
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: '8px',
-                  backgroundColor: 'rgba(99, 102, 241, 0.16)',
-                  border: '1px solid rgba(129, 140, 248, 0.4)',
-                  fontSize: '13px',
-                  fontWeight: 800,
-                  color: '#e0e7ff',
-                  fontFamily: 'var(--font-mono)',
-                }}
-                title={`완료 건수: ${callProgressSummary.completedCalls}건 / 전체 ${callProgressSummary.totalCalls}건 (남은 건수: ${callProgressSummary.remainingCalls}건)\nGemini 일평균 처리량(${formatBytesSize(callProgressSummary.geminiAvgBytesPerDay)}/일, ${callProgressSummary.geminiAvgCountPerDay.toFixed(1)}건/일) 기준 산정`}
-              >
-                작업진행률({callProgressSummary.progressPct}%,{' '}
-                {callProgressSummary.etaText})
-              </div>
-            </div>
-
-            <div
-              style={{
-                width: '100%',
-                height: '7px',
-                borderRadius: '999px',
-                backgroundColor: 'rgba(148, 163, 184, 0.18)',
-                overflow: 'hidden',
-              }}
-              title={`완료: ${formatBytesSize(callProgressSummary.completedAudioBytes)} (${callProgressSummary.completedCalls}건) / 남은 용량: ${formatBytesSize(callProgressSummary.remainingAudioBytes)} (${callProgressSummary.remainingCalls}건)`}
-            >
-              <div
-                style={{
-                  width: `${Math.min(100, Math.max(0, callProgressSummary.progressNum))}%`,
-                  height: '100%',
-                  background: 'linear-gradient(90deg, #6366f1, #34d399)',
-                  transition: 'width 0.3s ease',
-                }}
-              />
-            </div>
-
-            <div
-              style={{
-                display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 flexWrap: 'wrap',
                 gap: '10px',
-                paddingTop: '4px',
               }}
             >
               <div
@@ -674,7 +494,7 @@ export function LifelogMobileDataTab({
                     }}
                     title={
                       isZero
-                        ? `${day.date}: 0 B (0건 · 처리량 0인 날짜로 평균 계산에서 제외)`
+                        ? `${day.date}: 0 B (0건)`
                         : `${day.date}: 총 ${day.count}건 완료 · ${formatBytesSize(dayBytes)} (${breakdownTooltip})`
                     }
                   >
@@ -742,90 +562,109 @@ export function LifelogMobileDataTab({
               })}
             </div>
           </div>
-        )}
-
+        </>
+      ) : (
         <div
           style={{
-            fontSize: '13px',
-            fontWeight: 700,
-            marginBottom: '8px',
-            color: 'var(--text-secondary)',
+            padding: '18px 20px',
+            backgroundColor: 'var(--bg-secondary)',
+            border: '1px solid var(--border-color)',
+            borderRadius: '10px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: '10px',
           }}
         >
-          조회된 기록 ({filteredMsgs.length}건 / 해당 분류 전체{' '}
-          {baseMessages.length}건)
+          <span style={{ fontSize: '13.5px', fontWeight: 700, color: 'var(--heading-color)' }}>
+            📌 {SOURCE_LABEL_MAP[effectiveSource] || effectiveSource} 총 보관 건수: {baseMessages.length.toLocaleString()}건
+          </span>
+          <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+            오른쪽 사이드바에서 개별 대화방·항목을 선택하여 열람할 수 있습니다.
+          </span>
         </div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: '80px' }}>구분</th>
-              <th style={{ width: '150px' }}>일시</th>
-              <th style={{ width: '180px' }}>대화방 / 상대방</th>
-              <th style={{ width: '130px' }}>발신자 / 상태</th>
-              <th>내용 / 통화 스크립트</th>
-              <th style={{ width: '120px' }}>수집 기기</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredMsgs.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={6}
-                  style={{
-                    textAlign: 'center',
-                    padding: '24px',
-                    color: 'var(--text-muted)',
-                  }}
-                >
-                  조건에 해당하는 데이터가 없습니다.
-                </td>
-              </tr>
+      )}
+      {searchedPersonTrimmed && (
+        <div
+          style={{
+            padding: '14px 16px',
+            backgroundColor: 'var(--bg-secondary)',
+            border: '1.5px solid var(--accent-primary)',
+            borderRadius: '10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '8px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <strong style={{ fontSize: '14px', color: 'var(--heading-color)' }}>
+                🔍 검색된 인물: 👤 {searchedPersonTrimmed}
+              </strong>
+              <span
+                style={{
+                  fontSize: '12px',
+                  fontFamily: 'var(--font-mono)',
+                  color: '#a5b4fc',
+                  fontWeight: 700,
+                }}
+              >
+                ({SOURCE_LABEL_MAP[effectiveSource] || effectiveSource}{' '}
+                {searchedPersonMessages.length.toLocaleString()}건)
+              </span>
+            </div>
+            <button
+              type="button"
+              className="toolbar-btn"
+              style={{ fontSize: '12px', padding: '3px 9px' }}
+              onClick={() => setMobilePersonFilter('')}
+              title="인물 검색 필터 해제"
+            >
+              ✕ 검색 해제
+            </button>
+          </div>
+
+          <div
+            style={{
+              maxHeight: '420px',
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '5px',
+            }}
+          >
+            {searchedPersonMessages.length === 0 ? (
+              <div
+                style={{
+                  padding: '16px',
+                  textAlign: 'center',
+                  fontSize: '12.5px',
+                  color: 'var(--text-muted)',
+                }}
+              >
+                &apos;{searchedPersonTrimmed}&apos;님의 해당 분류 기록이 없습니다.
+              </div>
             ) : (
-              filteredMsgs.slice(0, 5000).map((m) => {
-                const personCandidate =
-                  m.source === 'kakaotalk'
-                    ? m.sender &&
-                      m.sender !== '회원님' &&
-                      m.sender !== '나'
-                      ? m.sender
-                      : m.roomOrSender
-                    : (m.roomOrSender || m.sender || '상대방')
-                        .replace(/\s*\([^)]*\)/g, '')
-                        .trim();
-                const srcKey = (
-                  [
-                    'kakaotalk',
-                    'notification',
-                    'sms',
-                    'call',
-                    'recording',
-                    'health',
-                  ].includes(m.source)
-                    ? m.source
-                    : 'notification'
-                ) as LifelogSourceType;
-
-                const isCallPendingRow =
-                  (m.source === 'call' || m.source === 'recording') &&
-                  (Boolean(
-                    m.attachmentUuid?.startsWith('pending_transcript:')
-                  ) ||
-                    (m.message || '').includes('토큰 부족') ||
-                    (m.message || '').includes('스크립트 미생성') ||
-                    (m.message || '').includes('원본 보관'));
-
+              searchedPersonMessages.slice(0, 200).map((m) => {
+                const displayPerson = resolveContactName(
+                  m.roomOrSender || m.sender
+                );
+                const cleanMsg = (m.message || '')
+                  .replace(/<br\s*\/?>/gi, ' ')
+                  .replace(/\s+/g, ' ')
+                  .trim();
                 return (
-                  <tr
+                  <div
                     key={m.id}
-                    style={{
-                      cursor: 'pointer',
-                      outline: isCallPendingRow
-                        ? '1.5px solid #ef4444'
-                        : undefined,
-                      backgroundColor: isCallPendingRow
-                        ? 'rgba(239, 68, 68, 0.08)'
-                        : undefined,
-                    }}
                     onClick={() => handleSelectLifelogSidebarItem(m)}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -833,66 +672,56 @@ export function LifelogMobileDataTab({
                       setMobileContextMenu({
                         x: e.clientX,
                         y: e.clientY,
-                        personName: personCandidate || '상대방',
-                        sourceKey: srcKey,
-                        sourceLabel: SOURCE_LABEL_MAP[srcKey] || '기록',
+                        personName: displayPerson,
+                        sourceKey: m.source,
+                        sourceLabel:
+                          SOURCE_LABEL_MAP[m.source] || m.source,
                         messageItem: m,
                       });
                     }}
-                    title="좌클릭: 에디터 영역에서 열기 | 우클릭: 이 인물과의 기록 검색 메뉴 열기"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '7px 10px',
+                      borderRadius: '7px',
+                      backgroundColor: 'var(--bg-primary)',
+                      border: '1px solid var(--border-color)',
+                      cursor: 'pointer',
+                      fontSize: '12.5px',
+                    }}
                   >
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      {SOURCE_LABEL_MAP[m.source] || m.source}
-                    </td>
-                    <td
+                    <span
                       style={{
                         fontFamily: 'var(--font-mono)',
-                        fontSize: '12px',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {formatLifelogEventTime(
-                        m.sentDate,
-                        m.sentTime,
-                        'YYYYMMDD(ddd) hh:mm:ss'
-                      )}
-                    </td>
-                    <td style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
-                      {m.source === 'sms'
-                        ? resolveContactName(m.roomOrSender)
-                        : m.roomOrSender}
-                    </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>{m.sender}</td>
-                    <td
-                      style={{ whiteSpace: 'nowrap' }}
-                      title={(m.message || '').replace(/<br\s*\/?>/gi, '\n')}
-                    >
-                      {(() => {
-                        const clean = (m.message || '')
-                          .replace(/<br\s*\/?>/gi, ' ')
-                          .replace(/\s+/g, ' ')
-                          .trim();
-                        return clean.length > 10
-                          ? `${clean.slice(0, 10)}...`
-                          : clean;
-                      })()}
-                    </td>
-                    <td
-                      style={{
                         fontSize: '11.5px',
-                        color: 'var(--text-secondary)',
+                        color: '#a5b4fc',
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {m.deviceName || m.deviceId || '기본 기기'}
-                    </td>
-                  </tr>
+                      {m.sentDate} {m.sentTime.slice(0, 8)}
+                    </span>
+                    <strong style={{ whiteSpace: 'nowrap', color: '#38bdf8' }}>
+                      {displayPerson}
+                    </strong>
+                    <span
+                      style={{
+                        flex: 1,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      {cleanMsg}
+                    </span>
+                  </div>
                 );
               })
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -69,9 +69,9 @@ pub(crate) use calendar_sync::*;
 
 const _FRONTEND_DIST_INDEX_SYNC: &str = include_str!("../../dist/index.html");
 
-/// 테스트 바이너리 전용: tauri-build가 만든 Windows 리소스(Common Controls v6 매니페스트)를 링크합니다.
-/// 없으면 `cargo test` 실행 파일이 comctl32 v5를 로드하여 `TaskDialogIndirect` 진입점 누락으로 시작조차 하지 못합니다.
-/// (검색 경로는 build.rs에서 추가, 일반 bin 빌드에는 영향 없음)
+// 테스트 바이너리 전용: tauri-build가 만든 Windows 리소스(Common Controls v6 매니페스트)를 링크합니다.
+// 없으면 `cargo test` 실행 파일이 comctl32 v5를 로드하여 `TaskDialogIndirect` 진입점 누락으로 시작조차 하지 못합니다.
+// (검색 경로는 build.rs에서 추가, 일반 bin 빌드에는 영향 없음)
 #[cfg(all(test, windows, target_env = "gnu"))]
 #[link(name = "resource", kind = "static", modifiers = "+whole-archive")]
 extern "C" {}
@@ -84,6 +84,35 @@ pub fn run() {
     if std::env::args().any(|a| a.trim() == "--ai-queue-worker") {
         let force_now = std::env::args().any(|a| a.trim() == "--force-now");
         run_detached_ai_queue_worker_process(force_now);
+        return;
+    }
+
+    // 1-b. 결재 대기 최근 통화녹음 음성지문·타임태그·화자혼동 재분석 및 프롬프트 A/B 결재안건 생성 CLI 모드
+    if std::env::args().any(|a| a.trim() == "--reanalyze-pending-calls") {
+        let db_path = resolve_meta_db_path();
+        if let Ok(conn) = open_db(&db_path) {
+            let calls_dir = get_archive_mobile_dir(&conn, "calls");
+            let log_p = app_data_dir().join("reanalyze_status.txt");
+            match reanalyze_recent_pending_approval_calls_internal(&conn, 5) {
+                Ok(_) => {
+                    let items = get_call_approval_items_from_conn(&conn).unwrap_or_default();
+                    let pending_n = items.iter().filter(|i| i.stage == 2).count();
+                    let _ = fs::write(
+                        &log_p,
+                        format!(
+                            "OK: db={} calls_dir={} total_items={} stage2_pending={}",
+                            db_path.display(),
+                            calls_dir.display(),
+                            items.len(),
+                            pending_n
+                        ),
+                    );
+                }
+                Err(e) => {
+                    let _ = fs::write(&log_p, format!("ERR: {}", e));
+                }
+            }
+        }
         return;
     }
 
@@ -108,6 +137,7 @@ pub fn run() {
                 let _ = fs::write(&setting_path, json_str);
             }
         }
+        sync_all_kakao_group_memberships_to_contacts(&conn);
     }
 
     let pending_cli_files = Arc::new(Mutex::new(cli_paths));
@@ -196,6 +226,13 @@ pub fn run() {
             get_mobile_contacts_map,
             get_contact_ai_profiles,
             save_contact_ai_profile,
+            sync_contact_person_markdown_files,
+            open_contact_person_document,
+            get_contact_prompt_tournament_status,
+            update_contact_prompt_slot_manual,
+            get_contact_profile_approvals,
+            generate_contact_profile_ab_update,
+            resolve_contact_profile_approval,
             open_lifelog_item_document,
             retry_pending_call_transcriptions,
             get_gemini_api_key_status,
@@ -223,7 +260,19 @@ pub fn run() {
             get_pc_activity_summary,
             get_google_calendar_sync_status,
             sync_google_calendar_events,
-            start_google_calendar_oauth_login
+            start_google_calendar_oauth_login,
+            get_voiceprint_dashboard_status,
+            enroll_voiceprint_from_base64_audio,
+            enroll_voiceprint_from_synced_file,
+            test_voiceprint_verification,
+            save_voiceprint_raw_json,
+            reset_voiceprint_profile,
+            reanalyze_recent_pending_approval_calls,
+            resolve_call_ab_decision_with_feedback,
+            analyze_single_call_asr_and_ab,
+            get_call_postprocess_prompt_and_log,
+            save_call_postprocess_prompt,
+            confirm_call_script_with_user_edits
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

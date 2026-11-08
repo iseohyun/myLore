@@ -81,6 +81,10 @@ pub(crate) fn spawn_mobile_companion_http_server(
                         routes_media::handle_sync_samsung_health(request, db_path);
                     } else if url_path == "/api/v1/local-media" {
                         routes_media::handle_local_media(request, db_path, &raw_url);
+                    } else if url_path == "/api/v1/voiceprint/mobile-web"
+                        || url_path == "/api/v1/voiceprint/enroll"
+                    {
+                        handle_mobile_voiceprint_web(request, app_handle, db_path);
                     } else {
                         routes_media::handle_static_or_fallback(request, app_handle, url_path);
                     }

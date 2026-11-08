@@ -5,12 +5,25 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
-const DEFAULT_GCAL_CLIENT_ID: &str =
-    "";
+const DEFAULT_GCAL_CLIENT_ID: &str = "";
 const DEFAULT_GCAL_CLIENT_SECRET: &str = "";
-const DEFAULT_GCAL_CALENDAR_ID: &str =
-    "23e13f94ac539a083626693af4221e426b492307279c9cd5cba5bc4d28b07808@group.calendar.google.com";
+const DEFAULT_GCAL_CALENDAR_ID: &str = "primary";
 const GCAL_OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:42813/callback";
+
+fn env_gcal_client_id() -> String {
+    std::env::var("MYLORE_GCAL_CLIENT_ID")
+        .unwrap_or_else(|_| DEFAULT_GCAL_CLIENT_ID.to_string())
+}
+
+fn env_gcal_client_secret() -> String {
+    std::env::var("MYLORE_GCAL_CLIENT_SECRET")
+        .unwrap_or_else(|_| DEFAULT_GCAL_CLIENT_SECRET.to_string())
+}
+
+fn env_gcal_calendar_id() -> String {
+    std::env::var("MYLORE_GCAL_CALENDAR_ID")
+        .unwrap_or_else(|_| DEFAULT_GCAL_CALENDAR_ID.to_string())
+}
 
 static GCAL_HTTP_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
@@ -18,12 +31,7 @@ static GCAL_HTTP_AGENT: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::
         .http_status_as_error(false)
         .timeout_connect(Some(Duration::from_secs(8)))
         .timeout_global(Some(Duration::from_secs(30)))
-        .tls_config(
-            TlsConfig::builder()
-                .provider(TlsProvider::NativeTls)
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
+        .tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build())
         .build()
         .into()
 });
@@ -51,16 +59,15 @@ pub(crate) struct GoogleCalendarSecretConfig {
 impl Default for GoogleCalendarSecretConfig {
     fn default() -> Self {
         Self {
-            client_id: DEFAULT_GCAL_CLIENT_ID.to_string(),
-            client_secret: DEFAULT_GCAL_CLIENT_SECRET.to_string(),
-            default_calendar_id: DEFAULT_GCAL_CALENDAR_ID.to_string(),
+            client_id: env_gcal_client_id(),
+            client_secret: env_gcal_client_secret(),
+            default_calendar_id: env_gcal_calendar_id(),
             refresh_token: String::new(),
             access_token: String::new(),
             expires_at_ms: 0,
             last_sync_at: String::new(),
             last_error: String::new(),
             blacklisted_calendars: vec![
-                "f4f642c3c03de765e400be1e65c7fd7b07b09d443038eb9ef2cd30b983b1f090@group.calendar.google.com".to_string(),
                 "addressbook#contacts@group.v.calendar.google.com".to_string(),
                 "ko.south_korea#holiday@group.v.calendar.google.com".to_string(),
             ],
@@ -79,18 +86,11 @@ pub(crate) fn load_or_init_gcal_config() -> GoogleCalendarSecretConfig {
     if path.exists() {
         if let Ok(raw) = fs::read_to_string(&path) {
             if let Ok(mut cfg) = serde_json::from_str::<GoogleCalendarSecretConfig>(&raw) {
-                if cfg.client_id.trim().is_empty() {
-                    cfg.client_id = DEFAULT_GCAL_CLIENT_ID.to_string();
-                }
-                if cfg.client_secret.trim().is_empty() {
-                    cfg.client_secret = DEFAULT_GCAL_CLIENT_SECRET.to_string();
-                }
-                if cfg.default_calendar_id.trim().is_empty() {
-                    cfg.default_calendar_id = DEFAULT_GCAL_CALENDAR_ID.to_string();
-                }
+                if cfg.client_id.trim().is_empty() { cfg.client_id = env_gcal_client_id(); }
+                if cfg.client_secret.trim().is_empty() { cfg.client_secret = env_gcal_client_secret(); }
+                if cfg.default_calendar_id.trim().is_empty() { cfg.default_calendar_id = env_gcal_calendar_id(); }
                 if cfg.blacklisted_calendars.is_empty() {
-                    cfg.blacklisted_calendars =
-                        GoogleCalendarSecretConfig::default().blacklisted_calendars;
+                    cfg.blacklisted_calendars = GoogleCalendarSecretConfig::default().blacklisted_calendars;
                 }
                 return cfg;
             }
@@ -112,23 +112,15 @@ fn url_encode_component(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 2);
     for b in input.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push_str(&format!("%{:02X}", b));
-            }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
     out
 }
 
 fn base64url_no_pad(bytes: &[u8]) -> String {
-    base64_encode(bytes)
-        .replace('+', "-")
-        .replace('/', "_")
-        .trim_end_matches('=')
-        .to_string()
+    base64_encode(bytes).replace('+', "-").replace('/', "_").trim_end_matches('=').to_string()
 }
 
 fn sha256_bytes_from_hex(data: &[u8]) -> Vec<u8> {
@@ -138,9 +130,7 @@ fn sha256_bytes_from_hex(data: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i + 1 < bytes.len() {
         if let Ok(s) = std::str::from_utf8(&bytes[i..i + 2]) {
-            if let Ok(v) = u8::from_str_radix(s, 16) {
-                out.push(v);
-            }
+            if let Ok(v) = u8::from_str_radix(s, 16) { out.push(v); }
         }
         i += 2;
     }
@@ -151,16 +141,11 @@ fn sha256_bytes_from_hex(data: &[u8]) -> Vec<u8> {
 pub(crate) fn ensure_valid_gcal_access_token() -> Result<(String, GoogleCalendarSecretConfig), String> {
     let mut cfg = load_or_init_gcal_config();
     let now_ms = chrono::Local::now().timestamp_millis();
-
     if !cfg.access_token.trim().is_empty() && cfg.expires_at_ms > now_ms + 60_000 {
         return Ok((cfg.access_token.clone(), cfg));
     }
-
     if cfg.refresh_token.trim().is_empty() {
-        return Err(
-            "NEEDS_AUTH: 구글 캘린더 계정 연동이 필요합니다. 일정 대쉬보드에서 [🔑 구글 연동] 버튼을 눌러 로그인해 주세요."
-                .to_string(),
-        );
+        return Err("NEEDS_AUTH: 구글 캘린더 계정 연동이 필요합니다. 일정 대쉬보드에서 [🔑 구글 연동] 버튼을 눌러 로그인해 주세요.".to_string());
     }
 
     let form_body = format!(
@@ -169,63 +154,37 @@ pub(crate) fn ensure_valid_gcal_access_token() -> Result<(String, GoogleCalendar
         url_encode_component(cfg.client_secret.trim()),
         url_encode_component(cfg.refresh_token.trim())
     );
-
     let resp = GCAL_HTTP_AGENT
         .post("https://oauth2.googleapis.com/token")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .send(form_body.as_bytes())
         .map_err(|e| format!("Google OAuth 토큰 갱신 네트워크 오류: {}", e))?;
 
-    let resp_str = resp
-        .into_body()
-        .read_to_string()
-        .map_err(|e| format!("Google OAuth 응답 읽기 오류: {}", e))?;
-
-    let jv: serde_json::Value = serde_json::from_str(&resp_str)
-        .map_err(|_| format!("Google OAuth 응답 파싱 실패: {}", resp_str))?;
+    let resp_str = resp.into_body().read_to_string().map_err(|e| format!("Google OAuth 응답 읽기 오류: {}", e))?;
+    let jv: serde_json::Value = serde_json::from_str(&resp_str).map_err(|_| format!("Google OAuth 응답 파싱 실패: {}", resp_str))?;
 
     if let Some(err_code) = jv.get("error").and_then(|v| v.as_str()) {
-        let err_desc = jv
-            .get("error_description")
-            .and_then(|v| v.as_str())
-            .unwrap_or(err_code);
+        let err_desc = jv.get("error_description").and_then(|v| v.as_str()).unwrap_or(err_code);
         cfg.access_token.clear();
         cfg.expires_at_ms = 0;
         cfg.last_error = format!("{}: {}", err_code, err_desc);
         save_gcal_config(&cfg);
-        return Err(format!(
-            "NEEDS_AUTH: 구글 캘린더 인증이 만료되었습니다 ({}). [🔑 구글 연동] 버튼을 눌러 다시 로그인해 주세요.",
-            err_desc
-        ));
+        return Err(format!("NEEDS_AUTH: 구글 캘린더 인증이 만료되었습니다 ({}). [🔑 구글 연동] 버튼을 눌러 다시 로그인해 주세요.", err_desc));
     }
 
-    let access_token = jv
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let access_token = jv.get("access_token").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if access_token.is_empty() {
         return Err("Google OAuth 응답에 access_token이 없습니다.".to_string());
     }
 
-    let expires_in = jv
-        .get("expires_in")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(3599);
-    if let Some(new_rt) = jv
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-    {
+    let expires_in = jv.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3599);
+    if let Some(new_rt) = jv.get("refresh_token").and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()) {
         cfg.refresh_token = new_rt.to_string();
     }
     cfg.access_token = access_token.clone();
     cfg.expires_at_ms = now_ms + (expires_in.saturating_sub(60)) * 1000;
     cfg.last_error.clear();
     save_gcal_config(&cfg);
-
     Ok((access_token, cfg))
 }
 
@@ -235,86 +194,35 @@ struct GoogleCalendarListEntry {
     summary: String,
     primary: bool,
     access_role: String,
-    time_zone: String,
 }
 
-fn fetch_user_calendars(
-    access_token: &str,
-    cfg: &GoogleCalendarSecretConfig,
-) -> Result<Vec<GoogleCalendarListEntry>, String> {
+fn fetch_user_calendars(access_token: &str, cfg: &GoogleCalendarSecretConfig) -> Result<Vec<GoogleCalendarListEntry>, String> {
     let resp = GCAL_HTTP_AGENT
         .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
         .header("Authorization", &format!("Bearer {}", access_token))
         .call()
         .map_err(|e| format!("Google Calendar 목록 조회 오류: {}", e))?;
 
-    let resp_str = resp
-        .into_body()
-        .read_to_string()
-        .map_err(|e| format!("Google Calendar 목록 읽기 오류: {}", e))?;
-
-    let jv: serde_json::Value = serde_json::from_str(&resp_str)
-        .map_err(|_| format!("Google Calendar 목록 JSON 파싱 오류: {}", resp_str))?;
+    let resp_str = resp.into_body().read_to_string().map_err(|e| format!("Google Calendar 목록 읽기 오류: {}", e))?;
+    let jv: serde_json::Value = serde_json::from_str(&resp_str).map_err(|_| format!("Google Calendar 목록 JSON 파싱 오류: {}", resp_str))?;
 
     if let Some(err) = jv.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("Calendar API Error");
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Calendar API Error");
         return Err(format!("Google Calendar 목록 API 오류: {}", msg));
     }
 
     let mut out = Vec::new();
     if let Some(items) = jv.get("items").and_then(|v| v.as_array()) {
         for item in items {
-            let id = item
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let summary = item
-                .get("summaryOverride")
-                .or_else(|| item.get("summary"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if id.is_empty() {
-                continue;
-            }
-            let is_blacklisted = cfg
-                .blacklisted_calendars
-                .iter()
-                .any(|b| b.eq_ignore_ascii_case(&id) || b.eq_ignore_ascii_case(&summary))
-                || summary == "생일"
-                || summary == "대한민국의 휴일"
-                || id.contains("#holiday@")
-                || id.contains("addressbook#contacts");
-            if is_blacklisted {
-                continue;
-            }
-            let primary = item
-                .get("primary")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let access_role = item
-                .get("accessRole")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let time_zone = item
-                .get("timeZone")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Asia/Seoul")
-                .to_string();
-            out.push(GoogleCalendarListEntry {
-                id,
-                summary,
-                primary,
-                access_role,
-                time_zone,
-            });
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let summary = item.get("summaryOverride").or_else(|| item.get("summary")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            if id.is_empty() { continue; }
+            let is_blacklisted = cfg.blacklisted_calendars.iter().any(|b| b.eq_ignore_ascii_case(&id) || b.eq_ignore_ascii_case(&summary))
+                || summary == "생일" || summary == "대한민국의 휴일" || id.contains("#holiday@") || id.contains("addressbook#contacts");
+            if is_blacklisted { continue; }
+            let primary = item.get("primary").and_then(|v| v.as_bool()).unwrap_or(false);
+            let access_role = item.get("accessRole").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            out.push(GoogleCalendarListEntry { id, summary, primary, access_role });
         }
     }
     Ok(out)
@@ -349,16 +257,8 @@ fn unquote_yaml_val(raw_v: &str) -> String {
             .map(|idx| rest[..idx].trim().to_string())
             .unwrap_or_else(|| rest.trim_matches('\'').trim().to_string())
     } else {
-        let without_comment = match trimmed.find(" #") {
-            Some(idx) => &trimmed[..idx],
-            None => trimmed,
-        };
-        without_comment
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim()
-            .to_string()
+        let without_comment = trimmed.find(" #").map(|idx| &trimmed[..idx]).unwrap_or(trimmed);
+        without_comment.trim().trim_matches('"').trim_matches('\'').trim().to_string()
     }
 }
 
@@ -377,9 +277,7 @@ pub(crate) fn parse_diary_event_yaml(yaml_raw: &str) -> ParsedDiaryEventYaml {
 
         if indent == 0 {
             if !pending_attendee_email.is_empty() {
-                parsed
-                    .attendees
-                    .push((pending_attendee_email.clone(), "needsAction".to_string()));
+                parsed.attendees.push((pending_attendee_email.clone(), "needsAction".to_string()));
                 pending_attendee_email.clear();
             }
             if let Some(colon) = trimmed.find(':') {
@@ -388,33 +286,25 @@ pub(crate) fn parse_diary_event_yaml(yaml_raw: &str) -> ParsedDiaryEventYaml {
                 match k {
                     "start" => {
                         current_block = "start";
-                        if !v.is_empty() && v.len() >= 10 {
+                        if v.len() >= 10 {
                             parsed.start_date = v[..10].to_string();
                         }
                     }
                     "end" => {
                         current_block = "end";
-                        if !v.is_empty() && v.len() >= 10 {
+                        if v.len() >= 10 {
                             parsed.end_date = v[..10].to_string();
                         }
                     }
-                    "attendees" => {
-                        current_block = "attendees";
-                    }
+                    "attendees" => current_block = "attendees",
                     _ => {
                         current_block = "";
                         match k {
                             "uuid" => parsed.uuid = v,
                             "event-id" | "event_id" => parsed.event_id = v,
-                            "summary" | "title" => {
-                                if parsed.summary.is_empty() || k == "summary" {
-                                    parsed.summary = v;
-                                }
-                            }
-                            "date" => {
-                                if parsed.start_date.is_empty() && v.len() >= 10 {
-                                    parsed.start_date = v[..10].to_string();
-                                }
+                            "summary" | "title" if parsed.summary.is_empty() || k == "summary" => parsed.summary = v,
+                            "date" if parsed.start_date.is_empty() && v.len() >= 10 => {
+                                parsed.start_date = v[..10].to_string();
                             }
                             "calendar" => parsed.calendar = v,
                             "location" => parsed.location = v,
@@ -423,50 +313,33 @@ pub(crate) fn parse_diary_event_yaml(yaml_raw: &str) -> ParsedDiaryEventYaml {
                             "colorId" | "color_id" => parsed.color_id = v,
                             "description" => parsed.description = v,
                             "status" => parsed.status = v,
-                            "gcal-upload-pending" => {
-                                parsed.upload_pending =
-                                    v.eq_ignore_ascii_case("true") || v == "1";
-                            }
+                            "gcal-upload-pending" => parsed.upload_pending = v.eq_ignore_ascii_case("true") || v == "1",
                             _ => {}
                         }
                     }
                 }
             }
         } else {
-            // 들여쓰기 된 하위 필드 (`start:`, `end:`, `attendees:`)
             let sub = trimmed.trim_start_matches('-').trim();
             if let Some(colon) = sub.find(':') {
                 let k = sub[..colon].trim();
                 let v = unquote_yaml_val(&sub[colon + 1..]);
                 match current_block {
-                    "start" => {
-                        if (k == "date" || k == "dateTime") && v.len() >= 10 {
-                            parsed.start_date = v[..10].to_string();
-                        }
+                    "start" if (k == "date" || k == "dateTime") && v.len() >= 10 => {
+                        parsed.start_date = v[..10].to_string();
                     }
-                    "end" => {
-                        if (k == "date" || k == "dateTime") && v.len() >= 10 {
-                            parsed.end_date = v[..10].to_string();
-                        }
+                    "end" if (k == "date" || k == "dateTime") && v.len() >= 10 => {
+                        parsed.end_date = v[..10].to_string();
                     }
                     "attendees" => {
                         if k == "email" {
                             if !pending_attendee_email.is_empty() {
-                                parsed.attendees.push((
-                                    pending_attendee_email.clone(),
-                                    "needsAction".to_string(),
-                                ));
+                                parsed.attendees.push((pending_attendee_email.clone(), "needsAction".to_string()));
                             }
                             pending_attendee_email = v;
                         } else if k == "responseStatus" && !pending_attendee_email.is_empty() {
-                            parsed.attendees.push((
-                                pending_attendee_email.clone(),
-                                if v.is_empty() {
-                                    "needsAction".to_string()
-                                } else {
-                                    v
-                                },
-                            ));
+                            let st = if v.is_empty() { "needsAction".to_string() } else { v };
+                            parsed.attendees.push((pending_attendee_email.clone(), st));
                             pending_attendee_email.clear();
                         }
                     }
@@ -476,9 +349,7 @@ pub(crate) fn parse_diary_event_yaml(yaml_raw: &str) -> ParsedDiaryEventYaml {
         }
     }
     if !pending_attendee_email.is_empty() {
-        parsed
-            .attendees
-            .push((pending_attendee_email, "needsAction".to_string()));
+        parsed.attendees.push((pending_attendee_email, "needsAction".to_string()));
     }
     if parsed.end_date.is_empty() && !parsed.start_date.is_empty() {
         parsed.end_date = parsed.start_date.clone();
@@ -560,9 +431,7 @@ pub(crate) fn inject_event_id_into_markdown(path: &Path, event_id: &str) -> Resu
 
 /// 오프라인이거나 아직 OAuth 미연동 상태에서 새로 생성된 일정 파일에 `gcal-upload-pending: "true"`를 표시합니다.
 pub(crate) fn mark_diary_markdown_upload_pending(path: &Path) {
-    let Ok(raw) = fs::read_to_string(path) else {
-        return;
-    };
+    let Ok(raw) = fs::read_to_string(path) else { return };
     let (yaml_raw, body, _) = parse_markdown_yaml(&raw);
     if yaml_raw.is_empty() || yaml_raw.contains("gcal-upload-pending:") || yaml_raw.contains("event-id:") {
         return;
@@ -581,7 +450,6 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
         return Ok(parsed.event_id);
     }
 
-    // 파일명에서 날짜/제목 보조 추출
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         let date_re = cached_regex!(r"^(\d{4}-\d{2}-\d{2})\s*(.*)$");
         if let Some(cap) = date_re.captures(stem) {
@@ -617,14 +485,9 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
         .iter()
         .find(|c| {
             !parsed.calendar.is_empty()
-                && (c.summary.eq_ignore_ascii_case(&parsed.calendar)
-                    || c.id.eq_ignore_ascii_case(&parsed.calendar))
+                && (c.summary.eq_ignore_ascii_case(&parsed.calendar) || c.id.eq_ignore_ascii_case(&parsed.calendar))
         })
-        .or_else(|| {
-            calendars
-                .iter()
-                .find(|c| c.id.eq_ignore_ascii_case(&cfg.default_calendar_id))
-        })
+        .or_else(|| calendars.iter().find(|c| c.id.eq_ignore_ascii_case(&cfg.default_calendar_id)))
         .or_else(|| calendars.iter().find(|c| c.primary))
         .map(|c| c.id.clone())
         .unwrap_or_else(|| {
@@ -635,42 +498,24 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
             }
         });
 
-    // Google Calendar API v3의 종일(all-day) 일정은 end.date가 exclusive이므로 +1일 처리
     let exclusive_end_date = add_days_to_ymd(&parsed.end_date, 1);
-
-    let (_, resolved_color_id) =
-        color_id_to_calendar_category(&parsed.color_id, &parsed.calendar);
+    let (_, resolved_color_id) = color_id_to_calendar_category(&parsed.color_id, &parsed.calendar);
 
     let mut event_obj = serde_json::Map::new();
     event_obj.insert("summary".to_string(), serde_json::json!(parsed.summary));
-    event_obj.insert(
-        "start".to_string(),
-        serde_json::json!({ "date": parsed.start_date }),
-    );
-    event_obj.insert(
-        "end".to_string(),
-        serde_json::json!({ "date": exclusive_end_date }),
-    );
+    event_obj.insert("start".to_string(), serde_json::json!({ "date": parsed.start_date }));
+    event_obj.insert("end".to_string(), serde_json::json!({ "date": exclusive_end_date }));
     if !resolved_color_id.is_empty() {
         event_obj.insert("colorId".to_string(), serde_json::json!(resolved_color_id));
     }
     if !parsed.location.trim().is_empty() {
-        event_obj.insert(
-            "location".to_string(),
-            serde_json::json!(parsed.location.trim()),
-        );
+        event_obj.insert("location".to_string(), serde_json::json!(parsed.location.trim()));
     }
     if !parsed.transparency.trim().is_empty() {
-        event_obj.insert(
-            "transparency".to_string(),
-            serde_json::json!(parsed.transparency.trim()),
-        );
+        event_obj.insert("transparency".to_string(), serde_json::json!(parsed.transparency.trim()));
     }
     if !parsed.visibility.trim().is_empty() {
-        event_obj.insert(
-            "visibility".to_string(),
-            serde_json::json!(parsed.visibility.trim()),
-        );
+        event_obj.insert("visibility".to_string(), serde_json::json!(parsed.visibility.trim()));
     }
     if !parsed.status.trim().is_empty() {
         event_obj.insert("status".to_string(), serde_json::json!(parsed.status.trim()));
@@ -679,12 +524,7 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
         let att_arr: Vec<serde_json::Value> = parsed
             .attendees
             .iter()
-            .map(|(email, resp)| {
-                serde_json::json!({
-                    "email": email,
-                    "responseStatus": resp
-                })
-            })
+            .map(|(email, resp)| serde_json::json!({ "email": email, "responseStatus": resp }))
             .collect();
         event_obj.insert("attendees".to_string(), serde_json::Value::Array(att_arr));
     }
@@ -694,8 +534,7 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
         event_obj.insert("description".to_string(), serde_json::json!(body_trimmed));
     }
 
-    let req_bytes =
-        serde_json::to_vec(&serde_json::Value::Object(event_obj)).map_err(|e| e.to_string())?;
+    let req_bytes = serde_json::to_vec(&serde_json::Value::Object(event_obj)).map_err(|e| e.to_string())?;
     let post_url = format!(
         "https://www.googleapis.com/calendar/v3/calendars/{}/events",
         url_encode_component(&target_cal_id)
@@ -715,24 +554,16 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
         .into_body()
         .read_to_string()
         .map_err(|e| format!("Google Calendar 이벤트 응답 읽기 실패: {}", e))?;
-    let jv: serde_json::Value = serde_json::from_str(&resp_str)
-        .map_err(|_| format!("Google Calendar 이벤트 응답 파싱 실패: {}", resp_str))?;
+    let jv: serde_json::Value =
+        serde_json::from_str(&resp_str).map_err(|_| format!("Google Calendar 이벤트 응답 파싱 실패: {}", resp_str))?;
 
     if let Some(err) = jv.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("Upload Error");
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Upload Error");
         mark_diary_markdown_upload_pending(path);
         return Err(format!("Google Calendar 업로드 API 오류: {}", msg));
     }
 
-    let created_id = jv
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let created_id = jv.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
     if created_id.is_empty() {
         mark_diary_markdown_upload_pending(path);
         return Err("Google Calendar 응답에 event id가 없습니다.".to_string());
@@ -741,10 +572,7 @@ pub(crate) fn try_upload_diary_markdown_to_gcal(path: &Path) -> Result<String, S
     inject_event_id_into_markdown(path, &created_id)?;
     log_comm(
         "INFO",
-        &format!(
-            "[GoogleCalendar] 신규 일정 업로드 완료: {} (event-id: {})",
-            parsed.summary, created_id
-        ),
+        &format!("[GoogleCalendar] 신규 일정 업로드 완료: {} (event-id: {})", parsed.summary, created_id),
     );
     Ok(created_id)
 }
@@ -780,7 +608,6 @@ pub(crate) fn sync_google_calendar_events_internal(
         }
     };
 
-    // 1. 기존 Diary 폴더 내 마크다운 문서 스캔 (event-id 매핑, (날짜, 제목) 매핑, 업로드 대기 목록 수집)
     let mut existing_by_event_id: HashMap<String, PathBuf> = HashMap::new();
     let mut existing_by_date_title: HashMap<(String, String), PathBuf> = HashMap::new();
     let mut pending_upload_files: Vec<PathBuf> = Vec::new();
@@ -793,16 +620,10 @@ pub(crate) fn sync_google_calendar_events_internal(
         .filter(|e| e.file_type().is_file() && !is_internal_mylore_path(e.path()))
     {
         let p = entry.path().to_path_buf();
-        if p.extension()
-            .and_then(|s| s.to_str())
-            .map(|s| !s.eq_ignore_ascii_case("md"))
-            .unwrap_or(true)
-        {
+        if p.extension().and_then(|s| s.to_str()).map(|s| !s.eq_ignore_ascii_case("md")).unwrap_or(true) {
             continue;
         }
-        let Ok(raw) = fs::read_to_string(&p) else {
-            continue;
-        };
+        let Ok(raw) = fs::read_to_string(&p) else { continue };
         let (yaml_raw, _, _) = parse_markdown_yaml(&raw);
         let parsed = parse_diary_event_yaml(&yaml_raw);
 
@@ -829,7 +650,6 @@ pub(crate) fn sync_google_calendar_events_internal(
         }
     }
 
-    // 2. 업로드 대기(`gcal-upload-pending: "true"`) 상태인 신규 생성 일정 업로드
     let mut uploaded_count = 0usize;
     for pending_path in pending_upload_files {
         if let Ok(ev_id) = try_upload_diary_markdown_to_gcal(&pending_path) {
@@ -839,29 +659,19 @@ pub(crate) fn sync_google_calendar_events_internal(
         }
     }
 
-    // 3. 다운로드 시간 범위 결정
-    use chrono::{Datelike, Local, NaiveDate, TimeZone};
+    use chrono::{Local, NaiveDate};
     let now = Local::now();
     let (start_date, end_date) = match (year, month) {
         (Some(y), Some(m)) if (1..=12).contains(&m) => {
-            let target_first = NaiveDate::from_ymd_opt(y, m as u32, 1)
-                .unwrap_or_else(|| now.date_naive());
-            let min_d = target_first
-                .checked_sub_signed(chrono::Duration::days(35))
-                .unwrap_or(target_first);
-            let max_d = target_first
-                .checked_add_signed(chrono::Duration::days(65))
-                .unwrap_or(target_first);
+            let target_first = NaiveDate::from_ymd_opt(y, m as u32, 1).unwrap_or_else(|| now.date_naive());
+            let min_d = target_first.checked_sub_signed(chrono::Duration::days(35)).unwrap_or(target_first);
+            let max_d = target_first.checked_add_signed(chrono::Duration::days(65)).unwrap_or(target_first);
             (min_d, max_d)
         }
         _ => {
             let today = now.date_naive();
-            let min_d = today
-                .checked_sub_signed(chrono::Duration::days(60))
-                .unwrap_or(today);
-            let max_d = today
-                .checked_add_signed(chrono::Duration::days(90))
-                .unwrap_or(today);
+            let min_d = today.checked_sub_signed(chrono::Duration::days(60)).unwrap_or(today);
+            let max_d = today.checked_add_signed(chrono::Duration::days(90)).unwrap_or(today);
             (min_d, max_d)
         }
     };
@@ -869,7 +679,6 @@ pub(crate) fn sync_google_calendar_events_internal(
     let time_min = format!("{}T00:00:00Z", start_date.format("%Y-%m-%d"));
     let time_max = format!("{}T23:59:59Z", end_date.format("%Y-%m-%d"));
 
-    // 4. 사용자 캘린더 목록 조회 및 대상 캘린더 필터링
     let calendars = fetch_user_calendars(&access_token, &cfg)?;
     let mut target_calendars: Vec<GoogleCalendarListEntry> = calendars
         .iter()
@@ -888,7 +697,6 @@ pub(crate) fn sync_google_calendar_events_internal(
             summary: "기본 캘린더".to_string(),
             primary: true,
             access_role: "owner".to_string(),
-            time_zone: "Asia/Seoul".to_string(),
         });
     }
 
@@ -911,142 +719,76 @@ pub(crate) fn sync_google_calendar_events_internal(
         else {
             continue;
         };
-        let Ok(resp_str) = resp.into_body().read_to_string() else {
-            continue;
-        };
-        let Ok(jv) = serde_json::from_str::<serde_json::Value>(&resp_str) else {
-            continue;
-        };
-        let Some(items) = jv.get("items").and_then(|v| v.as_array()) else {
-            continue;
-        };
+        let Ok(resp_str) = resp.into_body().read_to_string() else { continue };
+        let Ok(jv) = serde_json::from_str::<serde_json::Value>(&resp_str) else { continue };
+        let Some(items) = jv.get("items").and_then(|v| v.as_array()) else { continue };
 
         for item in items {
-            let status = item
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("confirmed");
+            let status = item.get("status").and_then(|v| v.as_str()).unwrap_or("confirmed");
             if status == "cancelled" {
                 continue;
             }
-            let event_id = item
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if event_id.is_empty() {
-                continue;
-            }
-            let summary = item
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if summary.is_empty() {
+            let event_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let summary = item.get("summary").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            if event_id.is_empty() || summary.is_empty() {
                 continue;
             }
 
             let start_obj = item.get("start");
             let end_obj = item.get("end");
 
-            let (ev_start_date, is_all_day) = if let Some(d) = start_obj
-                .and_then(|o| o.get("date"))
-                .and_then(|v| v.as_str())
-            {
-                (d.trim().to_string(), true)
-            } else if let Some(dt) = start_obj
-                .and_then(|o| o.get("dateTime"))
-                .and_then(|v| v.as_str())
-            {
-                if dt.len() >= 10 {
-                    (dt[..10].to_string(), false)
+            let (ev_start_date, is_all_day) =
+                if let Some(d) = start_obj.and_then(|o| o.get("date")).and_then(|v| v.as_str()) {
+                    (d.trim().to_string(), true)
+                } else if let Some(dt) = start_obj.and_then(|o| o.get("dateTime")).and_then(|v| v.as_str()) {
+                    if dt.len() >= 10 {
+                        (dt[..10].to_string(), false)
+                    } else {
+                        continue;
+                    }
                 } else {
                     continue;
-                }
-            } else {
-                continue;
-            };
+                };
 
             let ev_end_date = if is_all_day {
                 if let Some(d) = end_obj.and_then(|o| o.get("date")).and_then(|v| v.as_str()) {
                     let incl = add_days_to_ymd(d.trim(), -1);
-                    if incl < ev_start_date {
-                        ev_start_date.clone()
-                    } else {
-                        incl
-                    }
+                    if incl < ev_start_date { ev_start_date.clone() } else { incl }
                 } else {
                     ev_start_date.clone()
                 }
-            } else if let Some(dt) = end_obj
-                .and_then(|o| o.get("dateTime"))
-                .and_then(|v| v.as_str())
-            {
-                if dt.len() >= 10 {
-                    dt[..10].to_string()
-                } else {
-                    ev_start_date.clone()
-                }
+            } else if let Some(dt) = end_obj.and_then(|o| o.get("dateTime")).and_then(|v| v.as_str()) {
+                if dt.len() >= 10 { dt[..10].to_string() } else { ev_start_date.clone() }
             } else {
                 ev_start_date.clone()
             };
 
-            let raw_color_id = item
-                .get("colorId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let (cal_category, color_id) =
-                color_id_to_calendar_category(raw_color_id, &cal.summary);
+            let raw_color_id = item.get("colorId").and_then(|v| v.as_str()).unwrap_or("");
+            let (cal_category, color_id) = color_id_to_calendar_category(raw_color_id, &cal.summary);
+            let location = item.get("location").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let transparency = item.get("transparency").and_then(|v| v.as_str()).unwrap_or("transparent").to_string();
+            let visibility = item.get("visibility").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+            let description_remote = item.get("description").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
 
-            let location = item
-                .get("location")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let transparency = item
-                .get("transparency")
-                .and_then(|v| v.as_str())
-                .unwrap_or("transparent")
-                .to_string();
-            let visibility = item
-                .get("visibility")
-                .and_then(|v| v.as_str())
-                .unwrap_or("default")
-                .to_string();
-            let description_remote = item
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-
-            // 4-A. 이미 동일한 event-id를 가진 로컬 마크다운 문서가 있는 경우
             if let Some(existing_path) = existing_by_event_id.get(&event_id).cloned() {
                 if let Ok(raw) = fs::read_to_string(&existing_path) {
                     let (yaml_raw, local_body, _) = parse_markdown_yaml(&raw);
-                    let local_parsed = parse_diary_event_yaml(&yaml_raw);
                     let body_needs_fill = local_body.trim().is_empty()
                         && !description_remote.is_empty()
                         && !description_remote.eq_ignore_ascii_case("File");
                     if body_needs_fill {
-                        let updated_raw =
-                            format!("---\n{}\n---\n{}\n", yaml_raw.trim_end(), description_remote);
+                        let updated_raw = format!("---\n{}\n---\n{}\n", yaml_raw.trim_end(), description_remote);
                         if fs::write(&existing_path, updated_raw).is_ok() {
                             let _ = build_document_payload(conn, &existing_path);
                             updated_count += 1;
                             continue;
                         }
                     }
-                    let _ = local_parsed;
                 }
                 skipped_count += 1;
                 continue;
             }
 
-            // 4-B. 날짜와 제목이 동일한 로컬 마크다운 문서가 이미 있는 경우 -> event-id 연결
             let lookup_key = (ev_start_date.clone(), summary.to_lowercase());
             if let Some(existing_path) = existing_by_date_title.get(&lookup_key).cloned() {
                 if inject_event_id_into_markdown(&existing_path, &event_id).is_ok() {
@@ -1057,7 +799,6 @@ pub(crate) fn sync_google_calendar_events_internal(
                 }
             }
 
-            // 4-C. 로컬에 없는 신규 구글 캘린더 일정 -> 새 마크다운(.md) 문서 생성
             let safe_title = sanitize_filename_stem(&summary);
             let mut filename = format!("{} {}.md", ev_start_date, safe_title);
             let mut target_path = diary_dir.join(&filename);
@@ -1069,33 +810,13 @@ pub(crate) fn sync_google_calendar_events_internal(
             }
 
             let new_uuid = Uuid::new_v4().to_string();
-            let loc_line = if location.is_empty() {
-                String::new()
-            } else {
-                format!("location: \"{}\"\n", location.replace('"', "\\\""))
-            };
-            let body_text = if description_remote.is_empty()
-                || description_remote.eq_ignore_ascii_case("File")
-            {
-                String::new()
-            } else {
-                format!("{}\n", description_remote)
-            };
+            let loc_line = if location.is_empty() { String::new() } else { format!("location: \"{}\"\n", location.replace('"', "\\\"")) };
+            let body_text = if description_remote.is_empty() || description_remote.eq_ignore_ascii_case("File") { String::new() } else { format!("{}\n", description_remote) };
 
             let content = format!(
                 "---\nuuid: \"{}\"\nevent-id: {}\nsummary: \"{}\"\nstart:\n  date: \"{}\"\nend:\n  date: \"{}\"\ncalendar: \"{}\"\n{}transparency: \"{}\"\nvisibility: \"{}\"\ncolorId: \"{}\"\ndescription: \"File\"\nstatus: \"{}\"\n---\n{}",
-                new_uuid,
-                event_id,
-                summary.replace('"', "\\\""),
-                ev_start_date,
-                ev_end_date,
-                cal_category,
-                loc_line,
-                transparency,
-                visibility,
-                color_id,
-                status,
-                body_text
+                new_uuid, event_id, summary.replace('"', "\\\""), ev_start_date, ev_end_date,
+                cal_category, loc_line, transparency, visibility, color_id, status, body_text
             );
 
             if fs::write(&target_path, content).is_ok() {
@@ -1119,13 +840,8 @@ pub(crate) fn sync_google_calendar_events_internal(
     log_comm("INFO", &msg);
 
     Ok(GoogleCalendarSyncResult {
-        uploaded_count,
-        downloaded_count,
-        updated_count,
-        skipped_count,
-        needs_auth: false,
-        message: msg,
-        last_sync_at: now_str,
+        uploaded_count, downloaded_count, updated_count, skipped_count,
+        needs_auth: false, message: msg, last_sync_at: now_str,
     })
 }
 
@@ -1139,12 +855,8 @@ pub(crate) fn get_google_calendar_sync_status() -> Result<GoogleCalendarSyncStat
     let path = resolve_gcal_secret_path();
     let is_connected = !cfg.refresh_token.trim().is_empty() && cfg.last_error.is_empty();
     Ok(GoogleCalendarSyncStatus {
-        is_connected,
-        client_id: cfg.client_id,
-        default_calendar_id: cfg.default_calendar_id,
-        last_sync_at: cfg.last_sync_at,
-        last_error: cfg.last_error,
-        storage_location: path.to_string_lossy().to_string(),
+        is_connected, client_id: cfg.client_id, default_calendar_id: cfg.default_calendar_id,
+        last_sync_at: cfg.last_sync_at, last_error: cfg.last_error, storage_location: path.to_string_lossy().to_string(),
     })
 }
 
@@ -1168,10 +880,7 @@ pub(crate) async fn sync_google_calendar_events(
 /// Google OAuth 2.0 PKCE 브라우저 로그인(`http://127.0.0.1:42813/callback`)을 시작하고,
 /// 인증 완료 시 즉시 토큰 저장 및 캘린더 동기화를 수행한 뒤 `"google-calendar-sync-event"` 이벤트를 발행합니다.
 #[tauri::command]
-pub(crate) fn start_google_calendar_oauth_login(
-    app: AppHandle,
-    state: State<AppState>,
-) -> Result<String, String> {
+pub(crate) fn start_google_calendar_oauth_login(app: AppHandle, state: State<AppState>) -> Result<String, String> {
     let cfg = load_or_init_gcal_config();
     let db_path = state.db_path.clone();
     let lock_arc = state.lock.clone();
@@ -1183,20 +892,14 @@ pub(crate) fn start_google_calendar_oauth_login(
     let scopes = "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events";
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?scope={}&access_type=offline&include_granted_scopes=true&response_type=code&prompt=consent&state=mylore_gcal&redirect_uri={}&client_id={}&code_challenge={}&code_challenge_method=S256",
-        url_encode_component(scopes),
-        url_encode_component(GCAL_OAUTH_REDIRECT_URI),
-        url_encode_component(cfg.client_id.trim()),
-        url_encode_component(&code_challenge)
+        url_encode_component(scopes), url_encode_component(GCAL_OAUTH_REDIRECT_URI),
+        url_encode_component(cfg.client_id.trim()), url_encode_component(&code_challenge)
     );
 
     let listener = TcpListener::bind("127.0.0.1:42813").map_err(|e| {
-        format!(
-            "로컬 OAuth 콜백 포트(127.0.0.1:42813) 바인딩 실패 (이미 인증 창이 열려 있는지 확인하세요): {}",
-            e
-        )
+        format!("로컬 OAuth 콜백 포트(127.0.0.1:42813) 바인딩 실패 (이미 인증 창이 열려 있는지 확인하세요): {}", e)
     })?;
     let _ = listener.set_nonblocking(true);
-
     open_google_calendar_web(auth_url.clone(), None)?;
 
     thread::spawn(move || {
@@ -1213,14 +916,11 @@ pub(crate) fn start_google_calendar_oauth_login(
                     let req_str = String::from_utf8_lossy(&buf[..n]);
                     let first_line = req_str.lines().next().unwrap_or("");
                     if let Some(q_idx) = first_line.find('?') {
-                        let rest = &first_line[q_idx + 1..];
-                        let query_part = rest.split_whitespace().next().unwrap_or("");
+                        let query_part = first_line[q_idx + 1..].split_whitespace().next().unwrap_or("");
                         for pair in query_part.split('&') {
                             let mut kv = pair.splitn(2, '=');
-                            let k = kv.next().unwrap_or("");
-                            let v = kv.next().unwrap_or("");
-                            if k == "code" {
-                                auth_code = url_decode_utf8(v);
+                            if kv.next() == Some("code") {
+                                auth_code = url_decode_utf8(kv.next().unwrap_or(""));
                             }
                         }
                     }
@@ -1233,90 +933,48 @@ pub(crate) fn start_google_calendar_oauth_login(
 
                     let http_resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        html_body.len(),
-                        html_body
+                        html_body.len(), html_body
                     );
                     let _ = stream.write_all(http_resp.as_bytes());
                     let _ = stream.flush();
-
-                    if !auth_code.is_empty() {
-                        break;
-                    }
+                    if !auth_code.is_empty() { break; }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(120));
-                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(120)),
                 Err(_) => break,
             }
         }
 
         drop(listener);
-
         if auth_code.is_empty() {
-            let _ = app.emit(
-                "google-calendar-sync-event",
-                GoogleCalendarSyncResult {
-                    uploaded_count: 0,
-                    downloaded_count: 0,
-                    updated_count: 0,
-                    skipped_count: 0,
-                    needs_auth: true,
-                    message: "⚠️ 구글 캘린더 OAuth 로그인이 시간 초과되었거나 취소되었습니다."
-                        .to_string(),
-                    last_sync_at: cfg_last_sync_fallback(),
-                },
-            );
+            let _ = app.emit("google-calendar-sync-event", GoogleCalendarSyncResult {
+                uploaded_count: 0, downloaded_count: 0, updated_count: 0, skipped_count: 0,
+                needs_auth: true,
+                message: "⚠️ 구글 캘린더 OAuth 로그인이 시간 초과되었거나 취소되었습니다.".to_string(),
+                last_sync_at: cfg_last_sync_fallback(),
+            });
             return;
         }
 
         let mut cur_cfg = load_or_init_gcal_config();
         let token_body = format!(
             "code={}&client_id={}&client_secret={}&redirect_uri={}&code_verifier={}&grant_type=authorization_code",
-            url_encode_component(&auth_code),
-            url_encode_component(cur_cfg.client_id.trim()),
-            url_encode_component(cur_cfg.client_secret.trim()),
-            url_encode_component(GCAL_OAUTH_REDIRECT_URI),
+            url_encode_component(&auth_code), url_encode_component(cur_cfg.client_id.trim()),
+            url_encode_component(cur_cfg.client_secret.trim()), url_encode_component(GCAL_OAUTH_REDIRECT_URI),
             url_encode_component(&verifier_raw)
         );
 
-        let Ok(resp) = GCAL_HTTP_AGENT
-            .post("https://oauth2.googleapis.com/token")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .send(token_body.as_bytes())
-        else {
-            return;
-        };
-        let Ok(resp_str) = resp.into_body().read_to_string() else {
-            return;
-        };
-        let Ok(jv) = serde_json::from_str::<serde_json::Value>(&resp_str) else {
-            return;
-        };
+        let Ok(resp) = GCAL_HTTP_AGENT.post("https://oauth2.googleapis.com/token").header("Content-Type", "application/x-www-form-urlencoded").send(token_body.as_bytes()) else { return };
+        let Ok(resp_str) = resp.into_body().read_to_string() else { return };
+        let Ok(jv) = serde_json::from_str::<serde_json::Value>(&resp_str) else { return };
 
-        let access_token = jv
-            .get("access_token")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let refresh_token = jv
-            .get("refresh_token")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let expires_in = jv
-            .get("expires_in")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(3599);
+        let access_token = jv.get("access_token").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let refresh_token = jv.get("refresh_token").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let expires_in = jv.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3599);
 
         if !access_token.is_empty() {
             cur_cfg.access_token = access_token;
-            if !refresh_token.is_empty() {
-                cur_cfg.refresh_token = refresh_token;
-            }
-            cur_cfg.expires_at_ms =
-                chrono::Local::now().timestamp_millis() + (expires_in.saturating_sub(60)) * 1000;
+            if !refresh_token.is_empty() { cur_cfg.refresh_token = refresh_token; }
+            cur_cfg.expires_at_ms = chrono::Local::now().timestamp_millis() + (expires_in.saturating_sub(60)) * 1000;
             cur_cfg.last_error.clear();
             save_gcal_config(&cur_cfg);
 

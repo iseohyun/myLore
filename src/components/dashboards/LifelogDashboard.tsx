@@ -1,7 +1,7 @@
 /**
  * @file LifelogDashboard.tsx
- * @description 모바일 라이프로그 대시보드 컨테이너 (`F7`, `mylore://dashboard/lifelog`):
- * 상단 동기화 상태바 및 [⚙️ 설정 / 💬 대화 / 🗂️ 기록 / 📊 모니터링] 4개 탭 전환 + 우측 사이드바 연동.
+ * @description 단일 라이프로그 패널 대시보드 컨테이너 (`mylore://dashboard/{source}`).
+ * 라이프로그 전체 통합·소규모 통합을 전면 제거하고, 왼쪽 액티비티 바에서 선택한 단일 카테고리만 출력합니다.
  */
 import React from 'react';
 import {
@@ -14,14 +14,13 @@ import {
   MyLoreAppSettings,
   SettingsCategory,
 } from '../../types/mylore';
-import { SyncProgressCard } from './SyncProgressCard';
-import { LifelogSettingsTab } from './LifelogSettingsTab';
 import { LifelogMobileDataTab } from './LifelogMobileDataTab';
 import { LifelogRecordsTab } from './LifelogRecordsTab';
 import { PcActivityTab } from './PcActivityTab';
 import { LocationMovementTrackerPanel } from './LifelogMilestonePanels';
 
 export interface LifelogDashboardProps {
+  activeLifelogSource?: LifelogSourceType;
   lifelogDashboardTab: 'settings' | 'chat' | 'records' | 'pc_activity';
   setLifelogDashboardTab: React.Dispatch<
     React.SetStateAction<'settings' | 'chat' | 'records' | 'pc_activity'>
@@ -72,43 +71,75 @@ export interface LifelogDashboardProps {
     React.SetStateAction<MobileContextMenuState | null>
   >;
   resolveContactName: (rawNumberOrName: string) => string;
-  openDashboardTab?: (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
-  ) => void;
+  openDashboardTab?: (dashType: any) => void;
   setSettingsCategory?: React.Dispatch<React.SetStateAction<SettingsCategory>>;
 }
 
+const LIFELOG_SOURCE_HEADERS: Record<
+  LifelogSourceType,
+  { icon: string; title: string; subtitle: string }
+> = {
+  call: {
+    icon: '📞',
+    title: '통화 대시보드',
+    subtitle: '통화 기록, 녹음 재생 및 AI 자동 스크립트 변환 현황',
+  },
+  sms: {
+    icon: '✉️',
+    title: '문자 (SMS / MMS) 대시보드',
+    subtitle: '모바일에서 동기화된 문자 메시지 내역',
+  },
+  kakaotalk: {
+    icon: '💬',
+    title: '카카오톡 대시보드',
+    subtitle: '카카오톡 대화방별 메시지 및 알림 동기화 내역',
+  },
+  recording: {
+    icon: '🎙️',
+    title: '음성 녹음 대시보드',
+    subtitle: '보이스레코더 음성 메모 및 전사 스크립트 보관함',
+  },
+  media: {
+    icon: '🖼️',
+    title: '사진 / 영상 미디어 대시보드',
+    subtitle: '원본 해시 레지스트리 및 모바일 동기화 사진·동영상',
+  },
+  contacts: {
+    icon: '📇',
+    title: '연락처 대시보드',
+    subtitle: '연락처 목록 및 인물 관계·소속 모임 AI 컨텍스트 편집',
+  },
+  pc_log: {
+    icon: '💻',
+    title: 'PC로그 대시보드 (ActivityWatch)',
+    subtitle: '데스크톱 창 제목·앱 사용 시간 및 타임라인 분석',
+  },
+  notification: {
+    icon: '📱',
+    title: 'M로그 대시보드 (모바일 앱 사용)',
+    subtitle: '스마트폰 앱 알림 및 모바일 활동 기록',
+  },
+  health: {
+    icon: '❤️',
+    title: '헬스 대시보드',
+    subtitle: '걸음 수·수면·심박 등 모바일 헬스 케어 기록',
+  },
+  location: {
+    icon: '📍',
+    title: 'GPS · Wi-Fi 동선 대시보드',
+    subtitle: '시간대별 위치 좌표, 체류 장소 및 Wi-Fi 연결 동선',
+  },
+};
+
 export function LifelogDashboard({
-  lifelogDashboardTab,
+  activeLifelogSource,
   setLifelogDashboardTab,
   mobileSidebarTab,
   setMobileSidebarTab,
-  refreshMobilePairingInfo,
-  setRightSidebarOpen,
   refreshAllLifelogMessages,
-  mobileSyncProgress,
-  setMobileSyncProgress,
-  reconcileResultMsg,
-  setReconcileResultMsg,
-  mobilePairing,
-  setMobilePairing,
-  qrDataUrl,
-  ssidInputText,
-  setSsidInputText,
   setStatusMessage,
-  geminiStatus,
-  setGeminiStatus,
-  geminiKeyInput,
-  setGeminiKeyInput,
-  isVerifyingGemini,
-  setAwaitingClipboardKey,
-  tryRegisterGeminiKeyString,
-  appSettings,
-  setAppSettings,
-  handleUpdateAppSettings,
   mobilePersonFilter,
   setMobilePersonFilter,
-  mobileSourceFilter,
   setMobileSourceFilter,
   allLifelogMessages,
   contactsMap = {},
@@ -116,28 +147,9 @@ export function LifelogDashboard({
   setMobileContextMenu,
   resolveContactName,
   openDashboardTab,
-  setSettingsCategory,
 }: LifelogDashboardProps) {
-  const chatCount = allLifelogMessages.filter(
-    (m) => m.source === 'kakaotalk' || m.source === 'sms' || m.source === 'call'
-  ).length;
-  const notiCount = allLifelogMessages.filter(
-    (m) => m.source === 'notification'
-  ).length;
-  const healthCount = allLifelogMessages.filter(
-    (m) => m.source === 'health'
-  ).length;
-
-  const activeMonitoringSubTab:
-    | 'pc_log'
-    | 'notification'
-    | 'health'
-    | 'location' =
-    mobileSidebarTab === 'notification' ||
-    mobileSidebarTab === 'health' ||
-    mobileSidebarTab === 'location'
-      ? mobileSidebarTab
-      : 'pc_log';
+  const source: LifelogSourceType = activeLifelogSource || mobileSidebarTab || 'call';
+  const meta = LIFELOG_SOURCE_HEADERS[source] || LIFELOG_SOURCE_HEADERS.call;
 
   return (
     <div className="finance-workspace">
@@ -151,199 +163,43 @@ export function LifelogDashboard({
           gap: '10px',
         }}
       >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '14px',
-            flexWrap: 'wrap',
-          }}
-        >
+        <div>
           <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>
-            📱 라이프로그 대쉬보드
+            {meta.icon} {meta.title}
           </h2>
-          <div
+          <p
             style={{
-              display: 'inline-flex',
-              backgroundColor: 'var(--bg-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              padding: '3px',
-              gap: '4px',
-              flexWrap: 'wrap',
+              color: 'var(--text-secondary)',
+              fontSize: '12.5px',
+              marginTop: '4px',
             }}
           >
-            <button
-              className={`toolbar-btn ${
-                lifelogDashboardTab === 'chat' ? 'primary' : ''
-              }`}
-              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
-              onClick={() => {
-                setLifelogDashboardTab('chat');
-                setRightSidebarOpen(true);
-                if (
-                  mobileSidebarTab !== 'kakaotalk' &&
-                  mobileSidebarTab !== 'sms' &&
-                  mobileSidebarTab !== 'call'
-                ) {
-                  setMobileSidebarTab('kakaotalk');
-                  setMobileSourceFilter('kakaotalk');
-                } else {
-                  setMobileSourceFilter(mobileSidebarTab);
-                }
-                refreshAllLifelogMessages();
-              }}
-              title={`통화 · 문자 · 카카오톡 (${chatCount}건)`}
-            >
-              💬 통화
-            </button>
-            <button
-              className={`toolbar-btn ${
-                lifelogDashboardTab === 'records' ? 'primary' : ''
-              }`}
-              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
-              onClick={() => {
-                setLifelogDashboardTab('records');
-                setRightSidebarOpen(true);
-                if (
-                  mobileSidebarTab !== 'recording' &&
-                  mobileSidebarTab !== 'media' &&
-                  mobileSidebarTab !== 'contacts'
-                ) {
-                  setMobileSidebarTab('recording');
-                }
-                refreshAllLifelogMessages();
-              }}
-              title="녹음 · 사진/영상 · 연락처"
-            >
-              🗂️ 기록
-            </button>
-            <button
-              className={`toolbar-btn ${
-                lifelogDashboardTab === 'pc_activity' ? 'primary' : ''
-              }`}
-              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
-              onClick={() => {
-                setLifelogDashboardTab('pc_activity');
-                setRightSidebarOpen(true);
-                if (
-                  mobileSidebarTab !== 'pc_log' &&
-                  mobileSidebarTab !== 'notification' &&
-                  mobileSidebarTab !== 'health' &&
-                  mobileSidebarTab !== 'location'
-                ) {
-                  setMobileSidebarTab('pc_log');
-                }
-                refreshAllLifelogMessages();
-              }}
-              title="PC로그 · M로그 · 헬스 · 동선"
-            >
-              📊 모니터링
-            </button>
-            <button
-              className={`toolbar-btn ${
-                lifelogDashboardTab === 'settings' ? 'primary' : ''
-              }`}
-              style={{ border: 'none', padding: '6px 14px', fontWeight: 700 }}
-              onClick={() => {
-                refreshMobilePairingInfo();
-                if (openDashboardTab && setSettingsCategory) {
-                  setSettingsCategory('sync_setting');
-                  openDashboardTab('settings');
-                } else {
-                  setLifelogDashboardTab('settings');
-                }
-              }}
-              title="환경설정 대시보드의 Sync Setting / AI Setting 하위 메뉴로 이동합니다"
-            >
-              ⚙️ 동기화·AI 설정
-            </button>
-          </div>
+            {meta.subtitle}
+          </p>
         </div>
+        {source !== 'contacts' && (
+          <button
+            className="toolbar-btn"
+            onClick={() => void refreshAllLifelogMessages()}
+            title="데이터 새로고침"
+          >
+            🔄 새로고침
+          </button>
+        )}
       </div>
 
-      <SyncProgressCard
-        mobileSyncProgress={mobileSyncProgress}
-        setMobileSyncProgress={setMobileSyncProgress}
-      />
-
-      {lifelogDashboardTab === 'settings' && (
-        <>
-          {reconcileResultMsg && (
-            <div
-              style={{
-                padding: '10px 14px',
-                backgroundColor: 'var(--accent-soft)',
-                border: '1px solid var(--accent-primary)',
-                borderRadius: '8px',
-                marginBottom: '14px',
-                color: '#e0e7ff',
-                fontWeight: 600,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: '8px',
-              }}
-            >
-              <span style={{ whiteSpace: 'pre-wrap' }}>
-                {reconcileResultMsg}
-              </span>
-              <button
-                className="toolbar-btn"
-                style={{ padding: '2px 8px', fontSize: '11px' }}
-                onClick={() => setReconcileResultMsg('')}
-              >
-                ✕
-              </button>
-            </div>
-          )}
-        </>
-      )}
-
-      {lifelogDashboardTab === 'settings' &&
-        (mobilePairing ? (
-          <LifelogSettingsTab
-            mobilePairing={mobilePairing}
-            setMobilePairing={setMobilePairing}
-            qrDataUrl={qrDataUrl}
-            ssidInputText={ssidInputText}
-            setSsidInputText={setSsidInputText}
-            refreshMobilePairingInfo={refreshMobilePairingInfo}
-            setStatusMessage={setStatusMessage}
-            setReconcileResultMsg={setReconcileResultMsg}
-            geminiStatus={geminiStatus}
-            setGeminiStatus={setGeminiStatus}
-            geminiKeyInput={geminiKeyInput}
-            setGeminiKeyInput={setGeminiKeyInput}
-            isVerifyingGemini={isVerifyingGemini}
-            setAwaitingClipboardKey={setAwaitingClipboardKey}
-            tryRegisterGeminiKeyString={tryRegisterGeminiKeyString}
-            appSettings={appSettings}
-            setAppSettings={setAppSettings}
-            handleUpdateAppSettings={handleUpdateAppSettings}
-          />
-        ) : (
-          <div
-            style={{
-              padding: '28px',
-              backgroundColor: 'var(--bg-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '10px',
-              textAlign: 'center',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            🔄 모바일 페어링 정보 및 현재 Wi-Fi 자격 증명을 불러오는 중입니다...
-          </div>
-        ))}
-
-      {lifelogDashboardTab === 'chat' && (
+      {(source === 'call' ||
+        source === 'sms' ||
+        source === 'kakaotalk' ||
+        source === 'notification' ||
+        source === 'health') && (
         <LifelogMobileDataTab
+          fixedSource={source}
           mobilePersonFilter={mobilePersonFilter}
           setMobilePersonFilter={setMobilePersonFilter}
-          mobileSourceFilter={mobileSourceFilter}
+          mobileSourceFilter={source}
           setMobileSourceFilter={setMobileSourceFilter}
-          mobileSidebarTab={mobileSidebarTab}
+          mobileSidebarTab={source}
           setMobileSidebarTab={setMobileSidebarTab}
           allLifelogMessages={allLifelogMessages}
           handleSelectLifelogSidebarItem={handleSelectLifelogSidebarItem}
@@ -352,100 +208,32 @@ export function LifelogDashboard({
         />
       )}
 
-      {lifelogDashboardTab === 'records' && (
+      {(source === 'recording' ||
+        source === 'media' ||
+        source === 'contacts') && (
         <LifelogRecordsTab
           allLifelogMessages={allLifelogMessages}
           contactsMap={contactsMap}
-          mobileSidebarTab={mobileSidebarTab}
+          mobileSidebarTab={source}
           setMobileSidebarTab={setMobileSidebarTab}
           mobilePersonFilter={mobilePersonFilter}
           setMobilePersonFilter={setMobilePersonFilter}
+          setMobileSourceFilter={setMobileSourceFilter}
           setLifelogDashboardTab={setLifelogDashboardTab}
+          openDashboardTab={openDashboardTab}
+          setStatusMessage={setStatusMessage}
           handleSelectLifelogSidebarItem={handleSelectLifelogSidebarItem}
           setMobileContextMenu={setMobileContextMenu}
           resolveContactName={resolveContactName}
         />
       )}
 
-      {lifelogDashboardTab === 'pc_activity' && (
-        <div className="lifelog-records-container">
-          <div className="lifelog-records-subtabs">
-            <div className="lifelog-records-subtab-group">
-              <button
-                className={`toolbar-btn ${
-                  activeMonitoringSubTab === 'pc_log' ? 'primary' : ''
-                }`}
-                onClick={() => setMobileSidebarTab('pc_log')}
-              >
-                🖥️ PC로그 (ActivityWatch)
-              </button>
-              <button
-                className={`toolbar-btn ${
-                  activeMonitoringSubTab === 'notification' ? 'primary' : ''
-                }`}
-                onClick={() => setMobileSidebarTab('notification')}
-              >
-                📱 M로그 ({notiCount})
-              </button>
-              <button
-                className={`toolbar-btn ${
-                  activeMonitoringSubTab === 'health' ? 'primary' : ''
-                }`}
-                onClick={() => setMobileSidebarTab('health')}
-              >
-                🏃 헬스 ({healthCount})
-              </button>
-              <button
-                className={`toolbar-btn ${
-                  activeMonitoringSubTab === 'location' ? 'primary' : ''
-                }`}
-                onClick={() => setMobileSidebarTab('location')}
-              >
-                📍 동선 (GPS·Wi-Fi)
-              </button>
-            </div>
-          </div>
+      {source === 'pc_log' && <PcActivityTab />}
 
-          {activeMonitoringSubTab === 'pc_log' && <PcActivityTab />}
-
-          {activeMonitoringSubTab === 'location' && (
-            <LocationMovementTrackerPanel
-              allLifelogMessages={allLifelogMessages}
-            />
-          )}
-
-          {activeMonitoringSubTab === 'notification' && (
-            <LifelogMobileDataTab
-              fixedSource="notification"
-              mobilePersonFilter={mobilePersonFilter}
-              setMobilePersonFilter={setMobilePersonFilter}
-              mobileSourceFilter="notification"
-              setMobileSourceFilter={setMobileSourceFilter}
-              mobileSidebarTab={mobileSidebarTab}
-              setMobileSidebarTab={setMobileSidebarTab}
-              allLifelogMessages={allLifelogMessages}
-              handleSelectLifelogSidebarItem={handleSelectLifelogSidebarItem}
-              setMobileContextMenu={setMobileContextMenu}
-              resolveContactName={resolveContactName}
-            />
-          )}
-
-          {activeMonitoringSubTab === 'health' && (
-            <LifelogMobileDataTab
-              fixedSource="health"
-              mobilePersonFilter={mobilePersonFilter}
-              setMobilePersonFilter={setMobilePersonFilter}
-              mobileSourceFilter="health"
-              setMobileSourceFilter={setMobileSourceFilter}
-              mobileSidebarTab={mobileSidebarTab}
-              setMobileSidebarTab={setMobileSidebarTab}
-              allLifelogMessages={allLifelogMessages}
-              handleSelectLifelogSidebarItem={handleSelectLifelogSidebarItem}
-              setMobileContextMenu={setMobileContextMenu}
-              resolveContactName={resolveContactName}
-            />
-          )}
-        </div>
+      {source === 'location' && (
+        <LocationMovementTrackerPanel
+          allLifelogMessages={allLifelogMessages}
+        />
       )}
     </div>
   );

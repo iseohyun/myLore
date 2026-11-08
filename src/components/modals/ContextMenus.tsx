@@ -19,6 +19,10 @@ import {
   transcribeSingleCallItem,
   updateCallTranscriptStage,
 } from '../../services/tauriClient';
+import {
+  CallScriptCompareModal,
+  CallScriptCompareTarget,
+} from './CallScriptCompareModal';
 
 export interface ContextMenusProps {
   contextMenu: ContextMenuState | null;
@@ -109,6 +113,8 @@ export function ContextMenus({
   const [showCtxReqInput, setShowCtxReqInput] = useState<boolean>(false);
   const [showFailedColorPicker, setShowFailedColorPicker] =
     useState<boolean>(false);
+  const [compareCallTarget, setCompareCallTarget] =
+    useState<CallScriptCompareTarget | null>(null);
   const fileContextMenuRef = useRef<HTMLDivElement | null>(null);
   const mobileContextMenuRef = useRef<HTMLDivElement | null>(null);
   const [fileMenuPos, setFileMenuPos] = useState<{ top: number; left: number }>(
@@ -394,12 +400,12 @@ export function ContextMenus({
                 }
                 const msgLabel =
                   nextStage === 1
-                    ? '🔊 1단계(미생성 · AI 대기열 등록)'
+                    ? '📥 1. 다운로드 (ASR 대기열)'
                     : nextStage === 2
-                      ? '❓ 2단계(확인 전 · AI 대기열 제외)'
+                      ? '🎙️ 2. ASR처리 (AI 후처리 대기)'
                       : nextStage === 3
-                        ? '❗ 3단계(추가 요구사항 등록 · AI 대기열 포함)'
-                        : '📄 4단계(사용자 확인 완료 · AI 대기열 제외)';
+                        ? '✨ 3. 후처리 (확인 대기)'
+                        : '✅ 4. 확인 (최종 확정)';
                 // 0ms 낙관적(Optimistic) UI 즉시 반영
                 applyOptimisticCallStageUpdate?.(
                   targetMsg.roomOrSender,
@@ -532,6 +538,23 @@ export function ContextMenus({
                     </span>
                   </button>
                   {hasRecording && (
+                    <button
+                      className="menu-item"
+                      onClick={() => {
+                        const targetMsg = mobileContextMenu.messageItem;
+                        const personDisplay = mobileContextMenu.personName;
+                        setMobileContextMenu(null);
+                        setCompareCallTarget({
+                          roomOrSender: targetMsg.roomOrSender,
+                          attachmentUuid: targetMsg.attachmentUuid,
+                          personName: personDisplay,
+                        });
+                      }}
+                    >
+                      <span>🔍 각 스크립트 비교하기</span>
+                    </button>
+                  )}
+                  {hasRecording && (
                     <>
                       <div className="menu-divider" />
                       <button
@@ -539,7 +562,7 @@ export function ContextMenus({
                         onClick={() => handleQuickStageUpdate(4)}
                       >
                         <span>
-                          📄 4단계: 사용자 확인 완료 처리
+                          ✅ 4. 확인 (사용자 최종 확인)
                           {currentStage === 4 ? ' (현재 상태)' : ''}
                         </span>
                       </button>
@@ -555,7 +578,7 @@ export function ContextMenus({
                         }}
                       >
                         <span>
-                          ❗ 3단계: 사용자 추가 요구사항 입력...
+                          ✨ 3. 후처리 (확인 대기 · 코멘트 입력...)
                           {currentStage === 3 ? ' (현재 상태)' : ''}
                         </span>
                       </button>
@@ -576,7 +599,7 @@ export function ContextMenus({
                             autoFocus
                             className="input-field"
                             style={{ fontSize: '11.5px', padding: '5px 8px' }}
-                            placeholder="추가 요구사항 입력 후 Enter..."
+                            placeholder="후처리 코멘트 입력 후 Enter..."
                             value={ctxReqText}
                             onChange={(e) => setCtxReqText(e.target.value)}
                             onKeyDown={(e) => {
@@ -598,7 +621,7 @@ export function ContextMenus({
                               )
                             }
                           >
-                            ❗ 3단계 대기열 등록
+                            ✨ 3. 후처리 코멘트 저장
                           </button>
                         </div>
                       )}
@@ -607,7 +630,7 @@ export function ContextMenus({
                         onClick={() => handleQuickStageUpdate(2)}
                       >
                         <span>
-                          ❓ 2단계: 확인 전 상태로 변경
+                          🎙️ 2. ASR처리 (후처리 대기 상태로 변경)
                           {currentStage === 2 ? ' (현재 상태)' : ''}
                         </span>
                       </button>
@@ -616,7 +639,7 @@ export function ContextMenus({
                         onClick={() => handleQuickStageUpdate(1)}
                       >
                         <span>
-                          🔊 1단계: AI 스크립트 대기열에 넣기
+                          📥 1. 다운로드 (ASR 대기열에 넣기)
                           {currentStage === 1 ? ' (현재 상태)' : ''}
                         </span>
                       </button>
@@ -759,6 +782,15 @@ export function ContextMenus({
           </button>
         </div>
       )}
+
+      <CallScriptCompareModal
+        target={compareCallTarget}
+        onClose={() => setCompareCallTarget(null)}
+        setStatusMessage={setStatusMessage}
+        applyLoadedDocument={applyLoadedDocument}
+        refreshAllLifelogMessages={refreshAllLifelogMessages}
+        refreshTree={refreshTree}
+      />
     </>
   );
 }

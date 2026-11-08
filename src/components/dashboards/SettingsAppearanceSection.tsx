@@ -6,7 +6,6 @@ import React from 'react';
 import { MyLoreAppSettings, ThemePresetId } from '../../types/mylore';
 import {
   applyAppSettingsToDocument,
-  DEFAULT_APP_SETTINGS,
   FONT_FAMILY_PRESETS,
   getAppSettings,
   THEME_PRESETS,
@@ -95,21 +94,6 @@ export function SettingsAppearanceSection({
               프리셋에서 글꼴을 선택하거나 시스템에 설치된 폰트 이름을 직접 입력할 수 있습니다.
             </p>
           </div>
-          <button
-            className="toolbar-btn"
-            onClick={() =>
-              handleUpdateAppSettings({
-                baseFontFamily: DEFAULT_APP_SETTINGS.baseFontFamily,
-                headingFontFamily: DEFAULT_APP_SETTINGS.headingFontFamily,
-                tableFontFamily: DEFAULT_APP_SETTINGS.tableFontFamily,
-                baseFontSize: DEFAULT_APP_SETTINGS.baseFontSize,
-                headingScale: DEFAULT_APP_SETTINGS.headingScale,
-                tableFontSize: DEFAULT_APP_SETTINGS.tableFontSize,
-              })
-            }
-          >
-            ↺ 글꼴/크기 초기화
-          </button>
         </div>
 
         <div
@@ -492,12 +476,6 @@ export function SettingsAppearanceSection({
             >
               ⚡ 재부팅 없이 스킨 새로고침 (Hot Reload)
             </button>
-            <button
-              className="toolbar-btn"
-              onClick={() => handleApplyThemePreset('dark_indigo')}
-            >
-              ↺ 기본 다크 인디고 테마로 복원
-            </button>
           </div>
         </div>
 
@@ -879,86 +857,68 @@ export function SettingsAppearanceSection({
         }}
       >
         <div>
-          <h4
-            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
-          >
-            💾 자동 저장 (`autoSaveEnabled`)
-          </h4>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>💾 자동 저장 (`autoSaveEnabled`)</h4>
           <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className={`toolbar-btn ${
-                appSettings.autoSaveEnabled ? 'primary' : ''
-              }`}
-              onClick={() =>
-                handleUpdateAppSettings({ autoSaveEnabled: true })
-              }
-            >
-              ✓ 자동 저장 ON
-            </button>
-            <button
-              className={`toolbar-btn ${
-                !appSettings.autoSaveEnabled ? 'primary' : ''
-              }`}
-              onClick={() =>
-                handleUpdateAppSettings({ autoSaveEnabled: false })
-              }
-            >
-              자동 저장 OFF
-            </button>
+            <button className={`toolbar-btn ${appSettings.autoSaveEnabled ? 'primary' : ''}`} onClick={() => handleUpdateAppSettings({ autoSaveEnabled: true })}>✓ 자동 저장 ON</button>
+            <button className={`toolbar-btn ${!appSettings.autoSaveEnabled ? 'primary' : ''}`} onClick={() => handleUpdateAppSettings({ autoSaveEnabled: false })}>자동 저장 OFF</button>
           </div>
         </div>
 
         <div>
-          <h4
-            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
-          >
-            ☰ <kbd>F10</kbd> 상단 메뉴바 시작 시 기본 상태
-          </h4>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              className={`toolbar-btn ${
-                !appSettings.defaultMenuBarExpanded ? 'primary' : ''
-              }`}
-              onClick={() => {
-                setMenuBarExpanded?.(false);
-                handleUpdateAppSettings({ defaultMenuBarExpanded: false });
-              }}
-            >
-              ✓ 기본 닫힘 (OFF)
-            </button>
-            <button
-              className={`toolbar-btn ${
-                appSettings.defaultMenuBarExpanded ? 'primary' : ''
-              }`}
-              onClick={() => {
-                setMenuBarExpanded?.(true);
-                handleUpdateAppSettings({ defaultMenuBarExpanded: true });
-              }}
-            >
-              기본 열림 (ON)
-            </button>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>↹ Tab 들여쓰기 공백 수 (`tabIndentSpaces`)</h4>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {[2, 4, 8].map((n) => (
+              <button
+                key={n}
+                className={`toolbar-btn ${(appSettings.tabIndentSpaces || 2) === n ? 'primary' : ''}`}
+                onClick={() => handleUpdateAppSettings({ tabIndentSpaces: n })}
+              >
+                {n === 2 ? '2칸 (기본)' : `${n}칸`}
+              </button>
+            ))}
           </div>
         </div>
 
         <div>
-          <h4
-            style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}
-          >
-            🖥️ 프로그램 시작 시 기본 편집 화면
-          </h4>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>☰ <kbd>F10</kbd> 상단 메뉴바 시작 시 기본 상태</h4>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className={`toolbar-btn ${!appSettings.defaultMenuBarExpanded ? 'primary' : ''}`} onClick={() => { setMenuBarExpanded?.(false); handleUpdateAppSettings({ defaultMenuBarExpanded: false }); }}>✓ 기본 닫힘 (OFF)</button>
+            <button className={`toolbar-btn ${appSettings.defaultMenuBarExpanded ? 'primary' : ''}`} onClick={() => { setMenuBarExpanded?.(true); handleUpdateAppSettings({ defaultMenuBarExpanded: true }); }}>기본 열림 (ON)</button>
+          </div>
+        </div>
+
+        <div>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>🖥️ 프로그램 시작 시 기본 편집 화면</h4>
           <div style={{ display: 'flex', gap: '8px' }}>
             {(['editor', 'split', 'preview'] as const).map((m) => (
-              <button
-                key={m}
-                className={`toolbar-btn ${
-                  appSettings.defaultEditorViewMode === m ? 'primary' : ''
-                }`}
-                onClick={() =>
-                  handleUpdateAppSettings({ defaultEditorViewMode: m })
-                }
-              >
-                {m}
-              </button>
+              <button key={m} className={`toolbar-btn ${appSettings.defaultEditorViewMode === m ? 'primary' : ''}`} onClick={() => handleUpdateAppSettings({ defaultEditorViewMode: m })}>{m}</button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>📂 분할 시 기본 파일 열림 위치 (`defaultFileOpenPane`)</h4>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {([
+              { id: 'left', label: '⬅️ 왼쪽 화면 (기본)' },
+              { id: 'focused', label: '🎯 편집중인 화면' },
+              { id: 'right', label: '➡️ 오른쪽 화면' },
+            ] as const).map((opt) => (
+              <button key={opt.id} className={`toolbar-btn ${(appSettings.defaultFileOpenPane || 'left') === opt.id ? 'primary' : ''}`} onClick={() => handleUpdateAppSettings({ defaultFileOpenPane: opt.id })}>{opt.label}</button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h4 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>🔗 분할 시 문서 내 링크 열림 위치 (`linkOpenPane`)</h4>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {([
+              { id: 'unfocused', label: '🔄 편집중이 아닌 화면 (기본)' },
+              { id: 'left', label: '⬅️ 왼쪽 화면' },
+              { id: 'right', label: '➡️ 오른쪽 화면' },
+              { id: 'focused', label: '🎯 편집중인 화면' },
+            ] as const).map((opt) => (
+              <button key={opt.id} className={`toolbar-btn ${(appSettings.linkOpenPane || 'unfocused') === opt.id ? 'primary' : ''}`} onClick={() => handleUpdateAppSettings({ linkOpenPane: opt.id })}>{opt.label}</button>
             ))}
           </div>
         </div>

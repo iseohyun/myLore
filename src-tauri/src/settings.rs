@@ -14,8 +14,55 @@ pub(crate) fn default_editor_view_mode() -> String {
     "split".to_string()
 }
 
+pub(crate) fn default_file_open_pane() -> String {
+    "left".to_string()
+}
+
+pub(crate) fn default_link_open_pane() -> String {
+    "unfocused".to_string()
+}
+
+pub(crate) fn default_activity_bar_open() -> bool {
+    true
+}
+
+pub(crate) fn default_activity_bar_hidden_items() -> Vec<String> {
+    Vec::new()
+}
+
+pub(crate) fn default_activity_bar_top_order() -> Vec<String> {
+    vec![
+        "approval".to_string(),
+        "projects".to_string(),
+        "call".to_string(),
+        "sms".to_string(),
+        "kakaotalk".to_string(),
+        "recording".to_string(),
+        "media".to_string(),
+        "contacts".to_string(),
+        "pc_log".to_string(),
+        "notification".to_string(),
+        "health".to_string(),
+        "location".to_string(),
+        "finance".to_string(),
+        "diary".to_string(),
+    ]
+}
+
+pub(crate) fn default_activity_bar_bottom_order() -> Vec<String> {
+    vec![
+        "settings".to_string(),
+        "login".to_string(),
+        "help".to_string(),
+    ]
+}
+
 pub(crate) fn default_scroll_sync() -> bool {
     true
+}
+
+pub(crate) fn default_tab_indent_spaces() -> u32 {
+    2
 }
 
 pub(crate) fn default_base_font_family() -> String {
@@ -114,21 +161,76 @@ pub(crate) fn default_log_retention_ai_days() -> u32 {
     30
 }
 
+/// OS 환경변수(`MYLORE_USER_NAME`, `MYLORE_USER_SURNAME`, `MYLORE_USER_GIVEN_NAME`)를 우선 조회하여
+/// `(전체 이름, 성, 이름)` 튜플을 반환합니다. 기본값은 `("정서현", "정", "서현")`입니다.
+pub(crate) fn resolve_user_identity() -> (String, String, String) {
+    let raw_full = std::env::var("MYLORE_USER_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "정서현".to_string());
+
+    let chars: Vec<char> = raw_full.chars().collect();
+    let default_surname = if !chars.is_empty() {
+        chars[0].to_string()
+    } else {
+        "정".to_string()
+    };
+    let default_given = if chars.len() > 1 {
+        chars[1..].iter().collect::<String>()
+    } else {
+        "서현".to_string()
+    };
+
+    let surname = std::env::var("MYLORE_USER_SURNAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_surname);
+
+    let given_name = std::env::var("MYLORE_USER_GIVEN_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(default_given);
+
+    (raw_full, surname, given_name)
+}
+
+pub(crate) fn apply_user_identity_placeholders(template: &str) -> String {
+    let (full_name, surname, given_name) = resolve_user_identity();
+    template
+        .replace("{USER_NAME}", &full_name)
+        .replace("{USER_SURNAME}", &surname)
+        .replace("{USER_GIVEN_NAME}", &given_name)
+}
+
 pub(crate) fn default_ai_user_profile() -> String {
-    "이름: 정서현, 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영".to_string()
+    let (full_name, surname, given_name) = resolve_user_identity();
+    format!(
+        "이름: {} (성: {}, 이름: {}), 출생년도: 1983, 거주지: 거제, 출생지: 서울, 취미: 수영",
+        full_name, surname, given_name
+    )
 }
 
 pub(crate) fn default_call_analysis_prompt() -> String {
-    "다음 스마트폰 통화 녹음 음성을 듣고 한국어로 정확하게 분석하여 반드시 아래의 2개 마크다운 섹션(`## 💡 요약`, `## 📜 스크립트`) 구조로 작성해 주세요 (통화 상대방 이름: {contact_name} — 전화번호나 날짜 없이 순수 이름만 표시):\n\n\
+    let raw = "Analyze this smartphone call recording and output the transcript in Korean using strictly the 2 Markdown sections below (`## 💡 요약`, `## 📜 스크립트`).\n\
+Speaker Labels: User = `나` (본인: {USER_NAME}, 성: {USER_SURNAME}, 이름: {USER_GIVEN_NAME}), Counterpart = `{contact_name}` (상대방: 순수 이름만 표시, 전화번호/날짜 제외).\n\n\
 ## 💡 요약\n\
-- (통화 목적, 주요 합의 사항, 일정/장소/금액 등 핵심 내용을 1~3줄 불릿 포인트로 명확히 요약)\n\n\
+- (Summarize the call purpose, key agreements, schedule/location/amount in 1~3 concise Korean bullet points)\n\n\
 ## 📜 스크립트\n\
-- **[00:00:00] 나**: (실제 발화 내용)\n\
-- **[00:00:04] {contact_name}**: (실제 발화 내용)\n\n\
-[⏱️ 대화 시각(타임스탬프) 정밀 매칭 및 연락처 관계 열람 정책]\n\
-1. 초반 통화 연결음·침묵 구간을 정확히 계산하여 각 문장의 첫 음절이 실제로 들리는 오디오 재생 오프셋 시각을 `[HH:MM:SS]` 8자리 포맷으로 정확히 표기하세요 (문장과 대화 시각의 타이밍 일치 필수).\n\
-2. 대화 상대방 이름은 전화번호나 날짜 없이 `{contact_name}` 이름만 표시하여 시간 순서대로 빠짐없이 전사하세요.\n\
-3. 하단에 첨부된 [👤 사용자 개인화 참고 정보]와 [📇 연락처 당사자 관계 · 소속 모임 배경지식]을 열람하여 호칭, 인명, 모임 구성원, 직업/거주지 맥락을 기준으로 발음 오인식을 교정하되, 실제 녹음에서 발화되지 않은 사실은 임의로 지어내지 마세요.".to_string()
+- **[00:00:00] 나**: (실제 발화 내용 — 문장 단위로 분리)\n\
+- **[00:00:01] {contact_name}**: (실제 발화 내용 — 문장 단위로 분리)\n\n\
+[CRITICAL GUARDRAILS: SPEAKER CONFUSION & SENTENCE-LEVEL TIMESTAMPS (화자혼동 방지 및 문장 단위 타임스탬프 부여)]\n\
+1. Pre-Investigate User Voiceprint & Counterpart Contact Profile (내 목소리 지문 및 연락처 사전조사):\n\
+   - Cross-reference the attached User Dual-Model Voiceprint (`내 목소리 지문`: 3D-Speaker CAM++ 192D & WeSpeaker ResNet34-LM 256D for `나/{USER_NAME}`) and Counterpart Contact Info (`{contact_name}`'s 호칭/소속 모임/관계 배경지식). Notice that the counterpart's voiceprint (`contact_{contact_name}`) and event log will be updated from this analysis.\n\
+2. Prevent Error #1 — Speaker Confusion (화자혼동 방지):\n\
+   - Strictly distinguish `나` ({USER_NAME}) from `{contact_name}` (상대방). Never flip speakers mid-call after short backchannels ('네', '예'). Verify who addresses whom ('고객님', '선생님', '삼촌', '형', '{USER_SURNAME}쌤') and who states the user's personal information.\n\
+3. Prevent Error #2 — Time-Tag Mismatch & Sentence-Level Splitting (타임태그 불일치 방지 및 문장 단위 분할):\n\
+   - Format all timestamps strictly as `[HH:MM:SS]` (Hours:Minutes:Seconds, e.g., 1 min 14 sec = `[00:01:14]`, NEVER `[01:14:00]`).\n\
+   - (Rule 3A — Duration Cap): The script's final timestamp MUST NEVER exceed the physical audio recording duration (음성녹음보다 스크립트의 시간이 더 긴 경우 절대 금지).\n\
+   - (Rule 3B — Sentence-Level Timestamps): Split long turns into individual sentences as finely as possible (`최대한 문장 단위로 잘라서 타임스탬프 부여`) and assign each sentence its true speaking start time so clicking any sentence in the player seeks accurately to that exact moment.";
+    apply_user_identity_placeholders(raw)
 }
 
 pub(crate) fn default_ai_daily_token_limit() -> i64 {
@@ -173,10 +275,26 @@ pub struct MyLoreAppSettings {
     pub auto_save_enabled: bool,
     #[serde(default = "default_editor_view_mode")]
     pub default_editor_view_mode: String,
+    /// "left" | "focused" | "right"
+    #[serde(default = "default_file_open_pane")]
+    pub default_file_open_pane: String,
+    /// "left" | "right" | "focused" | "unfocused"
+    #[serde(default = "default_link_open_pane")]
+    pub link_open_pane: String,
+    #[serde(default = "default_activity_bar_open")]
+    pub default_activity_bar_open: bool,
+    #[serde(default = "default_activity_bar_hidden_items")]
+    pub activity_bar_hidden_items: Vec<String>,
+    #[serde(default = "default_activity_bar_top_order")]
+    pub activity_bar_top_order: Vec<String>,
+    #[serde(default = "default_activity_bar_bottom_order")]
+    pub activity_bar_bottom_order: Vec<String>,
     #[serde(default)]
     pub default_menu_bar_expanded: bool,
     #[serde(default = "default_scroll_sync")]
     pub scroll_sync_enabled: bool,
+    #[serde(default = "default_tab_indent_spaces")]
+    pub tab_indent_spaces: u32,
     #[serde(default = "default_auto_call_transcription")]
     pub auto_call_transcription: bool,
     #[serde(default = "default_ai_user_profile")]
@@ -269,8 +387,15 @@ impl Default for MyLoreAppSettings {
             f11_viewer_mode: default_f11_viewer_mode(),
             auto_save_enabled: default_auto_save(),
             default_editor_view_mode: default_editor_view_mode(),
+            default_file_open_pane: default_file_open_pane(),
+            link_open_pane: default_link_open_pane(),
+            default_activity_bar_open: default_activity_bar_open(),
+            activity_bar_hidden_items: default_activity_bar_hidden_items(),
+            activity_bar_top_order: default_activity_bar_top_order(),
+            activity_bar_bottom_order: default_activity_bar_bottom_order(),
             default_menu_bar_expanded: false,
             scroll_sync_enabled: default_scroll_sync(),
+            tab_indent_spaces: default_tab_indent_spaces(),
             auto_call_transcription: default_auto_call_transcription(),
             ai_user_profile: default_ai_user_profile(),
             call_analysis_prompt: default_call_analysis_prompt(),
@@ -512,13 +637,14 @@ pub(crate) fn read_ai_daily_token_limit(conn_opt: Option<&Connection>) -> i64 {
 }
 
 pub(crate) fn read_ai_user_profile(conn: &Connection) -> String {
+    let (full_name, _, _) = resolve_user_identity();
     let setting_path = resolve_projects_setting_json_path(conn);
     if setting_path.exists() {
         if let Ok(raw) = fs::read_to_string(&setting_path) {
             if let Ok(parsed) = serde_json::from_str::<MyLoreAppSettings>(&raw) {
                 let trimmed = parsed.ai_user_profile.trim().to_string();
                 if !trimmed.is_empty() {
-                    return trimmed;
+                    return apply_user_identity_placeholders(&trimmed).replace("이서현", &full_name);
                 }
             }
         }
@@ -553,6 +679,12 @@ pub(crate) fn get_app_settings(state: State<AppState>) -> Result<MyLoreAppSettin
             if let Ok(mut parsed) = serde_json::from_str::<MyLoreAppSettings>(&raw) {
                 if parsed.f11_viewer_mode != "detached" && parsed.f11_viewer_mode != "split" {
                     parsed.f11_viewer_mode = "detached".to_string();
+                }
+                if !matches!(parsed.default_file_open_pane.as_str(), "left" | "focused" | "right") {
+                    parsed.default_file_open_pane = default_file_open_pane();
+                }
+                if !matches!(parsed.link_open_pane.as_str(), "left" | "right" | "focused" | "unfocused") {
+                    parsed.link_open_pane = default_link_open_pane();
                 }
                 if parsed.ai_user_profile.trim().is_empty() {
                     parsed.ai_user_profile = default_ai_user_profile();
@@ -600,6 +732,14 @@ pub(crate) fn save_app_settings(
         "editor" | "split" | "preview" => settings.default_editor_view_mode.clone(),
         _ => "split".to_string(),
     };
+    let clean_file_open_pane = match settings.default_file_open_pane.as_str() {
+        "left" | "focused" | "right" => settings.default_file_open_pane.clone(),
+        _ => "left".to_string(),
+    };
+    let clean_link_open_pane = match settings.link_open_pane.as_str() {
+        "left" | "right" | "focused" | "unfocused" => settings.link_open_pane.clone(),
+        _ => "unfocused".to_string(),
+    };
 
     let mut updated = settings;
     fill_missing_topic_folders_from_db(&conn, &mut updated);
@@ -610,6 +750,8 @@ pub(crate) fn save_app_settings(
 
     updated.f11_viewer_mode = clean_f11;
     updated.default_editor_view_mode = clean_default_view;
+    updated.default_file_open_pane = clean_file_open_pane;
+    updated.link_open_pane = clean_link_open_pane;
     updated.base_font_size = updated.base_font_size.clamp(10, 32);
     updated.table_font_size = updated.table_font_size.clamp(9, 28);
     updated.heading_scale = updated.heading_scale.clamp(0.7, 1.8);

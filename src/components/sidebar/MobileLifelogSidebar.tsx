@@ -190,7 +190,7 @@ export function MobileLifelogSidebar({
         }
       }
     }
-    return dedupedCalls.filter((m) => getEffectiveCallTranscriptStage(m) === 2)
+    return dedupedCalls.filter((m) => getEffectiveCallTranscriptStage(m) === 3)
       .length;
   }, [allLifelogMessages]);
 
@@ -287,7 +287,7 @@ export function MobileLifelogSidebar({
 
       const finalMsgs =
         mobileSidebarTab === 'call' && filterUnverifiedCallsOnly
-          ? dedupedMsgs.filter((m) => getEffectiveCallTranscriptStage(m) === 2)
+          ? dedupedMsgs.filter((m) => getEffectiveCallTranscriptStage(m) === 3)
           : dedupedMsgs;
 
       return {
@@ -468,27 +468,27 @@ export function MobileLifelogSidebar({
         effStage === 0
           ? '🔇'
           : effStage === 1
-            ? '🔊'
+            ? '📥'
             : effStage === 2
-              ? '❓'
+              ? '🎙️'
               : effStage === 3
-                ? '❗'
-                : '📄';
+                ? '✨'
+                : '✅';
 
       const stageDesc =
         effStage === 0
           ? '녹음 파일 없음'
           : effStage === 1
-            ? '1단계: 아직 스크립트화가 진행되지 않았습니다. (AI 스크립팅 대기열 포함)'
+            ? '1. 다운로드: 오디오 다운로드 완료 (ASR 변환 대기)'
             : effStage === 2
-              ? '2단계: 스크립트가 진행되었으나, 사용자가 확인 전입니다. (AI 대기열 제외)'
+              ? '2. ASR처리: 로컬 음성인식엔진(ASR) 완료 (AI 후처리 대기)'
               : effStage === 3
-                ? `3단계: 스크립트가 진행되었으나, 사용자 추가 요구사항이 있습니다.${
+                ? `3. 후처리: AI 후처리 완료 · 사용자 확인 대기${
                     msg.transcriptRequirement
-                      ? ` [요구사항: ${msg.transcriptRequirement}]`
+                      ? ` [코멘트: ${msg.transcriptRequirement}]`
                       : ''
-                  } (AI 스크립팅 대기열 포함)`
-                : '4단계: 스크립트가 진행되었고, 사용자가 확인했습니다. (AI 대기열 제외)';
+                  }`
+                : '4. 확인: 사용자 최종 확인 완료';
 
       const callTypeIcon = isRejectedCall ? '🚫' : isOutgoingCall ? '↗' : '↙';
       const callTypeLabel = isRejectedCall
@@ -830,75 +830,41 @@ export function MobileLifelogSidebar({
     );
   };
 
+  const singleCategoryLabel =
+    SOURCE_LABEL_MAP[mobileSidebarTab] || mobileSidebarTab;
+
   return (
     <>
       <div
         className="sidebar-tabs"
-        style={{ gap: '3px', padding: '5px 4px', flexWrap: 'nowrap' }}
+        style={{
+          gap: '6px',
+          padding: '6px 10px',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
       >
-        {sidebarTabGroup.map((t) => (
+        <span style={{ fontSize: '12.5px', fontWeight: 700, color: '#e0e7ff' }}>
+          {singleCategoryLabel} 목록
+        </span>
+        {mobileSidebarTab === 'call' && unverifiedCallCount > 0 && (
           <button
-            key={t.key}
-            className={`sidebar-tab ${mobileSidebarTab === t.key ? 'active' : ''}`}
-            style={{
-              flex: 1,
-              fontSize: '12px',
-              fontWeight: 700,
-              padding: '6px 4px',
-              whiteSpace: 'nowrap',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            onClick={() => {
-              if (
-                t.key === 'call' &&
-                mobileSidebarTab === 'call' &&
-                filterUnverifiedCallsOnly
-              ) {
-                setFilterUnverifiedCallsOnly(false);
-              }
-              setMobileSidebarTab(t.key);
-              if (
-                t.key === 'kakaotalk' ||
-                t.key === 'sms' ||
-                t.key === 'call'
-              ) {
-                setMobileSourceFilter(t.key);
-              }
-            }}
-            title={`${t.label} 탭으로 전환`}
+            type="button"
+            className={`sidebar-tab-question-badge ${
+              filterUnverifiedCallsOnly ? 'active' : ''
+            }`}
+            onClick={() => setFilterUnverifiedCallsOnly((prev) => !prev)}
+            title={`3. 후처리 완료(확인 대기) ${unverifiedCallCount}건 존재 — 클릭하여 필터링`}
           >
-            <span>{t.label}</span>
-            {t.key === 'call' && unverifiedCallCount > 0 && (
-              <span
-                className={`sidebar-tab-question-badge ${
-                  mobileSidebarTab === 'call' && filterUnverifiedCallsOnly
-                    ? 'active'
-                    : ''
-                }`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (mobileSidebarTab !== 'call') {
-                    setMobileSidebarTab('call');
-                    setFilterUnverifiedCallsOnly(true);
-                  } else {
-                    setFilterUnverifiedCallsOnly((prev) => !prev);
-                  }
-                }}
-                title={`미확인 스크립트(❓ 2단계) ${unverifiedCallCount}건 존재 — 클릭하여 ? 목록만 필터링`}
-              >
-                ?
-              </span>
-            )}
+            ✨ ({unverifiedCallCount})
           </button>
-        ))}
+        )}
       </div>
 
       <div className="sidebar-content">
         {mobileSidebarTab === 'call' && filterUnverifiedCallsOnly && (
           <div className="sidebar-call-filter-banner">
-            <span>❓ 미확인 스크립트({unverifiedCallCount}건)만 표시 중</span>
+            <span>✨ 3. 후처리 완료 (확인 대기 {unverifiedCallCount}건)만 표시 중</span>
             <button
               type="button"
               className="toolbar-btn"

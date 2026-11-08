@@ -675,30 +675,18 @@ pub(crate) fn emit_live_service_sync_progress(
     pct
 }
 
-/// 서버 기동 시 DB에 보유된 건수만 초기 로드하되, 모바일 기기가 실제로 동기화를 완료(`complete`/`reconcile`)하기 전까지는
-/// 가짜 100% 완료 상태를 표시하지 않고 대기 상태(`pending`, 0%)로 초기화합니다.
-pub(crate) fn init_sync_progress_from_db(app: &AppHandle, db_path: &Path) {
-    let step_keys = [
-        "notification",
-        "sms",
-        "call",
-        "kakaotalk",
-        "recording",
-        "health",
-        "photo",
-    ];
+fn load_db_step_counts_and_kakao_bytes(
+    db_path: &Path,
+    step_keys: &[&str],
+) -> (Vec<(usize, usize)>, (u64, u64)) {
     let mut db_counts: Vec<(usize, usize)> = vec![(0, 0); step_keys.len()];
-    let mut kakao_bytes: (u64, u64) = (0, 0); // (synced_bytes, total_bytes)
+    let mut kakao_bytes: (u64, u64) = (0, 0);
     if let Ok(conn) = open_db(db_path) {
         let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
         for (idx, key) in step_keys.iter().enumerate() {
             let (total, recent): (i64, i64) = if *key == "photo" {
                 let tot = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM media_inbox WHERE status = 'device_photo'",
-                        [],
-                        |r| r.get(0),
-                    )
+                    .query_row("SELECT COUNT(*) FROM media_inbox WHERE status = 'device_photo'", [], |r| r.get(0))
                     .unwrap_or(0);
                 let rec = conn
                     .query_row(
@@ -710,11 +698,7 @@ pub(crate) fn init_sync_progress_from_db(app: &AppHandle, db_path: &Path) {
                 (tot, rec)
             } else {
                 let tot = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1",
-                        params![*key],
-                        |r| r.get(0),
-                    )
+                    .query_row("SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1", params![*key], |r| r.get(0))
                     .unwrap_or(0);
                 let rec = conn
                     .query_row(
@@ -756,6 +740,14 @@ pub(crate) fn init_sync_progress_from_db(app: &AppHandle, db_path: &Path) {
             }
         }
     }
+    (db_counts, kakao_bytes)
+}
+
+/// 서버 기동 시 DB에 보유된 건수만 초기 로드하되, 모바일 기기가 실제로 동기화를 완료(`complete`/`reconcile`)하기 전까지는
+/// 가짜 100% 완료 상태를 표시하지 않고 대기 상태(`pending`, 0%)로 초기화합니다.
+pub(crate) fn init_sync_progress_from_db(app: &AppHandle, db_path: &Path) {
+    let step_keys = ["notification", "sms", "call", "kakaotalk", "recording", "health", "photo"];
+    let (db_counts, kakao_bytes) = load_db_step_counts_and_kakao_bytes(db_path, &step_keys);
 
     let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
     if let Ok(mut guard) = mutex.lock() {
@@ -796,84 +788,8 @@ pub(crate) fn init_sync_progress_from_db(app: &AppHandle, db_path: &Path) {
 /// 아직 완료되지 않은 모든 단계(알림 -> 문자 -> 통화 -> 카톡 -> 녹음 -> 헬스)를 점검·완료합니다.
 /// 단, 전체 용량(`total_bytes`) 대비 미전송 바이트가 남아 있는 단계(예: 카톡 4.5GB 중 8% 완료)는 100%로 강제 덮어쓰지 않고 실제 바이트 진행률을 유지합니다.
 pub(crate) fn complete_all_remaining_sync_steps(app: &AppHandle, db_path: &Path, reset_all_first: bool) {
-    let step_keys = [
-        "notification",
-        "sms",
-        "call",
-        "kakaotalk",
-        "recording",
-        "health",
-        "photo",
-    ];
-    let mut db_counts: Vec<(usize, usize)> = vec![(0, 0); step_keys.len()];
-    let mut kakao_bytes: (u64, u64) = (0, 0);
-    if let Ok(conn) = open_db(db_path) {
-        let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
-        for (idx, key) in step_keys.iter().enumerate() {
-            let (total, recent): (i64, i64) = if *key == "photo" {
-                let tot = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM media_inbox WHERE status = 'device_photo'",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                let rec = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM media_inbox WHERE status = 'device_photo' AND taken_date >= ?1",
-                        params![today_str],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                (tot, rec)
-            } else {
-                let tot = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1",
-                        params![*key],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                let rec = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM lifelog_messages WHERE source = ?1 AND sent_date >= ?2",
-                        params![*key, today_str],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                (tot, rec)
-            };
-            let tot_u = total.max(0) as usize;
-            let dl_u = (recent.max(0) as usize).min(tot_u);
-            let skip_u = tot_u.saturating_sub(dl_u);
-            db_counts[idx] = (skip_u, dl_u);
-        }
-        if let Ok(raw) = conn.query_row(
-            "SELECT value FROM mobile_sync_meta WHERE key = 'manifest_kakao_rooms'",
-            [],
-            |r| r.get::<_, String>(0),
-        ) {
-            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
-                let mut tot_b = 0u64;
-                let mut syn_b = 0u64;
-                for item in arr {
-                    let tb = item
-                        .get("total_bytes")
-                        .or_else(|| item.get("totalBytes"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let sb = item
-                        .get("synced_bytes")
-                        .or_else(|| item.get("syncedBytes"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    tot_b = tot_b.saturating_add(tb);
-                    syn_b = syn_b.saturating_add(sb.min(tb));
-                }
-                kakao_bytes = (syn_b, tot_b);
-            }
-        }
-    }
+    let step_keys = ["notification", "sms", "call", "kakaotalk", "recording", "health", "photo"];
+    let (db_counts, kakao_bytes) = load_db_step_counts_and_kakao_bytes(db_path, &step_keys);
 
     let mutex = LIVE_SYNC_PROGRESS.get_or_init(|| Mutex::new(default_live_sync_progress()));
     if let Ok(mut guard) = mutex.lock() {

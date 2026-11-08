@@ -417,6 +417,45 @@ pub(crate) fn run_text_agent_call_script_revision_or_refinement(
     None
 }
 
+/// 가용한 에이전트(Gemini · Claude · Grok · OpenAI) 중 하나로 일반 텍스트 프롬프트를 실행하고 `(응답텍스트, 공급자ID)`를 반환합니다.
+pub(crate) fn call_any_text_llm(conn: &Connection, prompt: &str, max_tokens: u32) -> Option<(String, String)> {
+    let mut available = get_unlocked_available_agents(conn);
+    let (gk, _) = read_local_gemini_api_key();
+    if !gk.trim().is_empty() && !available.iter().any(|a| a == "gemini") {
+        available.insert(0, "gemini".to_string());
+    }
+    let store = read_multi_llm_store();
+    for prov in available {
+        if prov == "gemini" {
+            let (gk, _) = read_local_gemini_api_key();
+            if !gk.trim().is_empty() {
+                let req = serde_json::json!({ "contents": [{ "parts": [{ "text": prompt }] }] });
+                if let Ok(txt) = call_gemini_generate_content_ext(&gk, &req, true) {
+                    if !txt.trim().is_empty() {
+                        clear_gemini_quota_exhaustion(conn);
+                        return Some((txt.trim().to_string(), "gemini".to_string()));
+                    }
+                }
+            }
+        } else {
+            let entry = match prov.as_str() { "claude" => &store.claude, "grok" => &store.grok, "openai" => &store.openai, _ => continue };
+            let res = match prov.as_str() {
+                "claude" => call_claude_messages_api(entry.api_key.trim(), &entry.model_name, prompt, max_tokens),
+                "grok" => call_openai_compatible_chat_api("xAI Grok", "https://api.x.ai/v1/chat/completions", entry.api_key.trim(), &[entry.model_name.clone(), "grok-3-mini".to_string()], prompt, max_tokens),
+                "openai" => call_openai_compatible_chat_api("OpenAI GPT", "https://api.openai.com/v1/chat/completions", entry.api_key.trim(), &[entry.model_name.clone(), "gpt-4o-mini".to_string()], prompt, max_tokens),
+                _ => continue,
+            };
+            if let Ok((txt, active_m, in_t, out_t)) = res {
+                record_provider_usage(&prov, in_t.max(1), out_t, Some(&active_m), None);
+                if !txt.trim().is_empty() {
+                    return Some((txt.trim().to_string(), prov));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Anthropic `/v1/models` 조회를 통해 API 키 유효성 확인 및 계정에서 사용 가능한 모델 목록 조회
 fn discover_claude_models(api_key: &str) -> Result<Vec<String>, String> {
     let resp = GEMINI_HTTP_AGENT
@@ -917,42 +956,24 @@ pub(crate) async fn save_and_verify_llm_provider_key(
                 let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let today_str = chrono::Local::now().format("%Y-%m-%d").to_string();
                 let entry = match clean_prov.as_str() {
-                    "claude" => &mut store.claude,
-                    "openai" => &mut store.openai,
-                    "grok" => &mut store.grok,
-                    _ => unreachable!(),
+                    "claude" => &mut store.claude, "openai" => &mut store.openai, "grok" => &mut store.grok, _ => unreachable!(),
                 };
                 entry.api_key = trimmed_key;
                 entry.model_name = outcome.active_model.clone();
-                if entry.today_date != today_str {
-                    entry.today_date = today_str;
-                    entry.today_used_tokens = 0;
-                    entry.today_request_count = 0;
-                }
+                if entry.today_date != today_str { entry.today_date = today_str; entry.today_used_tokens = 0; entry.today_request_count = 0; }
                 if let Some(warn_msg) = outcome.quota_or_warning {
                     entry.verified_at = format!("{} (키 등록됨)", now_str);
                     entry.last_error = warn_msg.clone();
                     entry.retry_after_at = None;
-                    if is_credit_exhaustion_error(&warn_msg) {
-                        entry.credit_exhausted = true;
-                        entry.synced_balance_usd = Some(0.0);
-                    }
+                    if is_credit_exhaustion_error(&warn_msg) { entry.credit_exhausted = true; entry.synced_balance_usd = Some(0.0); }
                     write_multi_llm_store(&store)?;
                     log_gemini("WARN", &format!("[MultiLLM] {} API 키 등록 완료 (크레딧 부족 감지 → 0$ 표시: {})", clean_prov.to_uppercase(), warn_msg));
                 } else {
                     let used_tokens = (outcome.in_tokens + outcome.out_tokens).max(0);
                     let cost_usd = estimate_provider_cost_usd(&clean_prov, &outcome.active_model, outcome.in_tokens, outcome.out_tokens);
-                    entry.verified_at = now_str;
-                    entry.last_error.clear();
-                    entry.retry_after_at = None;
-                    entry.credit_exhausted = false;
-                    entry.today_used_tokens += used_tokens;
-                    entry.total_used_tokens += used_tokens;
-                    entry.today_request_count += 1;
-                    entry.spent_credit_usd += cost_usd;
-                    if let Some(bal) = entry.synced_balance_usd {
-                        entry.synced_balance_usd = Some((bal - cost_usd).max(0.0));
-                    }
+                    entry.verified_at = now_str; entry.last_error.clear(); entry.retry_after_at = None; entry.credit_exhausted = false;
+                    entry.today_used_tokens += used_tokens; entry.total_used_tokens += used_tokens; entry.today_request_count += 1; entry.spent_credit_usd += cost_usd;
+                    if let Some(bal) = entry.synced_balance_usd { entry.synced_balance_usd = Some((bal - cost_usd).max(0.0)); }
                     write_multi_llm_store(&store)?;
                     log_gemini("INFO", &format!("[MultiLLM] {} API 키 검증 및 연동 성공 (모델: {}, 소비 토큰: {})", clean_prov.to_uppercase(), outcome.active_model, used_tokens));
                 }
@@ -964,7 +985,5 @@ pub(crate) async fn save_and_verify_llm_provider_key(
                 Err(err_msg)
             }
         }
-    })
-    .await
-    .map_err(|e| format!("멀티 LLM 검증 스레드 오류: {}", e))?
+    }).await.map_err(|e| format!("멀티 LLM 검증 스레드 오류: {}", e))?
 }

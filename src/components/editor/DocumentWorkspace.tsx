@@ -81,6 +81,7 @@ export interface DocumentWorkspaceProps {
       lineNumber?: number;
       charOffset?: number;
       highlightLength?: number;
+      openAsLink?: boolean;
     }
   ) => void;
   isCurrentDocSms: boolean;
@@ -250,7 +251,7 @@ export function DocumentWorkspace({
     if (matched) {
       try {
         const doc = await readDocument(matched.fullPath);
-        applyLoadedDocument(doc);
+        applyLoadedDocument(doc, { openAsLink: true });
         return;
       } catch (e) {
         setStatusMessage(`문서 열기 실패: ${String(e)}`);
@@ -265,10 +266,6 @@ export function DocumentWorkspace({
       if (isCurrentDocSms && !smsRawEditMode) {
         setSmsRawEditMode(true);
       }
-      setTimeout(() => {
-        findInputRef.current?.focus();
-        findInputRef.current?.select();
-      }, 0);
     }
   }, [findBarMode]);
 
@@ -296,10 +293,12 @@ export function DocumentWorkspace({
         ta.scrollTop = approxTop;
         backdrop.scrollTop = approxTop;
       }
-      try {
-        ta.setSelectionRange(docFindMatchRange.start, docFindMatchRange.end);
-      } catch {
-        // ignore
+      if (document.activeElement === ta) {
+        try {
+          ta.setSelectionRange(docFindMatchRange.start, docFindMatchRange.end);
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -379,103 +378,6 @@ export function DocumentWorkspace({
 
   return (
     <>
-      {findBarMode !== 'closed' && (
-        <div className="find-replace-bar">
-          <input
-            ref={findInputRef}
-            autoFocus
-            className="input-field"
-            style={{ width: '200px' }}
-            placeholder="문서 내 찾기..."
-            value={docFindQuery}
-            onChange={(e) => setDocFindQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault();
-                setFindBarMode('closed');
-                editorRef.current?.focus();
-                return;
-              }
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (findBarMode === 'replace') {
-                  if (e.ctrlKey || e.metaKey) {
-                    handleReplaceAllInDoc?.();
-                  } else {
-                    handleReplaceCurrentInDoc?.();
-                  }
-                } else {
-                  handleJumpSearchMatch(e.shiftKey ? -1 : 1);
-                }
-              }
-            }}
-          />
-          <button
-            className="toolbar-btn"
-            onClick={() => {
-              handleJumpSearchMatch(-1);
-              findInputRef.current?.focus();
-            }}
-          >
-            ↑ 이전
-          </button>
-          <button
-            className="toolbar-btn"
-            onClick={() => {
-              handleJumpSearchMatch(1);
-              findInputRef.current?.focus();
-            }}
-          >
-            ↓ 다음
-          </button>
-          {findBarMode === 'replace' && (
-            <>
-              <input
-                className="input-field"
-                style={{ width: '180px' }}
-                placeholder="바꿀 내용... (Enter: 바꾸기, Ctrl+Enter: 모두)"
-                value={docReplaceText}
-                onChange={(e) => setDocReplaceText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setFindBarMode('closed');
-                    editorRef.current?.focus();
-                    return;
-                  }
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (e.ctrlKey || e.metaKey) {
-                      handleReplaceAllInDoc?.();
-                    } else {
-                      handleReplaceCurrentInDoc?.();
-                    }
-                  }
-                }}
-              />
-              <button
-                className="toolbar-btn primary"
-                onClick={() => handleReplaceCurrentInDoc?.()}
-              >
-                바꾸기
-              </button>
-              <button
-                className="toolbar-btn"
-                onClick={() => handleReplaceAllInDoc?.()}
-              >
-                모두 바꾸기
-              </button>
-            </>
-          )}
-          <button
-            className="toolbar-btn"
-            onClick={() => setFindBarMode('closed')}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
       {isYamlVisible && (
         <div className="yaml-drawer">
           <div className="yaml-drawer-header">
@@ -903,6 +805,11 @@ export function DocumentWorkspace({
                     recordEditPosition(currentDoc.fullPath, e.currentTarget.selectionStart, false);
                   }
                 }}
+                onKeyUp={(e) => {
+                  if (currentDoc && !e.ctrlKey && !e.altKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
+                    recordEditPosition(currentDoc.fullPath, e.currentTarget.selectionStart, false);
+                  }
+                }}
                 placeholder="여기에 마크다운 본문을 작성하세요..."
               />
             </div>
@@ -915,7 +822,9 @@ export function DocumentWorkspace({
                 onUpdateTaskStatus={(lineIdx, nextCode) => setBodyText(updateTaskStatusInBody(bodyText, lineIdx, nextCode))}
                 onNavigateUuid={async (targetUuid) => {
                   try {
-                    applyLoadedDocument(await readDocumentByUuid(targetUuid));
+                    applyLoadedDocument(await readDocumentByUuid(targetUuid), {
+                      openAsLink: true,
+                    });
                   } catch (e) {
                     setStatusMessage(`UUID 링크 이동 실패: ${String(e)}`);
                   }
@@ -963,7 +872,11 @@ export function DocumentWorkspace({
                       key={bIdx}
                       className="rendered-task-row"
                       style={{ cursor: 'pointer' }}
-                      onClick={async () => applyLoadedDocument(await readDocument(bl.sourcePath))}
+                      onClick={async () =>
+                        applyLoadedDocument(await readDocument(bl.sourcePath), {
+                          openAsLink: true,
+                        })
+                      }
                     >
                       <span className={`role-badge ${bl.sourceRole}`}>{bl.sourceRole}</span>
                       <div>

@@ -17,6 +17,9 @@ pub(crate) fn handle_contacts_job(
         if ts > max_ts {
             max_ts = ts;
         }
+        if !name.trim().is_empty() && name.trim() != "이름없음" {
+            let _ = ensure_or_write_contact_person_md(conn, &name, &phones, None);
+        }
         let phone_joined = phones.join(", ");
         let md_line = format!(
             "- **{}** | 전화: `{}`{}{}",

@@ -182,6 +182,7 @@ export function useAppStartup({
           );
 
           let syncRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+          let progressRefreshTimer: ReturnType<typeof setTimeout> | null = null;
           unlistenMobileSyncFn = await listen<{
             eventType?: string;
             type?: string;
@@ -197,8 +198,7 @@ export function useAppStartup({
               evType === 'sync_cycle_complete' ||
               evType === 'paired' ||
               evType === 'call_transcript_completed' ||
-              evType === 'call_transcript_retry' ||
-              evType === 'call_transcript_progress'
+              evType === 'call_transcript_retry'
             ) {
               if (syncRefreshTimer) clearTimeout(syncRefreshTimer);
               syncRefreshTimer = setTimeout(() => {
@@ -207,6 +207,14 @@ export function useAppStartup({
                 void refreshFinanceData();
                 void loadLifelogForDate(selectedDateRef.current);
               }, 350);
+            } else if (evType === 'call_transcript_progress') {
+              // 백그라운드 ASR/후처리 개별 진행 이벤트는 본체 UI 렉 방지를 위해 12초 주기로만 가볍게 라이프로그 목록을 갱신
+              if (!progressRefreshTimer) {
+                progressRefreshTimer = setTimeout(() => {
+                  progressRefreshTimer = null;
+                  void refreshAllLifelogMessages();
+                }, 12000);
+              }
             }
           });
 

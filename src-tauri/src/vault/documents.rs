@@ -203,13 +203,26 @@ pub(crate) fn save_document(
             let safe_stem = sanitize_filename_stem(&stem);
             let status = payload.frontmatter.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
             let req = payload.frontmatter.get("user_requirement").cloned().unwrap_or_default();
-            let stage = match status {
+            let existing_stage: Option<u8> = conn
+                .query_row(
+                    "SELECT stage FROM call_transcript_meta WHERE safe_stem = ?1",
+                    params![safe_stem],
+                    |r| Ok(r.get::<_, i64>(0)?.clamp(1, 4) as u8),
+                )
+                .ok();
+            let mut stage = match status {
                 "verified" | "stage4" => 4u8,
                 "needs_revision" | "stage3" => 3u8,
                 "unverified" | "completed" | "stage2" => 2u8,
                 "pending" | "pending_quota" | "stage1" => 1u8,
                 _ => if !req.trim().is_empty() { 3u8 } else { 2u8 },
             };
+            // 이미 결재 완료(4단계) 또는 반려 대기(3단계)인 안건이 단순 본문 저장으로 인해 2단계로 역행하지 않도록 보호
+            if let Some(prev_st) = existing_stage {
+                if (prev_st == 4 || prev_st == 3) && stage == 2 {
+                    stage = prev_st;
+                }
+            }
             upsert_call_transcript_meta(&conn, &safe_stem, stage, &req);
             let attach_tag = if stage == 1 || stage == 3 {
                 format!("pending_transcript:{}", safe_stem)
@@ -224,6 +237,28 @@ pub(crate) fn save_document(
                     format!("transcribed:{}", safe_stem),
                     format!("pending_transcript:{}", safe_stem)
                 ],
+            );
+        }
+    } else if cat == "mobile/contacts/person" {
+        let cname = payload
+            .frontmatter
+            .get("contact_name")
+            .cloned()
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+        let clean_name = cname.trim();
+        if !clean_name.is_empty() && !is_effectively_empty_contact_profile(&payload.body_content) {
+            let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let _ = conn.execute(
+                "INSERT INTO contact_ai_profiles (contact_name, profile_text, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(contact_name) DO UPDATE SET
+                    profile_text = excluded.profile_text,
+                    updated_at = excluded.updated_at",
+                params![clean_name, payload.body_content.trim(), now_str],
             );
         }
     }
@@ -649,16 +684,28 @@ pub(crate) fn rename_current_document(
     build_document_payload(&conn, &target_path)
 }
 
-/// 전체 볼트 파일에서 키워드 검색 (오른쪽 사이드바 검색 결과 리스트 연동)
+/// 전체 볼트 파일에서 키워드 검색 (오른쪽 사이드바 검색 결과 리스트 연동 · 정규식 옵션 지원)
 #[tauri::command]
 pub(crate) fn search_in_files(
     state: State<AppState>,
     query: String,
+    use_regex: Option<bool>,
 ) -> Result<Vec<SearchMatchItem>, String> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(Vec::new());
     }
+    let is_regex = use_regex.unwrap_or(false);
+    let compiled_re = if is_regex {
+        Some(
+            regex::RegexBuilder::new(q)
+                .case_insensitive(true)
+                .build()
+                .map_err(|e| format!("정규식 문법 오류: {}", e))?,
+        )
+    } else {
+        None
+    };
     let q_lower = q.to_lowercase();
 
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
@@ -706,7 +753,12 @@ pub(crate) fn search_in_files(
 
                 let mut running_offset = 0usize;
                 for (idx, line) in body.lines().enumerate() {
-                    if line.to_lowercase().contains(&q_lower) {
+                    let matched = if let Some(ref re) = compiled_re {
+                        re.is_match(line)
+                    } else {
+                        line.to_lowercase().contains(&q_lower)
+                    };
+                    if matched {
                         results.push(SearchMatchItem {
                             full_path: full_path_str.clone(),
                             relative_path: rel_path_str.clone(),
@@ -729,16 +781,85 @@ pub(crate) fn search_in_files(
     Ok(results)
 }
 
-/// 전체 파일에서 일괄 바꾸기 (파일에서 바꾸기)
+/// 바꾸기 패턴(정규식 캡처 그룹 `$1`, `$2`, `$&`, `\1`, `\2` 및 이스케이프 문자 `\n`, `\t`, `\r`, `\\`) 변환 헬퍼
+fn format_rust_replacement(raw: &str, is_regex: bool, is_escape: bool) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\\' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if is_escape && next == 'n' {
+                out.push('\n');
+                i += 2;
+                continue;
+            }
+            if is_escape && next == 't' {
+                out.push('\t');
+                i += 2;
+                continue;
+            }
+            if is_escape && next == 'r' {
+                out.push('\r');
+                i += 2;
+                continue;
+            }
+            if is_regex && next.is_ascii_digit() {
+                out.push_str(&format!("${{{}}}", next));
+                i += 2;
+                continue;
+            }
+            if is_escape && next == '\\' {
+                out.push('\\');
+                i += 2;
+                continue;
+            }
+        }
+        if is_regex && ch == '$' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if next == '&' {
+                out.push_str("${0}");
+                i += 2;
+                continue;
+            }
+            if next.is_ascii_digit() {
+                out.push_str(&format!("${{{}}}", next));
+                i += 2;
+                continue;
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// 전체 파일에서 일괄 바꾸기 (파일에서 바꾸기 · 정규식 그룹 및 이스케이프 옵션 지원)
 #[tauri::command]
 pub(crate) fn replace_in_files(
     state: State<AppState>,
     query: String,
     replacement: String,
+    use_regex: Option<bool>,
+    use_escape: Option<bool>,
 ) -> Result<usize, String> {
     if query.is_empty() {
         return Ok(0);
     }
+    let is_regex = use_regex.unwrap_or(false);
+    let is_escape = use_escape.unwrap_or(true);
+    let pattern = if is_regex {
+        query.clone()
+    } else {
+        regex::escape(&query)
+    };
+    let compiled_re = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(true)
+        .build()
+        .map_err(|e| format!("정규식 문법 오류: {}", e))?;
+    let formatted_rep = format_rust_replacement(&replacement, is_regex, is_escape);
+
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
 
@@ -769,13 +890,13 @@ pub(crate) fn replace_in_files(
             }
             if let Ok(raw) = fs::read_to_string(full_path) {
                 let (yaml_raw, body, _) = parse_markdown_yaml(&raw);
-                if body.contains(&query) {
-                    let new_body = body.replace(&query, &replacement);
-                    let new_raw = if yaml_raw.is_empty() {
-                        new_body
+                if compiled_re.is_match(&body) {
+                    let new_body = if is_regex {
+                        compiled_re.replace_all(&body, formatted_rep.as_str()).into_owned()
                     } else {
-                        format!("---\n{}\n---\n{}", yaml_raw, new_body)
+                        compiled_re.replace_all(&body, regex::NoExpand(&formatted_rep)).into_owned()
                     };
+                    let new_raw = if yaml_raw.is_empty() { new_body } else { format!("---\n{}\n---\n{}", yaml_raw, new_body) };
                     if fs::write(full_path, new_raw).is_ok() {
                         modified_files += 1;
                     }
@@ -783,7 +904,6 @@ pub(crate) fn replace_in_files(
             }
         }
     }
-
     Ok(modified_files)
 }
 
@@ -792,7 +912,6 @@ pub(crate) fn get_vault_templates(state: State<AppState>) -> Result<Vec<VaultTem
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
     let templates_dir = ensure_projects_mylore_templates(&conn);
-
     let mut out = Vec::new();
     if let Ok(entries) = fs::read_dir(&templates_dir) {
         for entry in entries.flatten() {
@@ -800,26 +919,10 @@ pub(crate) fn get_vault_templates(state: State<AppState>) -> Result<Vec<VaultTem
             if path.extension().and_then(|s| s.to_str()) == Some("md") {
                 if let Ok(raw) = fs::read_to_string(&path) {
                     let (_, body, fm) = parse_markdown_yaml(&raw);
-                    let file_name = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let name = fm
-                        .get("title")
-                        .cloned()
-                        .unwrap_or_else(|| file_name.clone());
-                    let desc = fm.get("description").cloned().unwrap_or_else(|| {
-                        "1번 Projects 볼트(.myLore/templates) 사용자 템플릿".to_string()
-                    });
-                    out.push(VaultTemplateItem {
-                        id: file_name.clone(),
-                        name,
-                        file_name,
-                        full_path: path.to_string_lossy().to_string(),
-                        description: desc,
-                        body_content: body,
-                    });
+                    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                    let name = fm.get("title").cloned().unwrap_or_else(|| file_name.clone());
+                    let desc = fm.get("description").cloned().unwrap_or_else(|| "1번 Projects 볼트(.myLore/templates) 사용자 템플릿".to_string());
+                    out.push(VaultTemplateItem { id: file_name.clone(), name, file_name, full_path: path.to_string_lossy().to_string(), description: desc, body_content: body });
                 }
             }
         }
@@ -836,31 +939,20 @@ pub(crate) fn promote_to_project_folder(
 ) -> Result<DocumentPayload, String> {
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
-
     let src_path = Path::new(&source_full_path);
     if !src_path.exists() {
         return Err("원본 문서가 존재하지 않습니다.".to_string());
     }
-
     let (uuid_val, _, _) = ensure_uuid_in_markdown_file(src_path, None)?;
-
     let projects_base: String = projects_base_path_string(&conn);
-
     let target_dir = Path::new(&projects_base).join(&project_name);
     fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
     let target_file = target_dir.join("main.md");
-
     fs::rename(src_path, &target_file).map_err(|e| e.to_string())?;
-
     let _ = conn.execute(
         "UPDATE files SET full_path = ?1, relative_path = ?2, role = 'projects' WHERE uuid = ?3",
-        params![
-            target_file.to_string_lossy().to_string(),
-            format!("{}\\main.md", project_name),
-            uuid_val
-        ],
+        params![target_file.to_string_lossy().to_string(), format!("{}\\main.md", project_name), uuid_val],
     );
-
     build_document_payload(&conn, &target_file)
 }
 
@@ -874,67 +966,30 @@ pub(crate) fn move_document_to_role(
 ) -> Result<DocumentPayload, String> {
     let _guard = state.lock.lock().map_err(|e| e.to_string())?;
     let conn = open_db(&state.db_path)?;
-
     let src_path = Path::new(&source_full_path);
     if !src_path.exists() {
         return Err("원본 파일이 존재하지 않습니다.".to_string());
     }
     let (uuid_val, _, _) = ensure_uuid_in_markdown_file(src_path, None)?;
-
     let (_, target_base_buf) = resolve_role_base_folder(&conn, &target_role)?;
     let target_base = target_base_buf.to_string_lossy().to_string();
-
-    let file_name = new_file_name.unwrap_or_else(|| {
-        src_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("moved.md")
-            .to_string()
-    });
-
-    let clean_sub_dir = target_sub_dir
-        .unwrap_or_default()
-        .trim()
-        .trim_start_matches("git:")
-        .trim_matches(|c| c == '/' || c == '\\')
-        .replace('/', "\\");
-
+    let file_name = new_file_name.unwrap_or_else(|| src_path.file_name().and_then(|s| s.to_str()).unwrap_or("moved.md").to_string());
+    let clean_sub_dir = target_sub_dir.unwrap_or_default().trim().trim_start_matches("git:").trim_matches(|c| c == '/' || c == '\\').replace('/', "\\");
     let base_dir_path = Path::new(&target_base);
-    let target_dir = if clean_sub_dir.is_empty() {
-        base_dir_path.to_path_buf()
-    } else {
-        base_dir_path.join(&clean_sub_dir)
-    };
+    let target_dir = if clean_sub_dir.is_empty() { base_dir_path.to_path_buf() } else { base_dir_path.join(&clean_sub_dir) };
     let _ = fs::create_dir_all(&target_dir);
     let target_file = target_dir.join(&file_name);
-
     if target_file == src_path {
         return build_document_payload(&conn, &target_file);
     }
     if target_file.exists() {
-        return Err(format!(
-            "대상 폴더에 동일한 이름의 파일('{}')이 이미 존재합니다.",
-            file_name
-        ));
+        return Err(format!("대상 폴더에 동일한 이름의 파일('{}')이 이미 존재합니다.", file_name));
     }
-
     fs::rename(src_path, &target_file).map_err(|e| e.to_string())?;
-
-    let rel_path = target_file
-        .strip_prefix(base_dir_path)
-        .unwrap_or(&target_file)
-        .to_string_lossy()
-        .to_string();
-
+    let rel_path = target_file.strip_prefix(base_dir_path).unwrap_or(&target_file).to_string_lossy().to_string();
     let _ = conn.execute(
         "UPDATE files SET full_path = ?1, relative_path = ?2, role = ?3 WHERE uuid = ?4",
-        params![
-            target_file.to_string_lossy().to_string(),
-            rel_path,
-            target_role,
-            uuid_val
-        ],
+        params![target_file.to_string_lossy().to_string(), rel_path, target_role, uuid_val],
     );
-
     build_document_payload(&conn, &target_file)
 }

@@ -1,44 +1,42 @@
 /**
  * @file RightSidebar.tsx
- * @description 우측 접이식 사이드바 컨테이너: 아이콘 탭 바 + 폴더 트리(`<FileTreePanel />`), 전체 검색/치환, 목차(TOC), 백링크, 일자별 라이프로그, `<MobileLifelogSidebar />`.
+ * @description 우측 사이드바 컨테이너:
+ * - 통합 탭바 전면 제거: 왼쪽 액티비티 바에서 선택된 현재 패널(`activeActivityItem`)의 내용만 단독 출력
+ * - 페이지 내 목차(TOC) 기본 제공
+ * - `Ctrl+F`(찾기), `Ctrl+H`(바꾸기), `Ctrl+Alt+Shift+F`(모든 파일에서 찾기) 시 `SidebarSearchPanel` 표시
  */
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
+  ActivityBarItemId,
   ApprovalCategory,
-  BaseFolderRole,
   CallApprovalItem,
   DocumentPayload,
   FinanceTransaction,
+  KeybindingConfig,
   LifelogMessage,
-  RightSidebarTab,
-  SearchMatchItem,
   SettingsCategory,
   TocHeading,
 } from '../../types/mylore';
-import { readDocument, replaceInFiles } from '../../services/tauriClient';
+import { readDocument } from '../../services/tauriClient';
+import { groupKeybindingsByCategory } from '../../hooks/useKeybindings';
 import { ApprovalSidebarContent } from './ApprovalSidebarContent';
 import { FileTreePanel, FileTreePanelProps } from './FileTreePanel';
 import {
   MobileLifelogSidebar,
   MobileLifelogSidebarProps,
 } from './MobileLifelogSidebar';
+import {
+  SidebarSearchPanel,
+  SidebarSearchPanelProps,
+} from './SidebarSearchPanel';
 
 export interface RightSidebarProps
   extends FileTreePanelProps,
-    MobileLifelogSidebarProps {
+    MobileLifelogSidebarProps,
+    SidebarSearchPanelProps {
+  activeActivityItem?: ActivityBarItemId;
   rightSidebarOpen: boolean;
   isMobileDataSidebarMode: boolean;
-  rightTab: RightSidebarTab;
-  setRightTab: React.Dispatch<React.SetStateAction<RightSidebarTab>>;
-  globalSearchQuery: string;
-  setGlobalSearchQuery: React.Dispatch<React.SetStateAction<string>>;
-  executeGlobalSearch: () => Promise<void>;
-  globalReplaceMode: boolean;
-  globalReplaceText: string;
-  setGlobalReplaceText: React.Dispatch<React.SetStateAction<string>>;
-  globalSearchResults: SearchMatchItem[];
-  activeSearchIdx: number;
-  setActiveSearchIdx: React.Dispatch<React.SetStateAction<number>>;
   applyLoadedDocument: (
     doc: DocumentPayload,
     jumpTo?: {
@@ -68,6 +66,12 @@ export interface RightSidebarProps
   setSelectedApprovalStem?: React.Dispatch<React.SetStateAction<string | null>>;
   filterUnverifiedCallsOnly?: boolean;
   setFilterUnverifiedCallsOnly?: React.Dispatch<React.SetStateAction<boolean>>;
+  filteredKeybindings?: KeybindingConfig[];
+  collapsedHelpCategories?: Set<string>;
+  activeHelpCategory?: string;
+  scrollToHelpCategory?: (category: string) => void;
+  expandAllHelpCategories?: () => void;
+  collapseAllHelpCategories?: (categories: string[]) => void;
 }
 
 const SETTINGS_CATEGORY_GROUPS: Array<{
@@ -82,101 +86,53 @@ const SETTINGS_CATEGORY_GROUPS: Array<{
   {
     groupLabel: '🗂️ 기본 환경 · 외관',
     items: [
-      {
-        id: 'folders',
-        icon: '📁',
-        label: '저장소 · 베이스 폴더',
-        desc: '볼트 베이스 폴더 · setting.json',
-      },
-      {
-        id: 'appearance',
-        icon: '🎨',
-        label: '테마 · 글꼴 · 뷰어',
-        desc: '5종 테마 · 폰트 · F11 뷰어 · 자동저장',
-      },
-      {
-        id: 'shortcuts',
-        icon: '⌨️',
-        label: '단축키 설정',
-        desc: '전체 단축키 검색 · 키 녹음 변경',
-      },
+      { id: 'basic', icon: '⚙️', label: '기본 설정 (전체 트리 · 초기화)', desc: '전체 설정 트리 이동 · 기본값 복원 · 탐색기 열기' },
+      { id: 'folders', icon: '📁', label: '저장소 · 베이스 폴더', desc: '볼트 베이스 폴더 · setting.json' },
+      { id: 'appearance', icon: '🎨', label: '테마 · 글꼴 · 뷰어', desc: '5종 테마 · 폰트 · 분할 화면 열림 정책' },
+      { id: 'shortcuts', icon: '⌨️', label: '단축키 설정', desc: '전체 단축키 검색 · 키 녹음 변경' },
     ],
   },
   {
     groupLabel: '📱 모바일 라이프로그 & 동기화',
     items: [
-      {
-        id: 'sync_setting',
-        icon: '📲',
-        label: 'Sync Setting (기기 연결)',
-        desc: 'Wi-Fi 자동 포함 QR · 토큰 · 연결 기기',
-      },
-      {
-        id: 'sync_status',
-        icon: '🔄',
-        label: 'Sync Status (동기화 현황)',
-        desc: '실시간 수신 진행률 · 해시 DB · 동선 추적',
-      },
+      { id: 'sync_setting', icon: '📲', label: 'Sync Setting (기기 연결)', desc: 'Wi-Fi 자동 포함 QR · 토큰 · 연결 기기' },
+      { id: 'sync_status', icon: '🔄', label: 'Sync Status (동기화 현황)', desc: '실시간 수신 진행률 · 해시 DB · 동선 추적' },
     ],
   },
   {
     groupLabel: '🤖 AI & 시스템 로그',
     items: [
-      {
-        id: 'ai_setting',
-        icon: '🤖',
-        label: 'AI Setting (멀티 LLM)',
-        desc: 'Gemini·Claude·OpenAI·Grok 키 & 프롬프트',
-      },
-      {
-        id: 'ai_queue',
-        icon: '🚥',
-        label: 'AI Queue (큐 상태 관리)',
-        desc: '독립 AI 큐 프로세스 · 병렬 워커 · 대기열',
-      },
-      {
-        id: 'system_logs',
-        icon: '📜',
-        label: '시스템 로그 (Log)',
-        desc: '4대 분야 실시간 로그 조회 · 보관일 설정',
-      },
+      { id: 'ai_setting', icon: '🤖', label: 'AI Setting (멀티 LLM)', desc: 'Gemini·Claude·OpenAI·Grok 키 & 프롬프트' },
+      { id: 'ai_voiceprint', icon: '🎙️', label: '음성지문 작성 (Voiceprint)', desc: '서버·Sync 2종 오픈소스 교차검증 & Text 뷰어' },
+      { id: 'ai_queue', icon: '🚥', label: 'AI Queue (큐 상태 관리)', desc: '독립 AI 큐 프로세스 · 병렬 워커 · 대기열' },
+      { id: 'system_logs', icon: '📜', label: '시스템 로그 (Log)', desc: '4대 분야 실시간 로그 조회 · 보관일 설정' },
     ],
   },
 ];
 
+const LOGIN_TOC_ITEMS = [
+  { id: 'login-section-accounts', icon: '🌐', label: '1. 외부 계정 로그인 (Google·네이버·카카오·페북)' },
+  { id: 'login-section-calendar', icon: '📅', label: 'Google 캘린더 OAuth 2.0 연동' },
+  { id: 'login-section-ai', icon: '🤖', label: '2. AI API 키 등록 · 잔액 확인' },
+  { id: 'login-section-sync', icon: '📲', label: '3. 모바일 Sync 페어링 (QR 연결)' },
+];
+
 export function RightSidebar(props: RightSidebarProps) {
   const {
+    activeActivityItem = 'projects',
     rightSidebarOpen,
     setIsFolderPaneFocused,
-    isMobileDataSidebarMode,
-    rightTab,
-    setRightTab,
-    globalSearchQuery,
-    setGlobalSearchQuery,
-    executeGlobalSearch,
-    globalReplaceMode,
-    globalReplaceText,
-    setGlobalReplaceText,
     setStatusMessage,
-    globalSearchResults,
-    activeSearchIdx,
-    setActiveSearchIdx,
     applyLoadedDocument,
-    setContextMenu,
     tocHeadings,
     currentDoc,
     selectedDate,
     setSelectedDate,
     loadLifelogForDate,
     dailyTransactions,
-    dailyMessages,
     insertIntoBody,
-    activeTreeRoleTab,
-    setActiveTreeRoleTab,
-    handleMoveRole,
-    baseFolders,
     activeTabPath,
-    settingsCategory = 'folders',
+    settingsCategory = 'basic',
     setSettingsCategory,
     approvalCategory = 'call_scripts',
     setApprovalCategory,
@@ -185,80 +141,136 @@ export function RightSidebar(props: RightSidebarProps) {
     approvalItems = [],
     selectedApprovalStem,
     setSelectedApprovalStem,
+    filteredKeybindings = [],
+    collapsedHelpCategories = new Set(),
+    activeHelpCategory = 'Function',
+    scrollToHelpCategory,
+    expandAllHelpCategories,
+    collapseAllHelpCategories,
   } = props;
 
-  const isSettingsSidebarMode = activeTabPath === 'mylore://dashboard/settings';
-  const isApprovalSidebarMode = activeTabPath === 'mylore://dashboard/logs';
+  const [tocOpen, setTocOpen] = useState(true);
+  const [backlinksOpen, setBacklinksOpen] = useState(false);
 
-  const pendingApprovalCount = approvalItems.filter((i) => i.stage === 2).length;
-  const filteredApprovalItems = approvalItems.filter((item) => {
-    if (approvalStageFilter === 'pending') return item.stage === 2;
-    if (approvalStageFilter === 'revising') return item.stage === 3;
-    if (approvalStageFilter === 'verified') return item.stage === 4;
-    return true;
-  });
+  const isMarkdownDocActive =
+    Boolean(currentDoc) && !activeTabPath?.startsWith('mylore://dashboard/');
 
-  const [dragOverRoleTab, setDragOverRoleTab] = useState<BaseFolderRole | null>(
-    null
-  );
-  const hoverSwitchTimerRef = useRef<number | null>(null);
+  const helpCategoryGroups = groupKeybindingsByCategory(filteredKeybindings);
 
-  const clearHoverSwitchTimer = () => {
-    if (hoverSwitchTimerRef.current !== null) {
-      window.clearTimeout(hoverSwitchTimerRef.current);
-      hoverSwitchTimerRef.current = null;
-    }
+  // 페이지 내 목차(TOC) 기본 제공 섹션
+  const renderDefaultTocSection = () => {
+    if (!isMarkdownDocActive) return null;
+    return (
+      <div className="sidebar-toc-section">
+        <div
+          className="tree-group-header"
+          style={{ cursor: 'pointer', marginBottom: tocOpen ? '6px' : 0 }}
+          onClick={() => setTocOpen((v) => !v)}
+          title="클릭하여 페이지 내 목차(TOC) 펼치기/접기"
+        >
+          <span>{tocOpen ? '▾' : '▸'} 📑 페이지 내 목차 (TOC)</span>
+          <span className="tree-group-count">{tocHeadings.length}</span>
+        </div>
+        {tocOpen && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            {tocHeadings.length === 0 ? (
+              <div className="tree-empty-hint">문서 내 마크다운 제목(#)이 없습니다.</div>
+            ) : (
+              tocHeadings.map((h, i) => (
+                <div
+                  key={i}
+                  className="tree-node-row"
+                  style={{
+                    paddingLeft: `${(h.level - 1) * 12 + 8}px`,
+                    fontSize: '12px',
+                  }}
+                  onClick={() => {
+                    if (currentDoc) {
+                      applyLoadedDocument(currentDoc, {
+                        lineNumber: h.lineIndex + 1,
+                      });
+                    }
+                  }}
+                >
+                  <span>{h.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+
+        {currentDoc && currentDoc.backlinks.length > 0 && (
+          <div style={{ marginTop: '6px' }}>
+            <div
+              className="tree-group-header"
+              style={{ cursor: 'pointer', marginBottom: backlinksOpen ? '4px' : 0 }}
+              onClick={() => setBacklinksOpen((v) => !v)}
+            >
+              <span>{backlinksOpen ? '▾' : '▸'} 🔗 양방향 백링크</span>
+              <span className="tree-group-count">{currentDoc.backlinks.length}</span>
+            </div>
+            {backlinksOpen &&
+              currentDoc.backlinks.map((bl, idx) => (
+                <div
+                  key={idx}
+                  className="tree-node-row"
+                  onClick={async () => {
+                    const doc = await readDocument(bl.sourcePath);
+                    applyLoadedDocument(doc);
+                  }}
+                >
+                  <span style={{ fontSize: '11.5px' }}>{bl.sourceTitle}</span>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+    );
   };
+
+  const isLifelogActivityItem =
+    activeActivityItem === 'call' ||
+    activeActivityItem === 'sms' ||
+    activeActivityItem === 'kakaotalk' ||
+    activeActivityItem === 'recording' ||
+    activeActivityItem === 'media' ||
+    activeActivityItem === 'contacts' ||
+    activeActivityItem === 'pc_log' ||
+    activeActivityItem === 'notification' ||
+    activeActivityItem === 'health' ||
+    activeActivityItem === 'location';
 
   return (
     <aside
       className={`right-sidebar ${rightSidebarOpen ? '' : 'collapsed'}`}
       onMouseDown={() => setIsFolderPaneFocused(true)}
     >
-      {isSettingsSidebarMode ? (
+      <SidebarSearchPanel {...props} />
+
+      {activeActivityItem === 'approval' ? (
+        <ApprovalSidebarContent
+          approvalCategory={approvalCategory}
+          setApprovalCategory={setApprovalCategory}
+          approvalStageFilter={approvalStageFilter}
+          setApprovalStageFilter={setApprovalStageFilter}
+          approvalItems={approvalItems}
+          selectedApprovalStem={selectedApprovalStem}
+          setSelectedApprovalStem={setSelectedApprovalStem}
+          applyLoadedDocument={applyLoadedDocument}
+          setStatusMessage={setStatusMessage}
+        />
+      ) : activeActivityItem === 'settings' ? (
         <div
           className="sidebar-content"
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            padding: '12px 10px',
-          }}
+          style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '12px 10px' }}
         >
-          <div
-            style={{
-              padding: '8px 10px',
-              backgroundColor: 'var(--bg-primary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '8px',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-            }}
-          >
-            <strong style={{ fontSize: '13px', color: 'var(--heading-color)' }}>
-              ⚙️ 설정 카테고리 목차
-            </strong>
-            <span
-              style={{
-                fontSize: '11px',
-                color: 'var(--text-secondary)',
-                fontFamily: 'var(--font-mono)',
-              }}
-            >
-              Ctrl+B
-            </span>
+          <div className="sidebar-panel-title-box">
+            <strong>⚙️ 설정 목차 (TOC)</strong>
+            <span>클릭 시 전환</span>
           </div>
-
           {SETTINGS_CATEGORY_GROUPS.map((grp) => (
-            <div
-              key={grp.groupLabel}
-              style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}
-            >
-              <div
-                className="tree-group-header"
-                style={{ marginBottom: '2px', fontSize: '11.5px' }}
-              >
+            <div key={grp.groupLabel} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div className="tree-group-header" style={{ marginBottom: '2px', fontSize: '11.5px' }}>
                 <span>{grp.groupLabel}</span>
               </div>
               {grp.items.map((item) => {
@@ -276,34 +288,14 @@ export function RightSidebar(props: RightSidebarProps) {
                       alignItems: 'flex-start',
                       gap: '2px',
                       cursor: 'pointer',
-                      border: isActive
-                        ? '1px solid var(--accent-primary)'
-                        : '1px solid transparent',
                     }}
                     onClick={() => setSettingsCategory?.(item.id)}
                   >
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontWeight: 700,
-                        fontSize: '12.5px',
-                        color: isActive
-                          ? 'var(--heading-color)'
-                          : 'var(--text-primary)',
-                      }}
-                    >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '12.5px' }}>
                       <span>{item.icon}</span>
                       <span>{item.label}</span>
                     </div>
-                    <div
-                      style={{
-                        fontSize: '11px',
-                        color: 'var(--text-secondary)',
-                        paddingLeft: '20px',
-                      }}
-                    >
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', paddingLeft: '20px' }}>
                       {item.desc}
                     </div>
                   </div>
@@ -312,396 +304,164 @@ export function RightSidebar(props: RightSidebarProps) {
             </div>
           ))}
         </div>
-      ) : isApprovalSidebarMode ? (
-        <ApprovalSidebarContent
-          approvalCategory={approvalCategory}
-          setApprovalCategory={setApprovalCategory}
-          approvalStageFilter={approvalStageFilter}
-          setApprovalStageFilter={setApprovalStageFilter}
-          approvalItems={approvalItems}
-          selectedApprovalStem={selectedApprovalStem}
-          setSelectedApprovalStem={setSelectedApprovalStem}
-          applyLoadedDocument={applyLoadedDocument}
-          setStatusMessage={setStatusMessage}
-        />
-      ) : isMobileDataSidebarMode ? (
-        <MobileLifelogSidebar {...props} />
-      ) : (
-        <>
-          <div className="sidebar-tabs sidebar-role-tabs">
-            {(
-              [
-                {
-                  key: 'projects',
-                  label: '프로젝트',
-                  title:
-                    '⭐ 프로젝트 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 프로젝트 루트로 이동)',
-                },
-                {
-                  key: 'diary',
-                  label: '일기',
-                  title:
-                    '📅 일기 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 일기 폴더로 이동)',
-                },
-                {
-                  key: 'data',
-                  label: '아카이브',
-                  title:
-                    '🗄️ 아카이브 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 아카이브 루트로 이동)',
-                },
-                {
-                  key: 'git',
-                  label: 'Git',
-                  title:
-                    '💻 Git 파일 트리 (클릭: 전환 | 파일을 이 탭으로 드래그하여 Git 루트로 이동)',
-                },
-              ] as const
-            ).map((t) => {
-              const isTabActive =
-                rightTab === 'tree' && activeTreeRoleTab === t.key;
-              const isDragTarget = dragOverRoleTab === t.key;
+      ) : activeActivityItem === 'login' ? (
+        <div
+          className="sidebar-content"
+          style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px 10px' }}
+        >
+          <div className="sidebar-panel-title-box">
+            <strong>🔐 로그인 · 연동 목차 (TOC)</strong>
+            <span>섹션 이동</span>
+          </div>
+          {LOGIN_TOC_ITEMS.map((sec) => (
+            <div
+              key={sec.id}
+              className="tree-node-row"
+              style={{ padding: '8px 10px', fontWeight: 600, fontSize: '12.5px' }}
+              onClick={() => {
+                const el = document.getElementById(sec.id);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+            >
+              <span>
+                {sec.icon} {sec.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : activeActivityItem === 'help' ? (
+        <div
+          className="sidebar-content"
+          style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 10px' }}
+        >
+          <div className="sidebar-panel-title-box">
+            <strong>⌨️ 단축키 분류 목차 (TOC)</strong>
+            <span>클릭 시 스크롤</span>
+          </div>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              type="button"
+              className="toolbar-btn"
+              style={{ flex: 1, justifyContent: 'center', fontSize: '11.5px', padding: '4px 8px' }}
+              onClick={() => expandAllHelpCategories?.()}
+            >
+              ▾ 모두 펼치기
+            </button>
+            <button
+              type="button"
+              className="toolbar-btn"
+              style={{ flex: 1, justifyContent: 'center', fontSize: '11.5px', padding: '4px 8px' }}
+              onClick={() =>
+                collapseAllHelpCategories?.(helpCategoryGroups.map((g) => g.category))
+              }
+            >
+              ▸ 모두 접기
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {helpCategoryGroups.map((grp) => {
+              const isActive = activeHelpCategory === grp.category;
+              const isCollapsed = collapsedHelpCategories.has(grp.category);
               return (
-                <button
-                  key={t.key}
-                  className={`sidebar-tab sidebar-role-tab ${isTabActive ? 'active' : ''} ${isDragTarget ? 'drag-over' : ''}`}
-                  onClick={() => {
-                    setRightTab('tree');
-                    setActiveTreeRoleTab(t.key);
+                <div
+                  key={grp.category}
+                  data-sidebar-active={isActive ? 'true' : undefined}
+                  className={`tree-node-row ${isActive ? 'active' : ''}`}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '7px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-start',
+                    gap: '2px',
+                    cursor: 'pointer',
                   }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setRightTab('tree');
-                    setActiveTreeRoleTab(t.key);
-                    const basePath =
-                      baseFolders.find((b) => b.role === t.key && b.enabled)
-                        ?.path ||
-                      baseFolders.find((b) => b.role === t.key)?.path ||
-                      '';
-                    setContextMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      targetPath: basePath,
-                      targetName: t.label,
-                      isDirectory: true,
-                      folderRole: t.key,
-                      folderSubDir: '',
-                    });
-                  }}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    if (dragOverRoleTab !== t.key) {
-                      setDragOverRoleTab(t.key);
-                      clearHoverSwitchTimer();
-                      hoverSwitchTimerRef.current = window.setTimeout(() => {
-                        setRightTab('tree');
-                        setActiveTreeRoleTab(t.key);
-                      }, 380);
-                    }
-                  }}
-                  onDragLeave={() => {
-                    if (dragOverRoleTab === t.key) {
-                      setDragOverRoleTab(null);
-                    }
-                    clearHoverSwitchTimer();
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverRoleTab(null);
-                    clearHoverSwitchTimer();
-                    const srcPath =
-                      e.dataTransfer.getData('application/x-mylore-filepath') ||
-                      e.dataTransfer.getData('text/plain');
-                    if (srcPath) {
-                      setRightTab('tree');
-                      setActiveTreeRoleTab(t.key);
-                      void handleMoveRole(t.key, srcPath, '');
-                    }
-                  }}
-                  title={t.title}
+                  onClick={() => scrollToHelpCategory?.(grp.category)}
                 >
-                  <span>{t.label}</span>
-                </button>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      width: '100%',
+                      gap: '6px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '12.5px' }}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        {isCollapsed ? '▸' : '▾'}
+                      </span>
+                      <span>{grp.icon}</span>
+                      <span>{grp.label}</span>
+                    </div>
+                    <span className="help-category-badge">{grp.items.length}</span>
+                  </div>
+                </div>
               );
             })}
           </div>
-
-          <div className="sidebar-content">
-            {rightTab !== 'tree' && (
-              <div className="sidebar-special-panel-header">
-                <span>
-                  {rightTab === 'search'
-                    ? '🔍 파일에서 찾기 (Ctrl+Shift+F)'
-                    : rightTab === 'toc'
-                      ? '📑 문서 내 목차 (Ctrl+1)'
-                      : rightTab === 'backlinks'
-                        ? '🔗 양방향 백링크 (Ctrl+2)'
-                        : '📱 당일 라이프로그'}
-                </span>
-                <button
-                  type="button"
-                  className="toolbar-btn sidebar-special-close-btn"
-                  onClick={() => setRightTab('tree')}
-                  title="파일 트리로 돌아가기"
-                >
-                  ✕ 닫기
-                </button>
-              </div>
-            )}
-            {rightTab === 'tree' && <FileTreePanel {...props} />}
-
-            {rightTab === 'search' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <input
-                    autoFocus
-                    className="input-field"
-                    placeholder="전체 파일에서 검색할 키워드..."
-                    value={globalSearchQuery}
-                    onChange={(e) => setGlobalSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') executeGlobalSearch();
-                    }}
-                  />
-                  <button
-                    className="toolbar-btn primary"
-                    onClick={() => executeGlobalSearch()}
-                  >
-                    검색
-                  </button>
-                </div>
-
-                {globalReplaceMode && (
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <input
-                      className="input-field"
-                      placeholder="바꿀 문자열..."
-                      value={globalReplaceText}
-                      onChange={(e) => setGlobalReplaceText(e.target.value)}
-                    />
-                    <button
-                      className="toolbar-btn"
-                      onClick={async () => {
-                        if (!globalSearchQuery.trim()) return;
-                        const count = await replaceInFiles(
-                          globalSearchQuery,
-                          globalReplaceText
-                        );
-                        await executeGlobalSearch();
-                        setStatusMessage(
-                          `🔄 전체 파일 바꾸기 완료: 총 ${count}개 문서가 수정되었습니다.`
-                        );
-                      }}
-                    >
-                      일괄 바꾸기
-                    </button>
-                  </div>
-                )}
-
-                <div
-                  style={{
-                    fontSize: '11.5px',
-                    color: 'var(--text-secondary)',
-                    marginTop: '4px',
-                  }}
-                >
-                  검색 결과 ({globalSearchResults.length}건) — 항목 클릭 시 해당 위치로 이동
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  {globalSearchResults.map((item, idx) => (
-                    <div
-                      key={`${item.fullPath}-${item.lineNumber}-${idx}`}
-                      className={`tree-node-row ${
-                        idx === activeSearchIdx ? 'active' : ''
-                      }`}
-                      style={{
-                        flexDirection: 'column',
-                        alignItems: 'flex-start',
-                        gap: '2px',
-                      }}
-                      onClick={async () => {
-                        setActiveSearchIdx(idx);
-                        const doc = await readDocument(item.fullPath);
-                        applyLoadedDocument(doc, {
-                          lineNumber: item.lineNumber,
-                          charOffset: item.charOffset,
-                          highlightLength: globalSearchQuery.length,
-                        });
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        setContextMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          targetPath: item.fullPath,
-                          targetName: item.relativePath,
-                        });
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          width: '100%',
-                          fontSize: '11.5px',
-                          fontWeight: 700,
-                          color: '#a5b4fc',
-                        }}
-                      >
-                        <span>{item.relativePath}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)' }}>
-                          :{item.lineNumber}행
-                        </span>
-                      </div>
-                      <div
-                        style={{
-                          fontSize: '12px',
-                          color: 'var(--text-primary)',
-                          width: '100%',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {item.lineText}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {rightTab === 'toc' && (
-              <div>
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--text-secondary)',
-                    marginBottom: '8px',
-                  }}
-                >
-                  문서 내 목차 ({tocHeadings.length})
-                </div>
-                {tocHeadings.map((h, i) => (
-                  <div
-                    key={i}
-                    className="tree-node-row"
-                    style={{ paddingLeft: `${(h.level - 1) * 12 + 8}px` }}
-                    onClick={() => {
-                      if (currentDoc) {
-                        applyLoadedDocument(currentDoc, {
-                          lineNumber: h.lineIndex + 1,
-                        });
-                      }
-                    }}
-                  >
-                    <span>{h.text}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {rightTab === 'backlinks' && (
-              <div>
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--text-secondary)',
-                    marginBottom: '8px',
-                  }}
-                >
-                  양방향 백링크 ({currentDoc?.backlinks.length || 0})
-                </div>
-                {currentDoc?.backlinks.map((bl, idx) => (
-                  <div
-                    key={idx}
-                    className="tree-node-row"
-                    onClick={async () => {
-                      const doc = await readDocument(bl.sourcePath);
-                      applyLoadedDocument(doc);
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{bl.sourceTitle}</div>
-                      <div
-                        style={{
-                          fontSize: '11.5px',
-                          color: 'var(--text-muted)',
-                        }}
-                      >
-                        {bl.excerpt}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {rightTab === 'lifelog' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <input
-                  type="date"
-                  className="input-field"
-                  value={selectedDate}
-                  onChange={(e) => {
-                    setSelectedDate(e.target.value);
-                    loadLifelogForDate(e.target.value);
-                  }}
-                />
-                <div>
-                  <div className="tree-group-header">
-                    <span>💳 당일 금융 내역</span>
-                    <span>{dailyTransactions.length}건</span>
-                  </div>
-                  {dailyTransactions.map((tx) => (
-                    <div
-                      key={tx.id}
-                      className="tree-node-row"
-                      onClick={() =>
-                        insertIntoBody(
-                          `- 💳 [${tx.txTime}] **${tx.merchant}** (${tx.amount.toLocaleString()}원, ${tx.institution})`
-                        )
-                      }
-                    >
-                      <span>
-                        {tx.merchant} ({tx.amount.toLocaleString()}원)
-                      </span>
-                      <span style={{ fontSize: '11px', color: '#a5b4fc' }}>
-                        +삽입
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <div>
-                  <div className="tree-group-header">
-                    <span>💬 당일 카톡 / 문자</span>
-                    <span>{dailyMessages.length}건</span>
-                  </div>
-                  {dailyMessages.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className="tree-node-row"
-                      onClick={() =>
-                        insertIntoBody(
-                          `> 💬 **[${msg.roomOrSender} - ${msg.sender}] (${msg.sentTime})**: ${msg.message}`
-                        )
-                      }
-                    >
-                      <div className="tree-node-label">
-                        <span>
-                          [{msg.sender}] {msg.message}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+        </div>
+      ) : activeActivityItem === 'finance' ? (
+        <div
+          className="sidebar-content"
+          style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 10px' }}
+        >
+          {renderDefaultTocSection()}
+          <div className="sidebar-panel-title-box">
+            <strong>💳 당일 가계부 내역</strong>
+            <span>{dailyTransactions.length}건</span>
           </div>
+          <input
+            type="date"
+            className="input-field"
+            value={selectedDate}
+            onChange={(e) => {
+              setSelectedDate(e.target.value);
+              void loadLifelogForDate(e.target.value);
+            }}
+          />
+          {dailyTransactions.map((tx) => (
+            <div
+              key={tx.id}
+              className="tree-node-row"
+              onClick={() =>
+                insertIntoBody(
+                  `- 💳 [${tx.txTime}] **${tx.merchant}** (${tx.amount.toLocaleString()}원, ${tx.institution})`
+                )
+              }
+            >
+              <span>
+                {tx.merchant} ({tx.amount.toLocaleString()}원)
+              </span>
+              <span style={{ fontSize: '11px', color: '#a5b4fc' }}>+삽입</span>
+            </div>
+          ))}
+        </div>
+      ) : isLifelogActivityItem ? (
+        <>
+          {isMarkdownDocActive && (
+            <div style={{ padding: '8px 10px 0 10px' }}>
+              {renderDefaultTocSection()}
+            </div>
+          )}
+          <MobileLifelogSidebar
+            {...props}
+            mobileSidebarTab={activeActivityItem}
+          />
         </>
+      ) : (
+        /* Project ('projects', 'data', 'git') 또는 Diary ('diary') */
+        <div className="sidebar-content">
+          {renderDefaultTocSection()}
+          <FileTreePanel
+            {...props}
+            roles={
+              activeActivityItem === 'diary'
+                ? ['diary']
+                : ['projects', 'data', 'git']
+            }
+          />
+        </div>
       )}
     </aside>
   );

@@ -10,7 +10,6 @@ import {
   clearServiceLogs,
   getServiceLogs,
   pruneExpiredServiceLogs,
-  showInExplorer,
 } from '../../services/tauriClient';
 
 export interface LogDashboardProps {
@@ -73,7 +72,6 @@ const DOMAIN_META: Record<
 
 export function LogDashboard({
   appSettings,
-  openDashboardTab,
   setStatusMessage,
 }: LogDashboardProps) {
   const [activeDomain, setActiveDomain] = useState<LogDomainTab>('all');
@@ -304,22 +302,6 @@ export function LogDashboard({
             title="설정된 보관 주기가 지난 로그 파일 즉시 삭제"
           >
             🗑️ 만료 로그 정리
-          </button>
-          {logDirPath && (
-            <button
-              className="toolbar-btn"
-              onClick={() => void showInExplorer(logDirPath)}
-              title={`탐색기에서 열기: ${logDirPath}`}
-            >
-              📂 log 폴더 열기
-            </button>
-          )}
-          <button
-            className="toolbar-btn"
-            onClick={() => openDashboardTab('settings')}
-            title="설정 대시보드에서 분야별 로그 보관일 변경"
-          >
-            ⚙️ 보관일 설정
           </button>
         </div>
       </div>

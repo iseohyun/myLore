@@ -230,6 +230,48 @@ export interface DetachedPreviewActionPayload {
 
 export type F11ViewerMode = 'detached' | 'split';
 
+export type FileOpenPanePolicy = 'left' | 'focused' | 'right';
+
+export type LinkOpenPanePolicy = 'left' | 'right' | 'focused' | 'unfocused';
+
+export type ActivityBarItemId =
+  | 'approval'
+  | 'projects'
+  | 'call'
+  | 'sms'
+  | 'kakaotalk'
+  | 'recording'
+  | 'media'
+  | 'contacts'
+  | 'pc_log'
+  | 'notification'
+  | 'health'
+  | 'location'
+  | 'finance'
+  | 'diary'
+  | 'settings'
+  | 'login'
+  | 'help';
+
+export type DashboardTabType =
+  | 'logs'
+  | 'call'
+  | 'sms'
+  | 'kakaotalk'
+  | 'recording'
+  | 'media'
+  | 'contacts'
+  | 'pc_log'
+  | 'notification'
+  | 'health'
+  | 'location'
+  | 'finance'
+  | 'diary'
+  | 'settings'
+  | 'login'
+  | 'help'
+  | 'lifelog';
+
 export type ThemePresetId =
   | 'dark_indigo'
   | 'light_clean'
@@ -242,8 +284,15 @@ export interface MyLoreAppSettings {
   f11ViewerMode: F11ViewerMode;
   autoSaveEnabled: boolean;
   defaultEditorViewMode: 'editor' | 'split' | 'preview';
+  defaultFileOpenPane: FileOpenPanePolicy;
+  linkOpenPane: LinkOpenPanePolicy;
+  defaultActivityBarOpen: boolean;
+  activityBarHiddenItems?: ActivityBarItemId[];
+  activityBarTopOrder?: ActivityBarItemId[];
+  activityBarBottomOrder?: ActivityBarItemId[];
   defaultMenuBarExpanded: boolean;
   scrollSyncEnabled: boolean;
+  tabIndentSpaces?: number;
   autoCallTranscription: boolean;
   aiUserProfile: string;
   callAnalysisPrompt?: string;
@@ -378,16 +427,19 @@ export type ViewMode =
   | 'dashboard_finance'
   | 'dashboard_lifelog'
   | 'dashboard_settings'
-  | 'dashboard_logs';
+  | 'dashboard_logs'
+  | 'dashboard_help';
 
 export type RightSidebarTab = 'tree' | 'search' | 'toc' | 'backlinks' | 'lifelog';
 export type SettingsCategory =
+  | 'basic'
   | 'folders'
   | 'appearance'
   | 'shortcuts'
   | 'sync_setting'
   | 'sync_status'
   | 'ai_setting'
+  | 'ai_voiceprint'
   | 'ai_queue'
   | 'system_logs';
 export type PaletteMode = 'closed' | 'files' | 'commands';
@@ -522,6 +574,12 @@ export interface CallAiTranscriptionStats {
   totalAudioCalls: number;
   completedCalls: number;
   remainingCalls: number;
+  totalCallRecords?: number;
+  downloadedCalls?: number;
+  asrConvertedCalls?: number;
+  aiPostprocessedCalls?: number;
+  pendingApprovalCalls?: number;
+  verifiedCalls?: number;
   totalAudioBytes?: number;
   completedAudioBytes?: number;
   remainingAudioBytes?: number;
@@ -608,7 +666,73 @@ export interface LocationMovementSummary {
   logs: LocationMovementLogItem[];
 }
 
-export type ApprovalCategory = 'call_scripts' | 'kakao_updates' | 'future_design';
+export type ApprovalCategory = 'call_scripts' | 'kakao_updates' | 'contact_profiles' | 'future_design';
+
+export interface ContactPersonDocInfo {
+  contactName: string;
+  phones?: string[];
+  mdPath: string;
+  docUuid?: string;
+  uuid?: string;
+  profileText?: string;
+  bodyText?: string;
+  updatedAt: string;
+}
+
+export interface ContactPromptSlotInfo {
+  slot: 'A' | 'B' | string;
+  version: number;
+  promptTitle: string;
+  promptText: string;
+  winCount: number;
+  lossCount: number;
+  consecutiveLosses: number;
+  lastEvolutionReason: string;
+  updatedAt: string;
+}
+
+export interface ContactPromptHistoryItem {
+  id: number;
+  replacedSlot: string;
+  oldVersion: number;
+  newVersion: number;
+  winnerSlot: string;
+  triggerType: string;
+  evolutionSummary: string;
+  oldPromptText: string;
+  newPromptText: string;
+  createdAt: string;
+}
+
+export interface ContactProfileApprovalItem {
+  id: number;
+  contactName: string;
+  mdPath: string;
+  docUuid: string;
+  sourceType: string;
+  sourceRef: string;
+  eventSummary: string;
+  originalProfileText: string;
+  promptAVersion: number;
+  promptBVersion: number;
+  candidateAText: string;
+  candidateBText: string;
+  llmProvider: string;
+  status: string;
+  chosenSlot: string;
+  userEdited: boolean;
+  finalProfileText: string;
+  evolutionNote: string;
+  createdAt: string;
+  resolvedAt: string;
+}
+
+export interface ContactPromptTournamentStatus {
+  slotA: ContactPromptSlotInfo;
+  slotB: ContactPromptSlotInfo;
+  recentHistory: ContactPromptHistoryItem[];
+  pendingApprovalCount?: number;
+}
 
 export interface KakaoUpdateRequestItem {
   roomName: string;
@@ -621,6 +745,8 @@ export interface KakaoUpdateRequestItem {
   lastSyncedDate: string;
   mdPath: string;
   updatedAt: string;
+  kakaoGroups?: string[];
+  candidateRoomsHint?: string;
 }
 
 export interface CallApprovalItem {
@@ -688,4 +814,106 @@ export interface AiQueueDashboardPayload {
   pendingItems: AiQueuePendingItem[];
   recentCompleted: AiQueueRecentCompletedItem[];
 }
+
+export interface VoiceprintSampleMeta {
+  phraseText: string;
+  sourceLabel: string;
+  durationSec: number;
+  simA: number;
+  simB: number;
+  createdAt: string;
+}
+
+export interface VoiceprintProfileItem {
+  profileId: string;
+  targetType: string;
+  displayName: string;
+  sourceMode: string;
+  modelAName: string;
+  modelBName: string;
+  dimA: number;
+  dimB: number;
+  normA: number;
+  normB: number;
+  embeddingA: number[];
+  embeddingB: number[];
+  sampleCount: number;
+  consistencyA: number;
+  consistencyB: number;
+  crossAgreementScore: number;
+  samplesMeta: VoiceprintSampleMeta[];
+  rawJsonText: string;
+  updatedAt: string;
+}
+
+export interface SyncAudioCandidateItem {
+  fileName: string;
+  fullPath: string;
+  category: string;
+  contactOrSource: string;
+  recDate: string;
+  recTime: string;
+  fileBytes: number;
+  transcriptStatus: string;
+}
+
+export interface VoiceprintDashboardPayload {
+  engineReady: boolean;
+  pythonPath: string;
+  ffmpegReady: boolean;
+  modelAPath: string;
+  modelBPath: string;
+  modelAReady: boolean;
+  modelBReady: boolean;
+  syncEnrollUrl: string;
+  serverProfile: VoiceprintProfileItem;
+  syncProfile: VoiceprintProfileItem;
+  combinedProfile: VoiceprintProfileItem;
+  serverVsSyncSimA: number;
+  serverVsSyncSimB: number;
+  serverVsSyncCrossScore: number;
+  syncAudioCandidates: SyncAudioCandidateItem[];
+}
+
+export interface VoiceprintSegmentTestItem {
+  index: number;
+  startSec: number;
+  endSec: number;
+  simAServer: number;
+  simBServer: number;
+  simASync: number;
+  simBSync: number;
+  combinedScore: number;
+  crossAgreed: boolean;
+  predictedSpeaker: string;
+}
+
+export interface VoiceprintTestResult {
+  targetLabel: string;
+  durationSec: number;
+  wholeSimAServer: number;
+  wholeSimBServer: number;
+  wholeSimASync: number;
+  wholeSimBSync: number;
+  crossConsensusScore: number;
+  crossVerifiedIsMe: boolean;
+  verdictSummary: string;
+  segments: VoiceprintSegmentTestItem[];
+}
+
+export interface CallPostprocessPromptPayload {
+  promptMarkdown: string;
+  promptPath: string;
+  editLogMarkdown: string;
+  editLogPath: string;
+}
+
+export interface UserScriptEditEntry {
+  editType: string;
+  timeTag: string;
+  beforeText: string;
+  afterText: string;
+}
+
+
 

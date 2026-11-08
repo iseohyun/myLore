@@ -7,6 +7,7 @@ import {
   BaseFolderRole,
   CommandPaletteItem,
   ContextMenuState,
+  DashboardTabType,
   KeybindingConfig,
   MyLoreAppSettings,
   PaletteMode,
@@ -16,7 +17,7 @@ import {
 } from '../types/mylore';
 import { getVaultTemplates } from '../services/tauriClient';
 
-export const KEYBINDINGS_STORAGE_KEY = 'mylore_keybindings_v10';
+export const KEYBINDINGS_STORAGE_KEY = 'mylore_keybindings_v12';
 
 export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'open_shortcuts', category: 'Function', label: '단축키 설정', shortcut: 'F1', secondaryShortcut: '', condition: '전역' },
@@ -46,19 +47,22 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'cut', category: '편집', label: '잘라내기', shortcut: 'Ctrl+X', secondaryShortcut: 'Shift+Delete', condition: '편집모드에서' },
   { id: 'copy', category: '편집', label: '복사', shortcut: 'Ctrl+C', secondaryShortcut: 'Ctrl+Insert', condition: '편집모드에서' },
   { id: 'paste', category: '편집', label: '붙여넣기', shortcut: 'Ctrl+V', secondaryShortcut: 'Shift+Insert', condition: '편집모드에서' },
+  { id: 'indent_line', category: '편집', label: '현재 줄 들여쓰기 (띄어쓰기 추가)', shortcut: 'Tab', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'outdent_line', category: '편집', label: '현재 줄 내어쓰기 (띄어쓰기 삭제)', shortcut: 'Shift+Tab', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'move_line_up', category: '편집', label: '줄 위로 이동', shortcut: 'Alt+ArrowUp', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'move_line_down', category: '편집', label: '줄 아래로 이동', shortcut: 'Alt+ArrowDown', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'find_in_doc', category: '편집', label: '찾기', shortcut: 'Ctrl+F', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'replace_in_doc', category: '편집', label: '바꾸기', shortcut: 'Ctrl+H', secondaryShortcut: '', condition: '편집모드에서' },
-  { id: 'find_in_files', category: '편집', label: '파일에서 찾기', shortcut: 'Ctrl+Shift+F', secondaryShortcut: '', condition: '전역' },
-  { id: 'replace_in_files', category: '편집', label: '파일에서 바꾸기', shortcut: 'Ctrl+Shift+H', secondaryShortcut: '', condition: '전역' },
+  { id: 'find_in_files', category: '편집', label: '모든 파일에서 찾기', shortcut: 'Ctrl+Alt+Shift+F', secondaryShortcut: '', condition: '전역' },
   { id: 'select_all', category: '선택', label: '모두 선택', shortcut: 'Ctrl+A', secondaryShortcut: '', condition: '편집모드에서' },
-  { id: 'move_line_up', category: '선택', label: '줄 위로 이동', shortcut: 'Alt+ArrowUp', secondaryShortcut: '', condition: '편집모드에서' },
-  { id: 'move_line_down', category: '선택', label: '줄 아래로 이동', shortcut: 'Alt+ArrowDown', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'add_cursor_up', category: '선택', label: '위에 커서 추가', shortcut: 'Ctrl+Alt+ArrowUp', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'add_cursor_down', category: '선택', label: '아래 커서 추가', shortcut: 'Ctrl+Alt+ArrowDown', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'cycle_view_mode', category: '보기', label: '뷰어 토글 (1단: 에디터→뷰어→스플릿 / 2단: 에디터↔뷰어)', shortcut: 'Ctrl+E', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'view_editor', category: '보기', label: '에디터 전용 모드', shortcut: '', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'view_split', category: '보기', label: '병렬 뷰어 모드 (분할 화면)', shortcut: '', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'view_preview', category: '보기', label: '뷰어 전용 모드', shortcut: '', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'view_detached_preview', category: '보기', label: '전용 독립 뷰어 창 모드', shortcut: '', secondaryShortcut: '', condition: '문서 열람 시' },
+  { id: 'split_editor_horizontal', category: '보기', label: '에디터 수평 분할', shortcut: 'Ctrl+\\', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'toggle_fullscreen', category: '보기', label: '전체 화면', shortcut: 'Shift+F11', secondaryShortcut: '', condition: '전역' },
   { id: 'command_palette', category: '보기', label: '명령어 팔레트', shortcut: 'Ctrl+Shift+P', secondaryShortcut: '', condition: '전역' },
   { id: 'toggle_sidebar', category: '보기', label: '우측 사이드바 접기/펼치기', shortcut: 'Ctrl+B', secondaryShortcut: '', condition: '전역' },
@@ -66,10 +70,14 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'sidebar_backlinks', category: '보기', label: '양방향 백링크 사이드바 열기', shortcut: 'Ctrl+2', secondaryShortcut: '', condition: '전역' },
   { id: 'toggle_yaml', category: '보기', label: 'YAML 메타데이터 편집 토글', shortcut: 'Ctrl+=', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'toggle_log_terminal', category: '대쉬보드', label: '의사결재 대쉬보드 (결재창) 열기', shortcut: 'Ctrl+`', secondaryShortcut: '', condition: '전역' },
+  { id: 'focus_left_editor', category: '이동', label: '분할 화면 왼쪽 편집기로 이동', shortcut: 'Alt+ArrowLeft', secondaryShortcut: '', condition: '문서 열람 시' },
+  { id: 'focus_right_editor', category: '이동', label: '분할 화면 오른쪽 편집기로 이동', shortcut: 'Alt+ArrowRight', secondaryShortcut: '', condition: '문서 열람 시' },
+  { id: 'move_doc_right_editor', category: '이동', label: '현재 문서 오른쪽 에디터로 이동', shortcut: 'Ctrl+Alt+ArrowRight', secondaryShortcut: '', condition: '문서 열람 시' },
+  { id: 'move_doc_left_editor', category: '이동', label: '현재 문서 왼쪽 에디터로 이동', shortcut: 'Ctrl+Alt+ArrowLeft', secondaryShortcut: '', condition: '문서 열람 시' },
   { id: 'next_file', category: '이동', label: '다음 파일로 이동', shortcut: 'Ctrl+Tab', secondaryShortcut: 'Ctrl+PageDown', condition: '다중 탭 열람 시' },
   { id: 'prev_file', category: '이동', label: '이전 파일로 이동', shortcut: 'Ctrl+Shift+Tab', secondaryShortcut: 'Ctrl+PageUp', condition: '다중 탭 열람 시' },
-  { id: 'next_edit_pos', category: '이동', label: '다음 편집점으로 이동', shortcut: 'Alt+ArrowRight', secondaryShortcut: '', condition: '편집모드에서' },
-  { id: 'prev_edit_pos', category: '이동', label: '이전 편집점으로 이동', shortcut: 'Alt+ArrowLeft', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'next_edit_pos', category: '이동', label: '다음 편집점으로 이동', shortcut: 'Ctrl+ArrowRight', secondaryShortcut: '', condition: '편집모드에서' },
+  { id: 'prev_edit_pos', category: '이동', label: '이전 편집점으로 이동', shortcut: 'Ctrl+ArrowLeft', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'goto_line', category: '이동', label: '줄 이동', shortcut: 'Ctrl+G', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'goto_bracket', category: '이동', label: '괄호 이동', shortcut: 'Ctrl+Shift+\\', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'goto_bookmark', category: '이동', label: '북마크 이동', shortcut: 'Ctrl+F2', secondaryShortcut: '', condition: '편집모드에서' },
@@ -77,6 +85,56 @@ export const DEFAULT_KEYBINDINGS: KeybindingConfig[] = [
   { id: 'auto_format', category: '실행', label: '서브미션 Auto-Format 정렬', shortcut: 'Alt+Shift+F', secondaryShortcut: '', condition: '편집모드에서' },
   { id: 'toggle_audio_playback', category: '실행', label: '통화녹음 재생 중단/재개', shortcut: 'Ctrl+Space', secondaryShortcut: '', condition: '통화녹음 재생 중' },
 ];
+
+export interface HelpCategoryMeta {
+  category: string;
+  icon: string;
+  label: string;
+  desc: string;
+}
+
+export const HELP_CATEGORY_META: HelpCategoryMeta[] = [
+  { category: 'Function', icon: '⚡', label: 'Function (F1 ~ F12)', desc: '기능키(F1~F12) 기반 핵심 전역 동작' },
+  { category: '파일', icon: '📁', label: '파일', desc: '파일/폴더 열기, 저장, 새 메모, 휴지통 및 설정' },
+  { category: '편집', icon: '✏️', label: '편집', desc: '실행 취소/다시 실행, 들여쓰기(Tab), 줄 위/아래 이동, 문서 및 모든 파일 찾기/바꾸기' },
+  { category: '선택', icon: '🎯', label: '선택', desc: '전체 선택 및 멀티 커서 확장' },
+  { category: '보기', icon: '👁️', label: '보기', desc: '에디터/병렬/독립 뷰어 전환, 사이드바(TOC·백링크), 명령어 팔레트' },
+  { category: '이동', icon: '🧭', label: '이동', desc: '분할 편집기 포커스, 탭 전환, 편집점 히스토리, 줄/괄호/북마크/main.md 이동' },
+  { category: '실행', icon: '🚀', label: '실행', desc: '서브미션 자동 정렬, 프로그램 실행 및 통화녹음 재생 제어' },
+  { category: '대쉬보드', icon: '📊', label: '대쉬보드', desc: '의사결재 대쉬보드(결재창) 및 통합 대쉬보드 바로가기' },
+];
+
+export function groupKeybindingsByCategory(
+  items: KeybindingConfig[]
+): Array<HelpCategoryMeta & { items: KeybindingConfig[] }> {
+  const knownOrder = HELP_CATEGORY_META.map((m) => m.category);
+  const map = new Map<string, KeybindingConfig[]>();
+  for (const kb of items) {
+    const list = map.get(kb.category) || [];
+    list.push(kb);
+    map.set(kb.category, list);
+  }
+
+  const result: Array<HelpCategoryMeta & { items: KeybindingConfig[] }> = [];
+  for (const meta of HELP_CATEGORY_META) {
+    const groupItems = map.get(meta.category);
+    if (groupItems && groupItems.length > 0) {
+      result.push({ ...meta, items: groupItems });
+    }
+  }
+  for (const [cat, groupItems] of map.entries()) {
+    if (!knownOrder.includes(cat) && groupItems.length > 0) {
+      result.push({
+        category: cat,
+        icon: '🔖',
+        label: cat,
+        desc: `${cat} 관련 단축키`,
+        items: groupItems,
+      });
+    }
+  }
+  return result;
+}
 
 export interface UseKeybindingsParams {
   activeTabPath: string | null;
@@ -96,6 +154,8 @@ export interface UseKeybindingsParams {
     React.SetStateAction<'closed' | 'find' | 'replace'>
   >;
   setGlobalReplaceMode: React.Dispatch<React.SetStateAction<boolean>>;
+  openDocFindPanel: (mode?: 'find' | 'replace') => void;
+  openGlobalSearchPanel: () => void;
   setIsYamlVisible: React.Dispatch<React.SetStateAction<boolean>>;
   setGotoLineModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setRenameModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -104,9 +164,7 @@ export interface UseKeybindingsParams {
   handleListSelectPrevOrNext: (dir: 1 | -1) => Promise<void> | void;
   handleRunBatchUuidScan: () => Promise<void> | void;
   handleGotoRootMainMd: () => Promise<void> | void;
-  openDashboardTab: (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
-  ) => void;
+  openDashboardTab: (dashType: DashboardTabType) => void;
   handleSyncAndOpenGoogleCalendar: () => Promise<void> | void;
   handleRunProgramPlaceholder: () => void;
   handleToggleF11Viewer: () => Promise<void> | void;
@@ -116,12 +174,19 @@ export interface UseKeybindingsParams {
   handleOpenNativeFile: () => Promise<void> | void;
   handleOpenNativeFolder: () => Promise<void> | void;
   handleCreateTempMemo: () => Promise<void> | void;
+  editorRef?: React.MutableRefObject<HTMLTextAreaElement | null>;
+  handleIndentLine: (mode: 'indent' | 'outdent', indentSpaces?: number) => void;
   handleMoveLine: (dir: 'up' | 'down') => void;
   handleAddCursorVertical: (dir: 'up' | 'down') => void;
   handleSelectDocViewMode: (
     nextMode: 'editor' | 'split' | 'preview'
   ) => Promise<void> | void;
   handleToggleDetachedPreview: (forceOpen?: boolean) => Promise<void> | void;
+  handleCycleViewerMode: () => void;
+  handleToggleHorizontalSplit: () => void;
+  focusEditorPane: (pane: 'left' | 'right') => void;
+  handleMoveDocToRightEditor: () => void;
+  handleMoveDocToLeftEditor: () => void;
   handleSwitchTabCycle: (dir: 1 | -1) => void;
   handleMoveEditPoint: (dir: 1 | -1) => Promise<void> | void;
   handleJumpToMatchingBracket: () => void;
@@ -143,14 +208,57 @@ export interface UseKeybindingsParams {
 export function useKeybindings(params: UseKeybindingsParams) {
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [helpSearchQuery, setHelpSearchQuery] = useState('');
+  const [collapsedHelpCategories, setCollapsedHelpCategories] = useState<
+    Set<string>
+  >(() => new Set());
+  const [activeHelpCategory, setActiveHelpCategory] =
+    useState<string>('Function');
   const [recordingShortcutTarget, setRecordingShortcutTarget] = useState<{
     id: string;
     field: 'shortcut' | 'secondaryShortcut';
   } | null>(null);
+
+  const toggleHelpCategoryCollapse = (category: string) => {
+    setCollapsedHelpCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  };
+
+  const expandAllHelpCategories = () => {
+    setCollapsedHelpCategories(new Set());
+  };
+
+  const collapseAllHelpCategories = (categories: string[]) => {
+    setCollapsedHelpCategories(new Set(categories));
+  };
+
+  const scrollToHelpCategory = (category: string) => {
+    setCollapsedHelpCategories((prev) => {
+      if (!prev.has(category)) return prev;
+      const next = new Set(prev);
+      next.delete(category);
+      return next;
+    });
+    setActiveHelpCategory(category);
+    window.setTimeout(() => {
+      const el = document.getElementById(`help-category-section-${category}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 25);
+  };
   const [altPressed, setAltPressed] = useState(false);
   const [keybindings, setKeybindings] = useState<KeybindingConfig[]>(() => {
     const saved =
       localStorage.getItem(KEYBINDINGS_STORAGE_KEY) ||
+      localStorage.getItem('mylore_keybindings_v11') ||
+      localStorage.getItem('mylore_keybindings_v10') ||
       localStorage.getItem('mylore_keybindings_v9') ||
       localStorage.getItem('mylore_keybindings_v8') ||
       localStorage.getItem('mylore_keybindings_v7');
@@ -176,7 +284,41 @@ export function useKeybindings(params: UseKeybindingsParams) {
                 : found.shortcut,
           };
         }
-        return found;
+        if (def.id === 'find_in_files') {
+          return {
+            ...def,
+            shortcut:
+              !found.shortcut || found.shortcut === 'Ctrl+Shift+F'
+                ? 'Ctrl+Alt+Shift+F'
+                : found.shortcut,
+            secondaryShortcut: '',
+          };
+        }
+        if (def.id === 'next_edit_pos') {
+          return {
+            ...def,
+            shortcut:
+              !found.shortcut || found.shortcut === 'Alt+ArrowRight'
+                ? 'Ctrl+ArrowRight'
+                : found.shortcut,
+            secondaryShortcut: found.secondaryShortcut || '',
+          };
+        }
+        if (def.id === 'prev_edit_pos') {
+          return {
+            ...def,
+            shortcut:
+              !found.shortcut || found.shortcut === 'Alt+ArrowLeft'
+                ? 'Ctrl+ArrowLeft'
+                : found.shortcut,
+            secondaryShortcut: found.secondaryShortcut || '',
+          };
+        }
+        return {
+          ...found,
+          category: def.category,
+          label: def.label,
+        };
       });
       return merged;
     } catch {
@@ -221,10 +363,17 @@ export function useKeybindings(params: UseKeybindingsParams) {
         e.code === 'Backquote' ||
         e.key === '`' ||
         e.key === '~' ||
-        e.key === '₩' ||
         e.keyCode === 192;
+      const isBackslashKey =
+        e.code === 'Backslash' ||
+        e.key === '\\' ||
+        e.key === '|' ||
+        e.key === '₩' ||
+        e.keyCode === 220;
       if (isBackquoteKey) {
         parts.push('`');
+      } else if (isBackslashKey) {
+        parts.push('\\');
       } else if (e.code === 'Space' || e.key === ' ') {
         parts.push('Space');
       } else if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
@@ -322,9 +471,29 @@ export function useKeybindings(params: UseKeybindingsParams) {
         );
       };
 
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isMarkdownEditorFocused =
+        Boolean(activeEl) &&
+        (activeEl === ctx.editorRef?.current ||
+          activeEl?.classList.contains('markdown-editor'));
+
+      if (isMarkdownEditorFocused && matchKb('indent_line')) {
+        e.preventDefault();
+        e.stopPropagation();
+        ctx.handleIndentLine('indent', ctx.appSettings.tabIndentSpaces || 2);
+        return;
+      }
+      if (isMarkdownEditorFocused && matchKb('outdent_line')) {
+        e.preventDefault();
+        e.stopPropagation();
+        ctx.handleIndentLine('outdent', ctx.appSettings.tabIndentSpaces || 2);
+        return;
+      }
+
       if (matchKb('open_shortcuts')) {
         e.preventDefault();
-        setShortcutsModalOpen((prev) => !prev);
+        ctx.setRightSidebarOpen(true);
+        ctx.openDashboardTab('help');
       } else if (matchKb('rename_doc')) {
         e.preventDefault();
         ctx.handleOpenRenameDocModal();
@@ -395,20 +564,13 @@ export function useKeybindings(params: UseKeybindingsParams) {
         ctx.openDashboardTab('settings');
       } else if (matchKb('find_in_doc')) {
         e.preventDefault();
-        ctx.setFindBarMode('find');
+        ctx.openDocFindPanel('find');
       } else if (matchKb('replace_in_doc')) {
         e.preventDefault();
-        ctx.setFindBarMode('replace');
+        ctx.openDocFindPanel('replace');
       } else if (matchKb('find_in_files')) {
         e.preventDefault();
-        ctx.setRightSidebarOpen(true);
-        ctx.setRightTab('search');
-        ctx.setGlobalReplaceMode(false);
-      } else if (matchKb('replace_in_files')) {
-        e.preventDefault();
-        ctx.setRightSidebarOpen(true);
-        ctx.setRightTab('search');
-        ctx.setGlobalReplaceMode(true);
+        ctx.openGlobalSearchPanel();
       } else if (matchKb('move_line_up')) {
         e.preventDefault();
         ctx.handleMoveLine('up');
@@ -421,6 +583,12 @@ export function useKeybindings(params: UseKeybindingsParams) {
       } else if (matchKb('add_cursor_down')) {
         e.preventDefault();
         ctx.handleAddCursorVertical('down');
+      } else if (
+        matchKb('cycle_view_mode') ||
+        (e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'e')
+      ) {
+        e.preventDefault();
+        ctx.handleCycleViewerMode();
       } else if (matchKb('view_editor')) {
         e.preventDefault();
         void ctx.handleSelectDocViewMode('editor');
@@ -433,6 +601,42 @@ export function useKeybindings(params: UseKeybindingsParams) {
       } else if (matchKb('view_detached_preview')) {
         e.preventDefault();
         void ctx.handleToggleDetachedPreview();
+      } else if (
+        matchKb('split_editor_horizontal') ||
+        (e.ctrlKey &&
+          !e.altKey &&
+          !e.shiftKey &&
+          (e.code === 'Backslash' ||
+            e.key === '\\' ||
+            e.key === '₩' ||
+            e.keyCode === 220))
+      ) {
+        e.preventDefault();
+        ctx.handleToggleHorizontalSplit();
+      } else if (
+        matchKb('focus_left_editor') ||
+        (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowLeft')
+      ) {
+        e.preventDefault();
+        ctx.focusEditorPane('left');
+      } else if (
+        matchKb('focus_right_editor') ||
+        (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowRight')
+      ) {
+        e.preventDefault();
+        ctx.focusEditorPane('right');
+      } else if (
+        matchKb('move_doc_right_editor') ||
+        (e.ctrlKey && e.altKey && !e.shiftKey && e.key === 'ArrowRight')
+      ) {
+        e.preventDefault();
+        ctx.handleMoveDocToRightEditor();
+      } else if (
+        matchKb('move_doc_left_editor') ||
+        (e.ctrlKey && e.altKey && !e.shiftKey && e.key === 'ArrowLeft')
+      ) {
+        e.preventDefault();
+        ctx.handleMoveDocToLeftEditor();
       } else if (matchKb('command_palette')) {
         e.preventDefault();
         ctx.setPaletteMode('commands');
@@ -479,16 +683,10 @@ export function useKeybindings(params: UseKeybindingsParams) {
       } else if (matchKb('prev_file')) {
         e.preventDefault();
         ctx.handleSwitchTabCycle(-1);
-      } else if (
-        matchKb('next_edit_pos') ||
-        (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowRight')
-      ) {
+      } else if (activeEl?.tagName !== 'INPUT' && matchKb('next_edit_pos')) {
         e.preventDefault();
         void ctx.handleMoveEditPoint(1);
-      } else if (
-        matchKb('prev_edit_pos') ||
-        (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowLeft')
-      ) {
+      } else if (activeEl?.tagName !== 'INPUT' && matchKb('prev_edit_pos')) {
         e.preventDefault();
         void ctx.handleMoveEditPoint(-1);
       } else if (matchKb('goto_line')) {
@@ -536,7 +734,6 @@ export function useKeybindings(params: UseKeybindingsParams) {
           }
         }
       } else {
-        const activeEl = document.activeElement as HTMLElement | null;
         const activeTag = activeEl?.tagName || '';
         const isTextInputFocused = ['INPUT', 'TEXTAREA'].includes(activeTag);
         const inFolderInterface =
@@ -591,163 +788,36 @@ export function useKeybindings(params: UseKeybindingsParams) {
   }, [recordingShortcutTarget, keybindings]);
 
   const commandItems: CommandPaletteItem[] = [
-    {
-      id: 'cmd-f1-help',
-      label: '도움말 (단축키 설정 모달 열기)',
-      shortcut: getShortcutLabel('open_shortcuts'),
-      action: () => setShortcutsModalOpen(true),
-    },
-    {
-      id: 'cmd-open-file',
-      label: '파일: 파일 열기 (빠른 문서 검색 모달 열기)',
-      shortcut: getShortcutLabel('open_file'),
-      action: () => {
-        params.setPaletteMode('files');
-        params.setPaletteQuery('');
-      },
-    },
-    {
-      id: 'cmd-f2-rename',
-      label: '파일: 현재 문서 제목 변경 (UUID 유지)',
-      shortcut: getShortcutLabel('rename_doc'),
-      action: params.handleOpenRenameDocModal,
-    },
-    {
-      id: 'cmd-new-project',
-      label: '파일: 새 프로젝트 생성 (Projects/{폴더}/main.md)',
-      shortcut: '',
-      action: () => {
-        params.setNewDocRole('projects');
-        params.setNewDocTemplate('project_main.md');
-        params.setNewDocModalOpen(true);
-      },
-    },
-    {
-      id: 'cmd-new-schedule',
-      label: '파일: 새 일정 생성 (달력 UI 열기)',
-      shortcut: '',
-      action: () => params.setCalendarModalOpen(true),
-    },
-    {
-      id: 'cmd-new-memo',
-      label: '파일: 새 메모 작성 (프로젝트/임시에 자동 분류)',
-      shortcut: getShortcutLabel('new_memo'),
-      action: () => void params.handleCreateTempMemo(),
-    },
-    {
-      id: 'cmd-find-in-files',
-      label: '편집: 파일에서 찾기 (우측 사이드바 검색)',
-      shortcut: getShortcutLabel('find_in_files'),
-      action: () => {
-        params.setRightSidebarOpen(true);
-        params.setRightTab('search');
-        params.setGlobalReplaceMode(false);
-      },
-    },
-    {
-      id: 'cmd-sidebar-toc',
-      label: '보기: 문서 내 목차(TOC) 사이드바 열기',
-      shortcut: getShortcutLabel('sidebar_toc') || 'Ctrl+1',
-      action: () => {
-        params.setRightSidebarOpen(true);
-        params.setRightTab('toc');
-      },
-    },
-    {
-      id: 'cmd-sidebar-backlinks',
-      label: '보기: 양방향 백링크 사이드바 열기',
-      shortcut: getShortcutLabel('sidebar_backlinks') || 'Ctrl+2',
-      action: () => {
-        params.setRightSidebarOpen(true);
-        params.setRightTab('backlinks');
-      },
-    },
-    {
-      id: 'cmd-goto-main',
-      label: '이동: ⭐ main.md로 이동 (루트 Projects/main.md)',
-      shortcut: getShortcutLabel('goto_main_md'),
-      action: () => void params.handleGotoRootMainMd(),
-    },
-    {
-      id: 'cmd-goto-latest-diary',
-      label: '이동: 최신 diary로 이동',
-      shortcut: '',
-      action: () => void params.handleGotoDiary('latest'),
-    },
-    {
-      id: 'cmd-auto-format',
-      label: '실행: 서브 미션 Auto-Format 정렬',
-      shortcut: getShortcutLabel('auto_format'),
-      action: params.handleAutoFormatTasks,
-    },
-    {
-      id: 'cmd-scan-uuid',
-      label: '실행: UUID 재스캔 (베이스 폴더 일괄 스캔)',
-      shortcut: getShortcutLabel('rescan_uuid'),
-      action: () => void params.handleRunBatchUuidScan(),
-    },
-    {
-      id: 'cmd-f9-run',
-      label: '실행: 프로그램 수행 (추후 업데이트 예정)',
-      shortcut: getShortcutLabel('run_program'),
-      action: params.handleRunProgramPlaceholder,
-    },
-    {
-      id: 'cmd-open-templates',
-      label: '실행: 볼트 템플릿 관리 및 삽입 (.myLore/templates)',
-      shortcut: '',
-      action: async () => {
-        const tpls = await getVaultTemplates();
-        params.setVaultTemplates(tpls);
-        params.setTemplateModalOpen(true);
-      },
-    },
-    {
-      id: 'cmd-dash-projects',
-      label: '대쉬보드: 프로젝트 (Projects/main.md 열기)',
-      shortcut: getShortcutLabel('dashboard_projects'),
-      action: () => void params.handleGotoRootMainMd(),
-    },
-    {
-      id: 'cmd-dash-lifelog',
-      label: '대쉬보드: 라이프로그 대쉬보드 탭 열기',
-      shortcut: getShortcutLabel('dashboard_lifelog'),
-      action: () => params.openDashboardTab('lifelog'),
-    },
-    {
-      id: 'cmd-dash-finance',
-      label: '대쉬보드: 금융 대쉬보드 탭 열기',
-      shortcut: getShortcutLabel('dashboard_finance'),
-      action: () => params.openDashboardTab('finance'),
-    },
-    {
-      id: 'cmd-dash-diary',
-      label: '대쉬보드: 일정 대쉬보드 탭 열기',
-      shortcut: getShortcutLabel('dashboard_diary'),
-      action: () => params.openDashboardTab('diary'),
-    },
-    {
-      id: 'cmd-settings',
-      label: '대쉬보드: 설정 대쉬보드 탭 열기 (.myLore/setting.json)',
-      shortcut: getShortcutLabel('open_settings'),
-      action: () => params.openDashboardTab('settings'),
-    },
-    {
-      id: 'cmd-toggle-log-terminal',
-      label: '대쉬보드: ⚖️ 의사결재 대쉬보드 (결재창) 탭 열기 (통화 스크립트 검토)',
-      shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`',
-      action: () => params.openDashboardTab('logs'),
-    },
-    {
-      id: 'cmd-f11-viewer',
-      label: `보기: F11 뷰어 켜기/끄기 (${
-        params.appSettings.f11ViewerMode === 'detached'
-          ? '전용 독립 뷰어'
-          : '병렬 뷰어'
-      })`,
-      shortcut: getShortcutLabel('toggle_viewer'),
-      action: () => void params.handleToggleF11Viewer(),
-    },
+    { id: 'cmd-f1-help', label: '대쉬보드: ❓ 도움말 대쉬보드 (단축키 설정) 탭 열기', shortcut: getShortcutLabel('open_shortcuts'), action: () => { params.setRightSidebarOpen(true); params.openDashboardTab('help'); } },
+    { id: 'cmd-open-file', label: '파일: 파일 열기 (빠른 문서 검색 모달 열기)', shortcut: getShortcutLabel('open_file'), action: () => { params.setPaletteMode('files'); params.setPaletteQuery(''); } },
+    { id: 'cmd-f2-rename', label: '파일: 현재 문서 제목 변경 (UUID 유지)', shortcut: getShortcutLabel('rename_doc'), action: params.handleOpenRenameDocModal },
+    { id: 'cmd-new-project', label: '파일: 새 프로젝트 생성 (Projects/{폴더}/main.md)', shortcut: '', action: () => { params.setNewDocRole('projects'); params.setNewDocTemplate('project_main.md'); params.setNewDocModalOpen(true); } },
+    { id: 'cmd-new-schedule', label: '파일: 새 일정 생성 (달력 UI 열기)', shortcut: '', action: () => params.setCalendarModalOpen(true) },
+    { id: 'cmd-new-memo', label: '파일: 새 메모 작성 (프로젝트/임시에 자동 분류)', shortcut: getShortcutLabel('new_memo'), action: () => void params.handleCreateTempMemo() },
+    { id: 'cmd-indent-line', label: '편집: 현재 줄 들여쓰기 (띄어쓰기 추가)', shortcut: getShortcutLabel('indent_line') || 'Tab', action: () => params.handleIndentLine('indent', params.appSettings.tabIndentSpaces || 2) },
+    { id: 'cmd-outdent-line', label: '편집: 현재 줄 내어쓰기 (띄어쓰기 삭제)', shortcut: getShortcutLabel('outdent_line') || 'Shift+Tab', action: () => params.handleIndentLine('outdent', params.appSettings.tabIndentSpaces || 2) },
+    { id: 'cmd-find-in-files', label: '편집: 모든 파일에서 찾기 / 바꾸기 (우측 사이드바 검색)', shortcut: getShortcutLabel('find_in_files'), action: () => params.openGlobalSearchPanel() },
+    { id: 'cmd-sidebar-toc', label: '보기: 문서 내 목차(TOC) 사이드바 열기', shortcut: getShortcutLabel('sidebar_toc') || 'Ctrl+1', action: () => { params.setRightSidebarOpen(true); params.setRightTab('toc'); } },
+    { id: 'cmd-sidebar-backlinks', label: '보기: 양방향 백링크 사이드바 열기', shortcut: getShortcutLabel('sidebar_backlinks') || 'Ctrl+2', action: () => { params.setRightSidebarOpen(true); params.setRightTab('backlinks'); } },
+    { id: 'cmd-cycle-viewer-mode', label: '보기: 뷰어 토글 (1단: 에디터→뷰어→스플릿 / 2단: 포커스 문서 에디터↔뷰어)', shortcut: getShortcutLabel('cycle_view_mode') || 'Ctrl+E', action: params.handleCycleViewerMode },
+    { id: 'cmd-split-editor-horizontal', label: '보기: 에디터 수평 분할 (좌/우 에디터 분할 토글)', shortcut: getShortcutLabel('split_editor_horizontal') || 'Ctrl+\\', action: params.handleToggleHorizontalSplit },
+    { id: 'cmd-focus-left-editor', label: '이동: 분할 화면 왼쪽 편집기로 이동', shortcut: getShortcutLabel('focus_left_editor') || 'Alt+ArrowLeft', action: () => params.focusEditorPane('left') },
+    { id: 'cmd-focus-right-editor', label: '이동: 분할 화면 오른쪽 편집기로 이동', shortcut: getShortcutLabel('focus_right_editor') || 'Alt+ArrowRight', action: () => params.focusEditorPane('right') },
+    { id: 'cmd-move-doc-right', label: '이동: 현재 문서 오른쪽 에디터로 이동', shortcut: getShortcutLabel('move_doc_right_editor') || 'Ctrl+Alt+ArrowRight', action: params.handleMoveDocToRightEditor },
+    { id: 'cmd-move-doc-left', label: '이동: 현재 문서 왼쪽 에디터로 이동', shortcut: getShortcutLabel('move_doc_left_editor') || 'Ctrl+Alt+ArrowLeft', action: params.handleMoveDocToLeftEditor },
+    { id: 'cmd-goto-main', label: '이동: ⭐ main.md로 이동 (루트 Projects/main.md)', shortcut: getShortcutLabel('goto_main_md'), action: () => void params.handleGotoRootMainMd() },
+    { id: 'cmd-goto-latest-diary', label: '이동: 최신 diary로 이동', shortcut: '', action: () => void params.handleGotoDiary('latest') },
+    { id: 'cmd-auto-format', label: '실행: 서브 미션 Auto-Format 정렬', shortcut: getShortcutLabel('auto_format'), action: params.handleAutoFormatTasks },
+    { id: 'cmd-scan-uuid', label: '실행: UUID 재스캔 (베이스 폴더 일괄 스캔)', shortcut: getShortcutLabel('rescan_uuid'), action: () => void params.handleRunBatchUuidScan() },
+    { id: 'cmd-f9-run', label: '실행: 프로그램 수행 (추후 업데이트 예정)', shortcut: getShortcutLabel('run_program'), action: params.handleRunProgramPlaceholder },
+    { id: 'cmd-open-templates', label: '실행: 볼트 템플릿 관리 및 삽입 (.myLore/templates)', shortcut: '', action: async () => { const tpls = await getVaultTemplates(); params.setVaultTemplates(tpls); params.setTemplateModalOpen(true); } },
+    { id: 'cmd-dash-projects', label: '대쉬보드: 프로젝트 (Projects/main.md 열기)', shortcut: getShortcutLabel('dashboard_projects'), action: () => void params.handleGotoRootMainMd() },
+    { id: 'cmd-dash-lifelog', label: '대쉬보드: 라이프로그 대쉬보드 탭 열기', shortcut: getShortcutLabel('dashboard_lifelog'), action: () => params.openDashboardTab('lifelog') },
+    { id: 'cmd-dash-finance', label: '대쉬보드: 금융 대쉬보드 탭 열기', shortcut: getShortcutLabel('dashboard_finance'), action: () => params.openDashboardTab('finance') },
+    { id: 'cmd-dash-diary', label: '대쉬보드: 일정 대쉬보드 탭 열기', shortcut: getShortcutLabel('dashboard_diary'), action: () => params.openDashboardTab('diary') },
+    { id: 'cmd-settings', label: '대쉬보드: 설정 대쉬보드 탭 열기 (.myLore/setting.json)', shortcut: getShortcutLabel('open_settings'), action: () => params.openDashboardTab('settings') },
+    { id: 'cmd-toggle-log-terminal', label: '대쉬보드: ⚖️ 의사결재 대쉬보드 (결재창) 탭 열기 (통화 스크립트 검토)', shortcut: getShortcutLabel('toggle_log_terminal') || 'Ctrl+`', action: () => params.openDashboardTab('logs') },
+    { id: 'cmd-f11-viewer', label: `보기: F11 뷰어 켜기/끄기 (${params.appSettings.f11ViewerMode === 'detached' ? '전용 독립 뷰어' : '병렬 뷰어'})`, shortcut: getShortcutLabel('toggle_viewer'), action: () => void params.handleToggleF11Viewer() },
   ];
 
   return {
@@ -755,6 +825,14 @@ export function useKeybindings(params: UseKeybindingsParams) {
     setShortcutsModalOpen,
     helpSearchQuery,
     setHelpSearchQuery,
+    collapsedHelpCategories,
+    setCollapsedHelpCategories,
+    activeHelpCategory,
+    setActiveHelpCategory,
+    toggleHelpCategoryCollapse,
+    expandAllHelpCategories,
+    collapseAllHelpCategories,
+    scrollToHelpCategory,
     recordingShortcutTarget,
     setRecordingShortcutTarget,
     altPressed,

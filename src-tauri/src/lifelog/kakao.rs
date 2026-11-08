@@ -276,6 +276,7 @@ pub(crate) fn import_kakao_chat_text(
         }
     }
 
+    let _ = process_and_consume_kakao_notifications(&conn);
     Ok(KakaoImportResult { inserted_count })
 }
 
@@ -447,51 +448,31 @@ pub(crate) fn is_kakao_business_or_alimtalk_channel(
     }
 
     // 2) 메시지 본문 패턴: (광고), [광고], 무료수신거부, [채널명] 알림톡 포맷 등
-    if m.starts_with("(광고)")
-        || m.starts_with("[광고]")
-        || m.contains("무료수신거부")
-        || m.contains("수신거부")
-        || m.contains("개인정보 이용·제공 내역")
-        || m.contains("개인정보 이용제공내역")
-        || m.contains("채널 추가하고")
-        || m.contains("알림톡 도착")
+    if m.starts_with("(광고)") || m.starts_with("[광고]") || m.contains("무료수신거부")
+        || m.contains("수신거부") || m.contains("개인정보 이용·제공 내역") || m.contains("개인정보 이용제공내역")
+        || m.contains("채널 추가하고") || m.contains("알림톡 도착") || m.starts_with(&format!("[{}]", s))
     {
-        return true;
-    }
-    let bracket_prefix = format!("[{}]", s);
-    if m.starts_with(&bracket_prefix) {
         return true;
     }
 
     // 3) 대표적인 비즈니스/금융/쇼핑/공공기관 채널 키워드 매칭
     const KNOWN_CHANNELS: &[&str] = &[
-        "거제시", "신한카드", "쿠팡", "토스", "카카오페이", "카카오뱅크", "제로페이",
-        "가나스윔", "거제 반다비 체육센터", "카카오비즈니스 파트너센터", "한끼통살", "미닉스",
-        "아정당 이사", "TMAP", "카카오톡 선물하기", "배달의민족", "NICE지키미", "노벨피아",
-        "토스뱅크", "NH멤버스", "신한은행", "거제오션사이드수영장", "기장군도시관리공단",
-        "카카오이모티콘", "한화생명", "다이소멤버십", "비플페이", "윙잇", "진에어",
-        "아시아나항공", "IBK기업은행", "티머니", "경남에너지", "거제시립도서관", "코레일 기차",
-        "퀸잇", "010휘슬", "더아파트", "자리톡 월세 카드결제", "페이히어 알림", "농협하나로마트",
-        "국세청", "국민연금 전자문서", "토스페이먼츠", "SC제일은행", "한국연구재단",
-        "한국결제네트웍스", "퀵계좌이체", "LG전자 물류센터", "11번가", "Klip",
-        "한국교통안전공단 알림톡", "카카오 서비스 결제 안내", "맘스터치", "해피포인트",
-        "뱅크샐러드", "도미노피자", "국민건강보험공단", "랭킹닭컴", "한화손해보험",
-        "카카오비즈니스", "카카오톡 지갑", "KB국민카드", "토스오더", "CJ대한통운",
-        "카카오계정", "페이타랩", "카카오페이 고객센터", "LG ThinQ", "튼튼머니", "농협몰",
-        "공유누리", "금융결제원", "티머니GO", "로보락 기술지원", "에쓰오일", "한국도로교통공단",
-        "카카오 톡딜", "GSNPOINT", "한국정보인증", "여기어때", "카카오 T",
-        "거붕백병원건강증진센터", "우리은행", "모바일 신분증", "말해보카", "케이뱅크",
-        "삼성전자로지텍", "한국전력공사", "해양에너지", "국민신문고", "현대해상",
+        "거제시", "신한카드", "쿠팡", "토스", "카카오페이", "카카오뱅크", "제로페이", "가나스윔", "거제 반다비 체육센터", "카카오비즈니스 파트너센터",
+        "한끼통살", "미닉스", "아정당 이사", "TMAP", "카카오톡 선물하기", "배달의민족", "NICE지키미", "노벨피아", "토스뱅크", "NH멤버스",
+        "신한은행", "거제오션사이드수영장", "기장군도시관리공단", "카카오이모티콘", "한화생명", "다이소멤버십", "비플페이", "윙잇", "진에어", "아시아나항공",
+        "IBK기업은행", "티머니", "경남에너지", "거제시립도서관", "코레일 기차", "퀸잇", "010휘슬", "더아파트", "자리톡 월세 카드결제", "페이히어 알림",
+        "농협하나로마트", "국세청", "국민연금 전자문서", "토스페이먼츠", "SC제일은행", "한국연구재단", "한국결제네트웍스", "퀵계좌이체", "LG전자 물류센터", "11번가",
+        "Klip", "한국교통안전공단 알림톡", "카카오 서비스 결제 안내", "맘스터치", "해피포인트", "뱅크샐러드", "도미노피자", "국민건강보험공단", "랭킹닭컴", "한화손해보험",
+        "카카오비즈니스", "카카오톡 지갑", "KB국민카드", "토스오더", "CJ대한통운", "카카오계정", "페이타랩", "카카오페이 고객센터", "LG ThinQ", "튼튼머니",
+        "농협몰", "공유누리", "금융결제원", "티머니GO", "로보락 기술지원", "에쓰오일", "한국도로교통공단", "카카오 톡딜", "GSNPOINT", "한국정보인증",
+        "여기어때", "카카오 T", "거붕백병원건강증진센터", "우리은행", "모바일 신분증", "말해보카", "케이뱅크", "삼성전자로지텍", "한국전력공사", "해양에너지",
+        "국민신문고", "현대해상",
     ];
-    if KNOWN_CHANNELS.iter().any(|&ch| ch == s) {
+    if KNOWN_CHANNELS.contains(&s) {
         return true;
     }
 
-    for suffix in [
-        "카드", "은행", "페이", "택배", "고객센터", "알림톡", "공단", "공사", "청", "도서관",
-        "멤버스", "멤버십", "선물하기", "마트", "백화점", "병원", "의원", "약국", "손해보험",
-        "생명", "해상", "물류센터",
-    ] {
+    for suffix in ["카드", "은행", "페이", "택배", "고객센터", "알림톡", "공단", "공사", "청", "도서관", "멤버스", "멤버십", "선물하기", "마트", "백화점", "병원", "의원", "약국", "손해보험", "생명", "해상", "물류센터"] {
         if s.ends_with(suffix) && s.chars().count() >= 3 {
             return true;
         }
@@ -501,52 +482,223 @@ pub(crate) fn is_kakao_business_or_alimtalk_channel(
 }
 
 /// 비즈니스/알림톡 채널 메시지를 `Mobile/kakao/{채널명}.md` 및 `lifelog_messages(source='kakaotalk')`에 자동 기록합니다.
-fn auto_record_kakao_channel_message(
-    conn: &Connection,
-    channel_name: &str,
-    message: &str,
-    sent_date: &str,
-    sent_time: &str,
-) {
+fn auto_record_kakao_channel_message(conn: &Connection, channel_name: &str, message: &str, sent_date: &str, sent_time: &str) {
     let clean_room = channel_name.trim();
     if clean_room.is_empty() {
         return;
     }
     let clean_body = message.trim().replace("\r\n", "\n").replace('\n', "<br/>");
-    let dedup_raw = format!(
-        "kakao|{}|{}|{}|{}|{}",
-        clean_room, sent_date, sent_time, clean_room, clean_body
-    );
+    let dedup_raw = format!("kakao|{}|{}|{}|{}|{}", clean_room, sent_date, sent_time, clean_room, clean_body);
     let dedup_key = blake3::hash(dedup_raw.as_bytes()).to_hex().to_string();
-
     let affected = conn
         .execute(
-            "INSERT OR IGNORE INTO lifelog_messages
-             (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key)
-             VALUES ('kakaotalk', ?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO lifelog_messages (source, room_or_sender, sender, message, sent_date, sent_time, dedup_key) VALUES ('kakaotalk', ?1, ?2, ?3, ?4, ?5, ?6)",
             params![clean_room, clean_room, clean_body, sent_date, sent_time, dedup_key],
         )
         .unwrap_or(0);
-
     if affected > 0 {
         let md_line = format!("- **[{}] {}**: {}", sent_time, clean_room, clean_body);
         append_line_to_mobile_md(
-            conn,
-            "kakao",
-            clean_room,
-            &format!("[카카오톡 채널/알림톡] {}", clean_room),
-            "[\"카카오톡\", \"채널\", \"알림톡\", \"비즈니스\", \"KakaoTalk\"]",
-            sent_date,
-            &md_line,
+            conn, "kakao", clean_room, &format!("[카카오톡 채널/알림톡] {}", clean_room),
+            "[\"카카오톡\", \"채널\", \"알림톡\", \"비즈니스\", \"KakaoTalk\"]", sent_date, &md_line,
         );
     }
 }
 
+fn normalize_kakao_msg_for_match(raw: &str) -> String {
+    raw.replace("<br/>", " ").replace("\r\n", " ").replace('\n', " ").split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// 모든 단톡방(`lifelog_messages WHERE source='kakaotalk'` 및 `mobile/kakao/*.md`)에 등장하는 인물을 전수 조사하여
+/// 연락처 내부 대상 `.md` (`mobile/contacts/people/{인물}.md`) 안에 `속해있는 카톡 그룹:` 항목을 신설 및 자동 갱신합니다.
+pub(crate) fn sync_all_kakao_group_memberships_to_contacts(conn: &Connection) -> HashMap<String, Vec<String>> {
+    let (user_full_name, _, _) = resolve_user_identity();
+    let is_self_name = |name: &str| -> bool {
+        let t = name.trim();
+        t.is_empty() || t == user_full_name || matches!(t, "정서현" | "이서현" | "회원님" | "나") || t.eq_ignore_ascii_case("iseohyun")
+    };
+
+    let mut room_participants: HashMap<String, Vec<String>> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT room_or_sender, sender FROM lifelog_messages WHERE source = 'kakaotalk'") {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+            for (room, sender) in rows.flatten() {
+                let (r_clean, s_clean) = (room.trim().to_string(), sender.trim().to_string());
+                if r_clean.is_empty() || is_kakao_business_or_alimtalk_channel(conn, &r_clean, "") {
+                    continue;
+                }
+                let entry = room_participants.entry(r_clean).or_default();
+                if !is_self_name(&s_clean) && !entry.iter().any(|x| x == &s_clean) {
+                    entry.push(s_clean);
+                }
+            }
+        }
+    }
+
+    let kakao_dir = get_archive_mobile_dir(conn, "kakao");
+    if let Ok(entries) = fs::read_dir(&kakao_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() || p.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let room_stem = p.file_stem().map(|s| s.to_string_lossy().trim().to_string()).unwrap_or_default();
+            if room_stem.is_empty() || room_stem.starts_with("KakaoTalk_Chats_") || is_kakao_business_or_alimtalk_channel(conn, &room_stem, "") {
+                continue;
+            }
+            let entry_vec = room_participants.entry(room_stem.clone()).or_default();
+            if room_stem.contains(',') {
+                let before_oe = room_stem.split(" 외 ").next().unwrap_or(&room_stem);
+                for part in before_oe.split(',') {
+                    let p_name = part.trim().to_string();
+                    if !is_self_name(&p_name) && !entry_vec.iter().any(|x| x == &p_name) {
+                        entry_vec.push(p_name);
+                    }
+                }
+            }
+            if let Ok(raw) = fs::read_to_string(&p) {
+                let (_, body, fm) = parse_markdown_yaml(&raw);
+                if let Some(part_raw) = fm.get("participants") {
+                    if let Ok(parsed_vec) = serde_json::from_str::<Vec<String>>(part_raw) {
+                        for p_name in parsed_vec {
+                            let clean_p = p_name.trim().to_string();
+                            if !is_self_name(&clean_p) && !entry_vec.iter().any(|x| x == &clean_p) {
+                                entry_vec.push(clean_p);
+                            }
+                        }
+                    }
+                }
+                let speaker_re = cached_regex!(r"^- \*\*\[[^\]]+\]\s*([^\*\r\n]+)\*\*:");
+                for line in body.lines() {
+                    if let Some(cap) = speaker_re.captures(line.trim()) {
+                        let clean_p = cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+                        if !is_self_name(&clean_p) && !entry_vec.iter().any(|x| x == &clean_p) {
+                            entry_vec.push(clean_p);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut person_groups: HashMap<String, Vec<String>> = HashMap::new();
+    for (room_name, participants) in room_participants {
+        let is_group_room = participants.len() >= 2
+            || room_name.contains(',')
+            || room_name.contains("외 ")
+            || (participants.len() == 1 && participants[0].trim() != room_name.trim());
+        if !is_group_room {
+            continue;
+        }
+        for person in participants {
+            let p_clean = person.trim().to_string();
+            if !is_self_name(&p_clean) {
+                let g_list = person_groups.entry(p_clean).or_default();
+                if !g_list.iter().any(|x| x == &room_name) {
+                    g_list.push(room_name.clone());
+                }
+            }
+        }
+    }
+
+    let now_str = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    for (person_name, groups) in &mut person_groups {
+        groups.sort();
+        let md_path = get_contact_person_md_path(conn, person_name);
+        let mut existing_body = String::new();
+        let mut existing_phones: Vec<String> = Vec::new();
+        if md_path.exists() {
+            if let Ok(raw) = fs::read_to_string(&md_path) {
+                let (_, body, fm) = parse_markdown_yaml(&raw);
+                existing_body = body;
+                if let Some(p_str) = fm.get("phones") {
+                    existing_phones.extend(p_str.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()));
+                }
+            }
+        }
+        let (merged_body, changed) = merge_kakao_groups_into_profile_body(&existing_body, groups);
+        if changed || !md_path.exists() {
+            let _ = ensure_or_write_contact_person_md(conn, person_name, &existing_phones, Some(&merged_body));
+            if !is_effectively_empty_contact_profile(&merged_body) {
+                let _ = conn.execute(
+                    "INSERT INTO contact_ai_profiles (contact_name, profile_text, updated_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(contact_name) DO UPDATE SET profile_text = excluded.profile_text, updated_at = excluded.updated_at",
+                    params![person_name, merged_body.trim(), now_str],
+                );
+            }
+        }
+    }
+    person_groups
+}
+
+/// 특정 인물(또는 방)의 알림 메시지가 이미 업로드된 개인톡 또는 단톡방(`lifelog_messages WHERE source='kakaotalk'`)에
+/// 포함되어 있는지(예: `모임2`에서 `이소영`이 보낸 메시지와 일치하는지) 확인합니다.
+pub(crate) fn is_kakao_notification_satisfied_by_uploaded_chats(
+    conn: &Connection,
+    sender_or_room: &str,
+    msg_preview: &str,
+    noti_date: &str,
+    noti_time: &str,
+) -> bool {
+    let target = sender_or_room.trim();
+    if target.is_empty() {
+        return false;
+    }
+    let norm_preview = normalize_kakao_msg_for_match(msg_preview);
+    let preview_prefix: String = norm_preview.chars().take(28).collect();
+    let is_media_placeholder = matches!(
+        norm_preview.as_str(),
+        "사진" | "동영상" | "이모티콘" | "파일" | "음성메시지" | "톡게시판"
+    ) || norm_preview.starts_with("사진 ")
+        || norm_preview.starts_with("동영상 ");
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT message, sent_date, sent_time
+         FROM lifelog_messages
+         WHERE source = 'kakaotalk'
+           AND (sender = ?1 OR room_or_sender = ?1)
+         ORDER BY sent_date DESC, id DESC
+         LIMIT 250",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![target], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) {
+            for (db_msg, db_date, db_time) in rows.flatten() {
+                if !noti_date.is_empty() && db_date < noti_date.to_string() {
+                    // 알림 발생 날짜보다 이전 날짜의 메시지는 스킵
+                    continue;
+                }
+                let norm_db = normalize_kakao_msg_for_match(&db_msg);
+                if !preview_prefix.is_empty()
+                    && !norm_db.is_empty()
+                    && (norm_db == norm_preview
+                        || norm_db.starts_with(&preview_prefix)
+                        || norm_preview.starts_with(&norm_db)
+                        || (preview_prefix.chars().count() >= 4 && norm_db.contains(&preview_prefix)))
+                {
+                    return true;
+                }
+                if is_media_placeholder && db_date == noti_date && db_time == noti_time {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// `lifelog_messages (source='notification', room_or_sender='com.kakao.talk')` 알림을 전수 검사하여:
 /// 1) 내보내기 시스템 알림(`KakaoTalk_Chats_... 저장되었습니다`) → 즉시 삭제
-/// 2) 비즈니스/광고/알림톡 채널 → `Mobile/kakao/{채널명}.md` 자동 기록 후 알림 삭제
-/// 3) 일반 개인톡/단톡방 → 결재창 `kakao_update_requests` 보고서 테이블에 누적 등록 후 원본 카톡 알림 즉시 삭제
+/// 2) 일방통행 정보채널(비즈니스/광고/알림톡) → `Mobile/kakao/{채널명}.md`에 알림으로 대체 기록 후 즉시 삭제
+/// 3) 개인/단톡방 대화 알림 → 업로드된 모든 카톡 대화방(개인톡 + 단톡방)에서 해당 발신자의 메시지 일치 여부를 검사하여:
+///    - 일치하는 메시지가 포함되어 있으면 알림과 업데이트 요청을 모두 삭제
+///    - 포함되어 있지 않으면 `kakao_update_requests`에 유지하여 개인톡 또는 `속해있는 카톡 그룹` 중 하나를 업데이트하도록 안내
 pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usize {
+    let _ = sync_all_kakao_group_memberships_to_contacts(conn);
+
     let mut rows: Vec<(i64, String, String, String, String)> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
         "SELECT id, sender, message, sent_date, sent_time
@@ -587,7 +739,7 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
             continue;
         }
 
-        // 2) 비즈니스 / 알림톡 / 광고 채널: 카톡 대화방 문서에 자동 기록 후 알림 삭제
+        // 2) 일방통행 정보채널(비즈니스 / 알림톡 / 광고 채널): 카톡 대화방 문서에 알림으로 대체 기록 후 삭제
         if is_kakao_business_or_alimtalk_channel(conn, s, m) {
             auto_record_kakao_channel_message(conn, s, m, &sent_date, &sent_time);
             let _ = conn.execute(
@@ -599,17 +751,14 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
             continue;
         }
 
-        // 3) 개인톡/단톡방: 이미 해당 시각 이후에 카톡 대화 내보내기가 동기화되었는지 확인
+        // 3) 개인톡/단톡방: 업로드된 개인톡 또는 단톡방(모임1, 모임2 등)에 해당 발신자의 알림 메시지가 이미 포함되어 있는지 확인
         let noti_ts = parse_korean_date_time_to_epoch_ms(&sent_date, &sent_time);
-        let synced_ts: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(last_message_ts), 0) FROM kakao_room_sync_state WHERE room_name = ?1",
+        if is_kakao_notification_satisfied_by_uploaded_chats(conn, s, m, &sent_date, &sent_time) {
+            let _ = conn.execute(
+                "DELETE FROM kakao_update_requests WHERE room_name = ?1 OR last_sender = ?1",
                 params![s],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-
-        if synced_ts <= 0 || noti_ts > synced_ts + 60_000 {
+            );
+        } else {
             let preview: String = m.replace('\n', " ").chars().take(80).collect();
             let _ = conn.execute(
                 "INSERT INTO kakao_update_requests
@@ -632,10 +781,10 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
         consumed_count += 1;
     }
 
-    // 기존 `kakao_update_requests` 중 이미 대화 내보내기가 완료되었거나 비즈니스 채널로 전환된 항목 정리
-    let mut existing_reqs: Vec<(String, String, String, String, i64)> = Vec::new();
+    // 기존 `kakao_update_requests` 중 신규 업로드된 개인톡/단톡방에 해당 알림 메시지가 포함되어 일치하거나 비즈니스 채널로 전환된 항목 삭제
+    let mut existing_reqs: Vec<(String, String, String, String, String, i64)> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT room_name, last_message_preview, last_noti_date, last_noti_time, last_noti_ts FROM kakao_update_requests",
+        "SELECT room_name, last_sender, last_message_preview, last_noti_date, last_noti_time, last_noti_ts FROM kakao_update_requests",
     ) {
         if let Ok(mapped) = stmt.query_map([], |r| {
             Ok((
@@ -643,7 +792,8 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         }) {
             for item in mapped.flatten() {
@@ -652,7 +802,7 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
         }
     }
 
-    for (r_name, preview, n_date, n_time, n_ts) in existing_reqs {
+    for (r_name, last_sender, preview, n_date, n_time, _n_ts) in existing_reqs {
         if is_kakao_business_or_alimtalk_channel(conn, &r_name, &preview) {
             auto_record_kakao_channel_message(conn, &r_name, &preview, &n_date, &n_time);
             let _ = conn.execute(
@@ -661,17 +811,23 @@ pub(crate) fn process_and_consume_kakao_notifications(conn: &Connection) -> usiz
             );
             continue;
         }
-        let synced_ts: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(last_message_ts), 0) FROM kakao_room_sync_state WHERE room_name = ?1",
-                params![r_name],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        if synced_ts > 0 && n_ts > 0 && synced_ts >= n_ts {
+        if is_kakao_notification_satisfied_by_uploaded_chats(conn, &r_name, &preview, &n_date, &n_time)
+            || (!last_sender.trim().is_empty()
+                && is_kakao_notification_satisfied_by_uploaded_chats(
+                    conn,
+                    &last_sender,
+                    &preview,
+                    &n_date,
+                    &n_time,
+                ))
+        {
             let _ = conn.execute(
                 "DELETE FROM kakao_update_requests WHERE room_name = ?1",
                 params![r_name],
+            );
+            let _ = conn.execute(
+                "DELETE FROM lifelog_messages WHERE source = 'notification' AND room_or_sender = 'com.kakao.talk' AND (sender = ?1 OR sender = ?2)",
+                params![r_name, last_sender],
             );
         }
     }
@@ -692,6 +848,20 @@ fn query_kakao_update_requests_from_conn(
 ) -> Result<Vec<KakaoUpdateRequestItem>, String> {
     let _ = process_and_consume_kakao_notifications(conn);
     let kakao_dir = get_archive_mobile_dir(conn, "kakao");
+    let person_groups_map = sync_all_kakao_group_memberships_to_contacts(conn);
+
+    let mut room_sync_map: HashMap<String, i64> = HashMap::new();
+    if let Ok(mut s_stmt) =
+        conn.prepare("SELECT room_name, COALESCE(last_message_ts, 0) FROM kakao_room_sync_state")
+    {
+        if let Ok(s_rows) = s_stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        }) {
+            for (rn, ts) in s_rows.flatten() {
+                room_sync_map.insert(rn, ts);
+            }
+        }
+    }
 
     let mut items: Vec<KakaoUpdateRequestItem> = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
@@ -724,6 +894,51 @@ fn query_kakao_update_requests_from_conn(
             } else {
                 String::new()
             };
+
+            // 연락처 내부 대상 .md의 `속해있는 카톡 그룹:` 및 DB 단톡방 매핑에서 소속 단톡방 목록 조회
+            let mut kakao_groups: Vec<String> = person_groups_map
+                .get(room_name.trim())
+                .cloned()
+                .unwrap_or_default();
+            let contact_md_path = get_contact_person_md_path(conn, room_name.trim());
+            if contact_md_path.exists() {
+                if let Ok(raw_c) = fs::read_to_string(&contact_md_path) {
+                    let (_, c_body, _) = parse_markdown_yaml(&raw_c);
+                    for g in extract_kakao_groups_from_profile(&c_body) {
+                        if !kakao_groups.iter().any(|x| x == &g) {
+                            kakao_groups.push(g);
+                        }
+                    }
+                }
+            }
+
+            let candidate_rooms_hint = if kakao_groups.is_empty() {
+                format!("개인톡 [{}] 또는 신규 단톡방 업로드 필요", room_name)
+            } else {
+                let mut unchecked_rooms: Vec<String> = Vec::new();
+                if last_sync_ts < last_noti_ts || last_noti_ts <= 0 {
+                    unchecked_rooms.push(format!("개인톡({})", room_name));
+                }
+                for g in &kakao_groups {
+                    let g_sync_ts = room_sync_map.get(g).copied().unwrap_or(0);
+                    if g_sync_ts < last_noti_ts || last_noti_ts <= 0 {
+                        unchecked_rooms.push(format!("단톡방({})", g));
+                    }
+                }
+                if unchecked_rooms.is_empty() {
+                    format!(
+                        "개인톡 [{}] 또는 속해있는 단톡방 [{}] 중 하나를 업데이트해 주세요",
+                        room_name,
+                        kakao_groups.join(" · ")
+                    )
+                } else {
+                    format!(
+                        "업데이트 필요 후보: {}",
+                        unchecked_rooms.join(" 또는 ")
+                    )
+                }
+            };
+
             Ok(KakaoUpdateRequestItem {
                 room_name,
                 pending_noti_count: pending_noti_count.max(1) as usize,
@@ -735,6 +950,8 @@ fn query_kakao_update_requests_from_conn(
                 last_synced_date,
                 md_path,
                 updated_at,
+                kakao_groups,
+                candidate_rooms_hint,
             })
         }) {
             for item in mapped.flatten() {

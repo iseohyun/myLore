@@ -34,6 +34,17 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
     let rec_audio_dir = rec_dir.join("audio");
     let _ = fs::create_dir_all(&rec_audio_dir);
 
+    let mut meta_stage_map: HashMap<String, u8> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT safe_stem, stage FROM call_transcript_meta") {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.clamp(1, 4) as u8))
+        }) {
+            for (k, st) in rows.flatten() {
+                meta_stage_map.insert(k, st);
+            }
+        }
+    }
+
     if let Ok(entries) = fs::read_dir(&audio_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
@@ -77,6 +88,7 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                 parse_call_audio_filename_meta(&file_stem, &contacts_map);
             let safe_stem = sanitize_filename_stem(&file_stem);
             let md_path = calls_dir.join(format!("{}.md", safe_stem));
+            let existing_meta_stage = meta_stage_map.get(&safe_stem).copied().unwrap_or(0);
 
             let mut is_completed = false;
             let mut summary_preview = String::new();
@@ -84,15 +96,24 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                 if let Ok(md_raw) = fs::read_to_string(&md_path) {
                     let (fm, body) = parse_frontmatter_and_body_simple(&md_raw);
                     let status_val = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
-                    if status_val == "completed" || status_val == "unverified" || status_val == "verified" {
+                    if status_val == "completed"
+                        || status_val == "unverified"
+                        || status_val == "verified"
+                        || existing_meta_stage == 4
+                    {
                         is_completed = true;
                         let (_, script_only) = split_summary_and_transcript(&body);
                         let dup_header_count = body.matches("> **통화 상대방**:").count();
-                        // 기존 스크립트 본문(`## 📜 스크립트` 하위)에 `[00:00:00]` 타임스탬프가 없거나 `이름_전화번호_날짜`가 남아있거나 중복 헤더가 있으면 자동 정제 업그레이드
-                        let needs_upgrade = (file_stem != contact_display && script_only.contains(&file_stem))
-                            || fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str())
-                            || !script_only.contains("[00:")
-                            || dup_header_count > 1;
+                        // 이미 결재 완료(stage=4 / verified) 또는 반려 대기(stage=3 / needs_revision)된 파일은 절대 백필 과정에서 덮어쓰거나 stage=2로 되돌리지 않음
+                        let is_already_processed = status_val == "verified"
+                            || status_val == "needs_revision"
+                            || existing_meta_stage >= 3
+                            || script_only.contains("프롬프트 A 스크립트")
+                            || script_only.contains("(사용자 선택 채택)");
+                        let needs_upgrade = !is_already_processed
+                            && ((file_stem != contact_display && script_only.contains(&file_stem))
+                                || fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str())
+                                || dup_header_count > 1);
                         if needs_upgrade {
                             write_call_recording_markdown(
                                 conn,
@@ -115,7 +136,10 @@ pub(crate) fn backfill_mobile_md_into_lifelog_db(conn: &Connection) {
                                 break;
                             }
                         }
-                    } else if fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str()) {
+                    } else if existing_meta_stage < 3
+                        && status_val != "needs_revision"
+                        && fm.get("contact_name").map(|s| s.as_str()) != Some(contact_display.as_str())
+                    {
                         write_call_recording_markdown(
                             conn,
                             &file_name,

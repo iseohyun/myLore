@@ -17,7 +17,7 @@ pub(crate) fn handle_call_recording_job(
         mut contact_label,
         transcript_text,
         audio_bytes,
-        now_ms,
+        now_ms: _,
     } = job
     else {
         return;

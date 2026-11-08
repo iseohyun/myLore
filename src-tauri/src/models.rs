@@ -398,6 +398,18 @@ pub struct CallAiTranscriptionStats {
     pub completed_calls: usize,
     pub remaining_calls: usize,
     #[serde(default)]
+    pub total_call_records: usize,
+    #[serde(default)]
+    pub downloaded_calls: usize,
+    #[serde(default)]
+    pub asr_converted_calls: usize,
+    #[serde(default)]
+    pub ai_postprocessed_calls: usize,
+    #[serde(default)]
+    pub pending_approval_calls: usize,
+    #[serde(default)]
+    pub verified_calls: usize,
+    #[serde(default)]
     pub total_audio_bytes: u64,
     #[serde(default)]
     pub completed_audio_bytes: u64,
@@ -596,6 +608,184 @@ pub struct KakaoUpdateRequestItem {
     pub last_synced_date: String,
     pub md_path: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub kakao_groups: Vec<String>,
+    #[serde(default)]
+    pub candidate_rooms_hint: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPersonDocInfo {
+    pub contact_name: String,
+    pub phones: Vec<String>,
+    pub md_path: String,
+    pub doc_uuid: String,
+    pub profile_text: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPromptSlotInfo {
+    pub slot: String,
+    pub version: i64,
+    pub prompt_title: String,
+    pub prompt_text: String,
+    pub win_count: i64,
+    pub loss_count: i64,
+    pub consecutive_losses: i64,
+    pub last_evolution_reason: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPromptHistoryItem {
+    pub id: i64,
+    pub replaced_slot: String,
+    pub old_version: i64,
+    pub new_version: i64,
+    pub winner_slot: String,
+    pub trigger_type: String,
+    pub evolution_summary: String,
+    pub old_prompt_text: String,
+    pub new_prompt_text: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactProfileApprovalItem {
+    pub id: i64,
+    pub contact_name: String,
+    pub md_path: String,
+    pub doc_uuid: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub event_summary: String,
+    pub original_profile_text: String,
+    pub prompt_a_version: i64,
+    pub prompt_b_version: i64,
+    pub candidate_a_text: String,
+    pub candidate_b_text: String,
+    pub llm_provider: String,
+    pub status: String,
+    pub chosen_slot: String,
+    pub user_edited: bool,
+    pub final_profile_text: String,
+    pub evolution_note: String,
+    pub created_at: String,
+    pub resolved_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactPromptTournamentStatus {
+    pub slot_a: ContactPromptSlotInfo,
+    pub slot_b: ContactPromptSlotInfo,
+    pub recent_history: Vec<ContactPromptHistoryItem>,
+    pub pending_approval_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceprintSampleMeta {
+    pub phrase_text: String,
+    pub source_label: String,
+    pub duration_sec: f64,
+    pub sim_a: f64,
+    pub sim_b: f64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceprintProfileItem {
+    pub profile_id: String,
+    pub target_type: String,
+    pub display_name: String,
+    pub source_mode: String,
+    pub model_a_name: String,
+    pub model_b_name: String,
+    pub dim_a: usize,
+    pub dim_b: usize,
+    pub norm_a: f64,
+    pub norm_b: f64,
+    pub embedding_a: Vec<f64>,
+    pub embedding_b: Vec<f64>,
+    pub sample_count: usize,
+    pub consistency_a: f64,
+    pub consistency_b: f64,
+    pub cross_agreement_score: f64,
+    pub samples_meta: Vec<VoiceprintSampleMeta>,
+    pub raw_json_text: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAudioCandidateItem {
+    pub file_name: String,
+    pub full_path: String,
+    pub category: String,
+    pub contact_or_source: String,
+    pub rec_date: String,
+    pub rec_time: String,
+    pub file_bytes: u64,
+    pub transcript_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceprintDashboardPayload {
+    pub engine_ready: bool,
+    pub python_path: String,
+    pub ffmpeg_ready: bool,
+    pub model_a_path: String,
+    pub model_b_path: String,
+    pub model_a_ready: bool,
+    pub model_b_ready: bool,
+    pub sync_enroll_url: String,
+    pub server_profile: VoiceprintProfileItem,
+    pub sync_profile: VoiceprintProfileItem,
+    pub combined_profile: VoiceprintProfileItem,
+    pub server_vs_sync_sim_a: f64,
+    pub server_vs_sync_sim_b: f64,
+    pub server_vs_sync_cross_score: f64,
+    pub sync_audio_candidates: Vec<SyncAudioCandidateItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceprintSegmentTestItem {
+    pub index: usize,
+    pub start_sec: f64,
+    pub end_sec: f64,
+    pub sim_a_server: f64,
+    pub sim_b_server: f64,
+    pub sim_a_sync: f64,
+    pub sim_b_sync: f64,
+    pub combined_score: f64,
+    pub cross_agreed: bool,
+    pub predicted_speaker: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceprintTestResult {
+    pub target_label: String,
+    pub duration_sec: f64,
+    pub whole_sim_a_server: f64,
+    pub whole_sim_b_server: f64,
+    pub whole_sim_a_sync: f64,
+    pub whole_sim_b_sync: f64,
+    pub cross_consensus_score: f64,
+    pub cross_verified_is_me: bool,
+    pub verdict_summary: String,
+    pub segments: Vec<VoiceprintSegmentTestItem>,
+}
+
+
 
 

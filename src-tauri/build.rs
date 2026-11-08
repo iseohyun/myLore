@@ -3,7 +3,14 @@ fn main() {
     println!("cargo:rerun-if-changed=../dist/index.html");
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.png");
-    tauri_build::build();
+    if let Err(err) = tauri_build::try_build(tauri_build::Attributes::new()) {
+        let msg = format!("{:#}", err);
+        if msg.contains("os error 32") {
+            println!("cargo:warning=tauri_build skipped locked file while app is running: {}", msg);
+        } else {
+            panic!("tauri_build failed: {}", msg);
+        }
+    }
 
     // `cargo test --lib` 테스트 실행 파일에도 Windows 리소스(Common Controls v6 매니페스트 포함)를 링크할 수 있도록
     // tauri-build가 만든 `libresource.a`의 위치를 라이브러리 검색 경로에 추가합니다.

@@ -5,6 +5,7 @@
 import React from 'react';
 import {
   BaseFolderRole,
+  DashboardTabType,
   DocumentPayload,
   MyLoreAppSettings,
   PaletteMode,
@@ -36,9 +37,9 @@ export interface MenuBarProps {
   handleSaveCurrentDoc: () => void;
   autoSaveEnabled: boolean;
   handleUpdateAppSettings: (patch: Partial<MyLoreAppSettings>) => Promise<void>;
-  openDashboardTab: (
-    dashType: 'lifelog' | 'finance' | 'diary' | 'settings' | 'logs'
-  ) => void;
+  openDashboardTab: (dashType: DashboardTabType) => void;
+  activityBarOpen?: boolean;
+  setActivityBarOpen?: React.Dispatch<React.SetStateAction<boolean>>;
   setShortcutsModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   handleEditorUndo: () => void;
   handleEditorRedo: () => void;
@@ -51,7 +52,10 @@ export interface MenuBarProps {
   setRightSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setRightTab: React.Dispatch<React.SetStateAction<RightSidebarTab>>;
   setGlobalReplaceMode: React.Dispatch<React.SetStateAction<boolean>>;
+  openDocFindPanel?: (mode?: 'find' | 'replace') => void;
+  openGlobalSearchPanel?: () => void;
   handleSelectAll: () => void;
+  handleIndentLine?: (mode: 'indent' | 'outdent', indentSpaces?: number) => void;
   handleMoveLine: (dir: 'up' | 'down') => void;
   handleAddCursorVertical: (dir: 'up' | 'down') => void;
   setPaletteMode: React.Dispatch<React.SetStateAction<PaletteMode>>;
@@ -62,6 +66,12 @@ export interface MenuBarProps {
   handleToggleF11Viewer: () => void;
   handleSelectDocViewMode: (nextMode: 'editor' | 'split' | 'preview') => void;
   handleToggleDetachedPreview: () => void;
+  handleCycleViewerMode?: () => void;
+  isHorizontalSplitOpen?: boolean;
+  handleToggleHorizontalSplit?: () => void;
+  focusEditorPane?: (pane: 'left' | 'right', targetPath?: string) => void;
+  handleMoveDocToRightEditor?: () => void;
+  handleMoveDocToLeftEditor?: () => void;
   setIsYamlVisible: React.Dispatch<React.SetStateAction<boolean>>;
   handleToggleFullscreen: () => void;
   handleListSelectPrevOrNext: (dir: 1 | -1) => void;
@@ -114,6 +124,8 @@ export function MenuBar({
   autoSaveEnabled,
   handleUpdateAppSettings,
   openDashboardTab,
+  activityBarOpen,
+  setActivityBarOpen,
   setShortcutsModalOpen,
   handleEditorUndo,
   handleEditorRedo,
@@ -124,7 +136,10 @@ export function MenuBar({
   setRightSidebarOpen,
   setRightTab,
   setGlobalReplaceMode,
+  openDocFindPanel,
+  openGlobalSearchPanel,
   handleSelectAll,
+  handleIndentLine,
   handleMoveLine,
   handleAddCursorVertical,
   setPaletteMode,
@@ -135,6 +150,12 @@ export function MenuBar({
   handleToggleF11Viewer,
   handleSelectDocViewMode,
   handleToggleDetachedPreview,
+  handleCycleViewerMode,
+  isHorizontalSplitOpen,
+  handleToggleHorizontalSplit,
+  focusEditorPane,
+  handleMoveDocToRightEditor,
+  handleMoveDocToLeftEditor,
   setIsYamlVisible,
   handleToggleFullscreen,
   handleListSelectPrevOrNext,
@@ -230,7 +251,10 @@ export function MenuBar({
     {
       label: '도움말 (단축키 설정)',
       shortcut: getShortcutLabel('open_shortcuts'),
-      action: () => setShortcutsModalOpen(true),
+      action: () => {
+        setRightSidebarOpen(true);
+        openDashboardTab('help');
+      },
     },
   ];
 
@@ -263,42 +287,17 @@ export function MenuBar({
     },
     { type: 'divider' },
     {
-      label: '찾기',
-      shortcut: getShortcutLabel('find_in_doc'),
-      action: () => setFindBarMode('find'),
+      label: '현재 줄 들여쓰기 (띄어쓰기 추가)',
+      shortcut: getShortcutLabel('indent_line') || 'Tab',
+      action: () =>
+        handleIndentLine?.('indent', appSettings.tabIndentSpaces || 2),
     },
     {
-      label: '바꾸기',
-      shortcut: getShortcutLabel('replace_in_doc'),
-      action: () => setFindBarMode('replace'),
+      label: '현재 줄 내어쓰기 (띄어쓰기 삭제)',
+      shortcut: getShortcutLabel('outdent_line') || 'Shift+Tab',
+      action: () =>
+        handleIndentLine?.('outdent', appSettings.tabIndentSpaces || 2),
     },
-    {
-      label: '파일에서 찾기',
-      shortcut: getShortcutLabel('find_in_files'),
-      action: () => {
-        setRightSidebarOpen(true);
-        setRightTab('search');
-        setGlobalReplaceMode(false);
-      },
-    },
-    {
-      label: '파일에서 바꾸기',
-      shortcut: getShortcutLabel('replace_in_files'),
-      action: () => {
-        setRightSidebarOpen(true);
-        setRightTab('search');
-        setGlobalReplaceMode(true);
-      },
-    },
-  ];
-
-  const selectionEntries: MenuEntry[] = [
-    {
-      label: '모두 선택',
-      shortcut: getShortcutLabel('select_all'),
-      action: handleSelectAll,
-    },
-    { type: 'divider' },
     {
       label: '줄 위로 이동',
       shortcut: getShortcutLabel('move_line_up'),
@@ -308,6 +307,42 @@ export function MenuBar({
       label: '줄 아래로 이동',
       shortcut: getShortcutLabel('move_line_down'),
       action: () => handleMoveLine('down'),
+    },
+    { type: 'divider' },
+    {
+      label: '찾기',
+      shortcut: getShortcutLabel('find_in_doc'),
+      action: () =>
+        openDocFindPanel ? openDocFindPanel('find') : setFindBarMode('find'),
+    },
+    {
+      label: '바꾸기',
+      shortcut: getShortcutLabel('replace_in_doc'),
+      action: () =>
+        openDocFindPanel
+          ? openDocFindPanel('replace')
+          : setFindBarMode('replace'),
+    },
+    {
+      label: '모든 파일에서 찾기',
+      shortcut: getShortcutLabel('find_in_files'),
+      action: () => {
+        if (openGlobalSearchPanel) {
+          openGlobalSearchPanel();
+        } else {
+          setRightSidebarOpen(true);
+          setRightTab('search');
+          setGlobalReplaceMode(true);
+        }
+      },
+    },
+  ];
+
+  const selectionEntries: MenuEntry[] = [
+    {
+      label: '모두 선택',
+      shortcut: getShortcutLabel('select_all'),
+      action: handleSelectAll,
     },
     { type: 'divider' },
     {
@@ -343,6 +378,13 @@ export function MenuBar({
     },
     { type: 'divider' },
     {
+      label: isHorizontalSplitOpen
+        ? '🔄 뷰어 토글 (현재 포커스 에디터 ↔ 뷰어)'
+        : '🔄 뷰어 토글 (에디터 → 뷰어 → 스플릿)',
+      shortcut: getShortcutLabel('cycle_view_mode') || 'Ctrl+E',
+      action: () => handleCycleViewerMode?.(),
+    },
+    {
       label: `${viewMode === 'editor' && !detachedPreviewOpen ? '✓ ' : ''}에디터 전용 모드`,
       shortcut: getShortcutLabel('view_editor'),
       action: () => handleSelectDocViewMode('editor'),
@@ -362,11 +404,21 @@ export function MenuBar({
       shortcut: getShortcutLabel('view_detached_preview'),
       action: handleToggleDetachedPreview,
     },
+    {
+      label: `${isHorizontalSplitOpen ? '✓ ' : ''}◫ 에디터 수평 분할`,
+      shortcut: getShortcutLabel('split_editor_horizontal') || 'Ctrl+\\',
+      action: () => handleToggleHorizontalSplit?.(),
+    },
     { type: 'divider' },
     {
       label: 'YAML 메타데이터 표시/숨기기',
       shortcut: getShortcutLabel('toggle_yaml'),
       action: () => setIsYamlVisible((v) => !v),
+    },
+    {
+      label: `${activityBarOpen !== false ? '✓ ' : ''}◧ 액티비티 바 열기/닫기`,
+      shortcut: 'Activity Bar',
+      action: () => setActivityBarOpen?.((v) => !v),
     },
     {
       label: '우측 사이드바 접기/펼치기',
@@ -429,6 +481,28 @@ export function MenuBar({
       label: '이전 탭으로 이동',
       shortcut: getShortcutLabel('prev_file'),
       action: () => handleSwitchTabCycle(-1),
+    },
+    {
+      label: '⬅️ 분할 화면 왼쪽 편집기로 이동',
+      shortcut: getShortcutLabel('focus_left_editor') || 'Alt+ArrowLeft',
+      action: () => focusEditorPane?.('left'),
+    },
+    {
+      label: '➡️ 분할 화면 오른쪽 편집기로 이동',
+      shortcut: getShortcutLabel('focus_right_editor') || 'Alt+ArrowRight',
+      action: () => focusEditorPane?.('right'),
+    },
+    {
+      label: '➡️ 현재 문서 오른쪽 에디터로 이동',
+      shortcut:
+        getShortcutLabel('move_doc_right_editor') || 'Ctrl+Alt+ArrowRight',
+      action: () => handleMoveDocToRightEditor?.(),
+    },
+    {
+      label: '⬅️ 현재 문서 왼쪽 에디터로 이동',
+      shortcut:
+        getShortcutLabel('move_doc_left_editor') || 'Ctrl+Alt+ArrowLeft',
+      action: () => handleMoveDocToLeftEditor?.(),
     },
     {
       label: '다음 편집점으로 이동',
@@ -589,6 +663,14 @@ export function MenuBar({
       label: '⚙️ 설정 대쉬보드 (.myLore/setting.json)',
       shortcut: getShortcutLabel('open_settings'),
       action: () => openDashboardTab('settings'),
+    },
+    {
+      label: '❓ 도움말 대쉬보드 (단축키 설정)',
+      shortcut: getShortcutLabel('open_shortcuts') || 'F1',
+      action: () => {
+        setRightSidebarOpen(true);
+        openDashboardTab('help');
+      },
     },
   ];
 

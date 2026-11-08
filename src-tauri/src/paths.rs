@@ -50,6 +50,7 @@ pub(crate) fn default_user_root() -> PathBuf {
 }
 
 /// 데이터(아카이브) 베이스 폴더가 DB에 없을 때 사용할 기본 경로.
+#[allow(dead_code)]
 pub(crate) fn default_data_base_dir() -> PathBuf {
     default_user_root().join("Data")
 }

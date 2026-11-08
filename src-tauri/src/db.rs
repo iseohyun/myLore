@@ -213,6 +213,67 @@ fn create_schema(conn: &Connection) -> Result<(), String> {
             channel_name TEXT PRIMARY KEY,
             created_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS contact_prompt_slots (
+            slot TEXT PRIMARY KEY,
+            version INTEGER NOT NULL DEFAULT 1,
+            prompt_title TEXT NOT NULL DEFAULT '',
+            prompt_text TEXT NOT NULL DEFAULT '',
+            win_count INTEGER NOT NULL DEFAULT 0,
+            loss_count INTEGER NOT NULL DEFAULT 0,
+            consecutive_losses INTEGER NOT NULL DEFAULT 0,
+            last_evolution_reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS contact_prompt_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            replaced_slot TEXT NOT NULL,
+            old_version INTEGER NOT NULL,
+            new_version INTEGER NOT NULL,
+            winner_slot TEXT NOT NULL,
+            trigger_type TEXT NOT NULL,
+            evolution_summary TEXT NOT NULL DEFAULT '',
+            old_prompt_text TEXT NOT NULL DEFAULT '',
+            new_prompt_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS contact_profile_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_name TEXT NOT NULL,
+            md_path TEXT NOT NULL DEFAULT '',
+            doc_uuid TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            source_ref TEXT NOT NULL DEFAULT '',
+            event_summary TEXT NOT NULL DEFAULT '',
+            original_profile_text TEXT NOT NULL DEFAULT '',
+            prompt_a_version INTEGER NOT NULL DEFAULT 1,
+            prompt_b_version INTEGER NOT NULL DEFAULT 1,
+            candidate_a_text TEXT NOT NULL DEFAULT '',
+            candidate_b_text TEXT NOT NULL DEFAULT '',
+            llm_provider TEXT NOT NULL DEFAULT 'gemini',
+            status TEXT NOT NULL DEFAULT 'pending',
+            chosen_slot TEXT NOT NULL DEFAULT '',
+            user_edited INTEGER NOT NULL DEFAULT 0,
+            final_profile_text TEXT NOT NULL DEFAULT '',
+            evolution_note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT '',
+            resolved_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS voiceprint_profiles (
+            profile_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL DEFAULT 'user',
+            display_name TEXT NOT NULL DEFAULT '',
+            source_mode TEXT NOT NULL DEFAULT 'server_mic',
+            model_a_name TEXT NOT NULL DEFAULT '3dspeaker_campplus_192d',
+            model_b_name TEXT NOT NULL DEFAULT 'wespeaker_resnet34_256d',
+            embedding_a_json TEXT NOT NULL DEFAULT '[]',
+            embedding_b_json TEXT NOT NULL DEFAULT '[]',
+            sample_count INTEGER NOT NULL DEFAULT 0,
+            consistency_a REAL NOT NULL DEFAULT 0.0,
+            consistency_b REAL NOT NULL DEFAULT 0.0,
+            cross_agreement_score REAL NOT NULL DEFAULT 0.0,
+            samples_meta_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
         ",
     )
     .map_err(|e| e.to_string())?;

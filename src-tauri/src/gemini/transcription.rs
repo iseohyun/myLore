@@ -228,23 +228,11 @@ pub(crate) fn process_pending_call_transcriptions(
     }
 
     let mut active_agents = get_unlocked_available_agents(&conn);
-    if force_now && active_agents.is_empty() {
-        for cand in ["gemini", "claude", "grok", "openai"] {
-            if is_agent_currently_usable(&conn, cand, true) {
-                active_agents.push(cand.to_string());
-            }
-        }
+    if !api_key.trim().is_empty() && !active_agents.iter().any(|a| a == "gemini") {
+        active_agents.insert(0, "gemini".to_string());
     }
-    if active_agents.is_empty() {
-        if retry_after_ms > now_ms {
-            let (rd, rt) = epoch_ms_to_local_date_time(retry_after_ms);
-            return (
-                0,
-                0,
-                format!("모든 AI 에이전트 토큰 고갈 대기 중 ({} {} 에 자동 재시도)", rd, rt),
-            );
-        }
-        return (0, 0, "사용 가능한 AI 에이전트 API 키가 없습니다.".to_string());
+    if !active_agents.iter().any(|a| a.starts_with("local_asr")) {
+        active_agents.push("local_asr_1".to_string());
     }
 
     let contacts_map = load_mobile_contacts_map(&conn);
@@ -266,6 +254,7 @@ pub(crate) fn process_pending_call_transcriptions(
         rec_time: String,
         modified_secs: u64,
         is_voice_memo: bool,
+        has_asr: bool,
         user_requirement: Option<String>,
         failed_agents: Vec<String>,
     }
@@ -305,24 +294,53 @@ pub(crate) fn process_pending_call_transcriptions(
                 let safe_stem = sanitize_filename_stem(&file_stem);
                 let md_path = scan_md_dir.join(format!("{}.md", safe_stem));
                 let mut item_req: Option<String> = None;
+                let md_raw_opt = if md_path.exists() {
+                    fs::read_to_string(&md_path).ok()
+                } else {
+                    None
+                };
+                let (has_asr, has_post) = if let Some(ref raw) = md_raw_opt {
+                    let a = raw.contains("### 음성인식엔진");
+                    let p = a && raw.contains("### ✨ AI 후처리");
+                    (a, p)
+                } else {
+                    (false, false)
+                };
 
-                if let Some((st, req_str)) = transcript_meta_map.get(&safe_stem) {
-                    if *st == 2 || *st == 4 {
+                if !is_voice_memo {
+                    // 통화 녹음: 2단계(ASR) 및 3단계(AI 후처리)가 모두 완료된 경우에만 스킵
+                    if let Some((st, req_str)) = transcript_meta_map.get(&safe_stem) {
+                        if (*st == 2 || *st == 4) && has_asr && has_post {
+                            continue;
+                        }
+                        if *st == 3 && !force_now && has_asr && has_post {
+                            continue;
+                        }
+                        if !req_str.trim().is_empty() {
+                            item_req = Some(req_str.clone());
+                        }
+                    } else if has_asr && has_post {
+                        continue;
+                    }
+                } else if let Some((st, req_str)) = transcript_meta_map.get(&safe_stem) {
+                    if *st == 2 || *st == 4 || (*st == 3 && !force_now) {
                         continue;
                     }
                     if !req_str.trim().is_empty() {
                         item_req = Some(req_str.clone());
                     }
-                } else if md_path.exists() {
-                    if let Ok(md_raw) = fs::read_to_string(&md_path) {
-                        let (fm, _) = parse_frontmatter_and_body_simple(&md_raw);
-                        let status = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
-                        if status == "completed" || status == "unverified" || status == "verified" {
-                            continue;
-                        }
-                        if let Some(r) = fm.get("user_requirement").filter(|s| !s.trim().is_empty()) {
-                            item_req = Some(r.clone());
-                        }
+                } else if let Some(ref md_raw) = md_raw_opt {
+                    let (fm, _) = parse_frontmatter_and_body_simple(md_raw);
+                    let status = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
+                    if status == "completed"
+                        || status == "unverified"
+                        || status == "verified"
+                        || (status == "needs_revision" && !force_now)
+                    {
+                        continue;
+                    }
+                    if let Some(r) = fm.get("user_requirement").filter(|s| !s.trim().is_empty()) {
+                        item_req = Some(r.clone());
                     }
                 }
 
@@ -351,6 +369,7 @@ pub(crate) fn process_pending_call_transcriptions(
                     rec_time,
                     modified_secs,
                     is_voice_memo,
+                    has_asr,
                     user_requirement: item_req,
                     failed_agents: Vec::new(),
                 });
@@ -358,10 +377,12 @@ pub(crate) fn process_pending_call_transcriptions(
         }
     }
 
-    // 가장 최근 녹음음성부터 우선 처리하도록 내림차순 정렬 (rec_date DESC, rec_time DESC, modified_secs DESC, file_stem DESC)
+    // 1순위: 이미 ASR(`### 음성인식엔진`)이 완료되어 AI 후처리만 남은 항목을 최우선 배치
+    // 2순위: 가장 최근 녹음음성부터 내림차순 정렬 (rec_date DESC, rec_time DESC, modified_secs DESC, file_stem DESC)
     pending_items.sort_by(|a, b| {
-        b.rec_date
-            .cmp(&a.rec_date)
+        b.has_asr
+            .cmp(&a.has_asr)
+            .then_with(|| b.rec_date.cmp(&a.rec_date))
             .then_with(|| b.rec_time.cmp(&a.rec_time))
             .then_with(|| b.modified_secs.cmp(&a.modified_secs))
             .then_with(|| b.file_stem.cmp(&a.file_stem))
@@ -412,17 +433,20 @@ pub(crate) fn process_pending_call_transcriptions(
                 let Ok(worker_conn) = open_db(db_path) else {
                     return;
                 };
+                let base_agent = agent_id
+                    .split("_parallel_")
+                    .next()
+                    .unwrap_or(&agent_id)
+                    .to_string();
+                let is_asr_only_slot = base_agent.starts_with("local_asr");
                 loop {
-                    if !is_agent_currently_usable(&worker_conn, &agent_id, force_now) {
-                        break;
-                    }
                     let cur_now_ms = chrono::Local::now().timestamp_millis();
                     let gemini_unlocked = force_now
                         || (!api_key_ref.is_empty()
                             && get_meta_i64(&worker_conn, "gemini_quota_retry_after_ms") <= cur_now_ms);
                     let stt_dead = stt_exhausted_ref.load(std::sync::atomic::Ordering::SeqCst);
 
-                    // 큐에서 현재 에이전트가 처리 가능한 가장 앞선(가장 최근) 항목을 꺼냄
+                    // 큐에서 현재 워커가 처리 가능한 가장 앞선(가장 최근) 항목을 꺼냄
                     let next_item_opt = {
                         let Ok(mut q) = queue_ref.lock() else {
                             break;
@@ -432,8 +456,29 @@ pub(crate) fn process_pending_call_transcriptions(
                             if cand.failed_agents.contains(&agent_id) {
                                 continue;
                             }
+                            if !cand.is_voice_memo {
+                                let already_has_asr = cand.has_asr
+                                    || (cand.md_path.exists()
+                                        && fs::read_to_string(&cand.md_path)
+                                            .map(|r| r.contains("### 음성인식엔진"))
+                                            .unwrap_or(false));
+                                if is_asr_only_slot {
+                                    // ASR 전용 슬롯(단일 1개)만 로컬 CPU ASR을 전담 수행
+                                    if already_has_asr {
+                                        continue;
+                                    }
+                                } else if !already_has_asr {
+                                    // LLM 슬롯은 ASR이 완료된 항목만 가져가서 후처리 수행 (본체 CPU 과부하 원천 차단)
+                                    continue;
+                                }
+                                picked_idx = Some(idx);
+                                break;
+                            }
+                            if is_asr_only_slot || !is_agent_currently_usable(&worker_conn, &base_agent, force_now) {
+                                continue;
+                            }
                             let has_existing = extract_existing_valid_script_body(&cand.md_path).is_some();
-                            if !has_existing && (stt_dead || (!gemini_unlocked && agent_id == "gemini")) {
+                            if !has_existing && (stt_dead || (!gemini_unlocked && base_agent == "gemini")) {
                                 continue;
                             }
                             picked_idx = Some(idx);
@@ -456,66 +501,91 @@ pub(crate) fn process_pending_call_transcriptions(
                         let _ = fs::write(&item.path, &clean_bytes);
                     }
 
-                    let combined_profile = match build_contact_ai_context_for_target(
-                        &worker_conn,
-                        &item.contact_display,
-                        item.is_voice_memo,
-                    ) {
+                    if !item.is_voice_memo {
+                        if is_asr_only_slot {
+                            if run_call_asr_only_and_preserve_existing(
+                                &worker_conn, &item.safe_stem, &item.file_stem, &item.file_name,
+                                &item.rec_date, &item.rec_time, &item.contact_display, &item.path, &item.md_path,
+                            ).is_ok() {
+                                item.has_asr = true;
+                                if let Ok(mut q) = queue_ref.lock() {
+                                    q.push_front(item);
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1200));
+                            continue;
+                        }
+
+                        // 1차로 ASR이 없으면 ASR 수행 후 즉시 이벤트 알림, 이어서 AI 후처리 수행
+                        let has_asr_now = item.md_path.exists()
+                            && fs::read_to_string(&item.md_path)
+                                .map(|r| r.contains("### 음성인식엔진"))
+                                .unwrap_or(false);
+                        if !has_asr_now {
+                            if run_call_asr_only_and_preserve_existing(
+                                &worker_conn, &item.safe_stem, &item.file_stem, &item.file_name,
+                                &item.rec_date, &item.rec_time, &item.contact_display, &item.path, &item.md_path,
+                            ).is_ok() {
+                                let asr_msg = format!("{} ASR 변환 완료", item.safe_stem);
+                                if let Some(app) = app_handle_opt {
+                                    let _ = app.emit("mobile-sync-event", serde_json::json!({ "type": "call_transcript_progress", "message": asr_msg }));
+                                } else {
+                                    notify_main_process_ai_event("call_transcript_progress", &asr_msg);
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(600));
+                        }
+
+                        match run_call_ai_postprocess_from_asr(
+                            &worker_conn, &item.safe_stem, &item.file_stem, &item.file_name,
+                            &item.rec_date, &item.rec_time, &item.contact_display, &item.path, &item.md_path,
+                        ) {
+                            Ok(_) => {
+                                completed_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                let msg = format!("{} 스크립트 생성 완료 (ASR + 후처리)", item.safe_stem);
+                                log_gemini("INFO", &format!("[Gemini] {} 스크립트 생성 완료", item.safe_stem));
+                                if let Ok(mut st) = status_ref.lock() { *st = msg.clone(); }
+                                if let Some(app) = app_handle_opt {
+                                    let _ = app.emit("mobile-sync-event", serde_json::json!({ "type": "call_transcript_progress", "message": msg }));
+                                } else {
+                                    notify_main_process_ai_event("call_transcript_progress", &msg);
+                                }
+                            }
+                            Err(err_msg) => {
+                                log_gemini("WARN", &format!("[{}] {} AI 후처리 보류: {}", agent_id, item.safe_stem, err_msg));
+                                failed_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                item.failed_agents.push(agent_id.clone());
+                                if item.failed_agents.len() < 4 {
+                                    if let Ok(mut q) = queue_ref.lock() {
+                                        q.push_front(item);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    let combined_profile = match build_contact_ai_context_for_target(&worker_conn, &item.contact_display, item.is_voice_memo) {
                         Some(ctx) => format!("{}{}", user_profile_ref, ctx),
                         None => user_profile_ref.clone(),
                     };
 
                     let res = execute_distributed_call_transcription(
-                        &worker_conn,
-                        api_key_ref,
-                        gemini_unlocked,
-                        &agent_id,
-                        &clean_bytes,
-                        &item.file_name,
-                        &item.contact_display,
-                        item.is_voice_memo,
-                        item.user_requirement.as_deref(),
-                        &combined_profile,
-                        call_prompt_ref,
-                        existing_script.as_deref(),
+                        &worker_conn, api_key_ref, gemini_unlocked, &agent_id, &clean_bytes,
+                        &item.file_name, &item.contact_display, item.is_voice_memo,
+                        item.user_requirement.as_deref(), &combined_profile, call_prompt_ref, existing_script.as_deref(),
                     );
 
                     match res {
                         Ok((transcript, used_prov)) => {
                             let _wg = write_lock_ref.lock().ok();
                             let md_path = if item.is_voice_memo {
-                                write_voice_recording_markdown(
-                                    &worker_conn,
-                                    &item.file_name,
-                                    &item.contact_display,
-                                    &item.rec_date,
-                                    &item.rec_time,
-                                    Some(&transcript),
-                                    None,
-                                )
+                                write_voice_recording_markdown(&worker_conn, &item.file_name, &item.contact_display, &item.rec_date, &item.rec_time, Some(&transcript), None)
                             } else {
-                                write_call_recording_markdown(
-                                    &worker_conn,
-                                    &item.file_name,
-                                    &item.contact_display,
-                                    &item.rec_date,
-                                    &item.rec_time,
-                                    Some(&transcript),
-                                    None,
-                                )
+                                write_call_recording_markdown(&worker_conn, &item.file_name, &item.contact_display, &item.rec_date, &item.rec_time, Some(&transcript), None)
                             };
                             inject_llm_provider_into_md(&md_path, &used_prov);
-                            upsert_single_recording_into_lifelog_db(
-                                &worker_conn,
-                                item.is_voice_memo,
-                                &item.file_stem,
-                                &item.contact_display,
-                                &item.rec_date,
-                                &item.rec_time,
-                                Some(&transcript),
-                                "",
-                                "",
-                            );
+                            upsert_single_recording_into_lifelog_db(&worker_conn, item.is_voice_memo, &item.file_stem, &item.contact_display, &item.rec_date, &item.rec_time, Some(&transcript), "", "");
                             drop(_wg);
 
                             completed_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -710,6 +780,35 @@ pub(crate) async fn transcribe_single_call_item(
             parse_call_audio_filename_meta(&file_stem, &contacts_map)
         };
 
+        if !is_voice_rec {
+            if build_and_save_call_asr_and_ab_scripts(
+                &conn,
+                &safe_stem,
+                &file_stem,
+                &file_name,
+                &rec_date,
+                &rec_time,
+                &contact_display,
+                &audio_path,
+                &existing_md_path,
+            )
+            .is_ok()
+            {
+                log_gemini(
+                    "INFO",
+                    &format!("[ASR+A/B] {} 3중 스크립트(음성인식엔진 + A/B) 생성 완료", safe_stem),
+                );
+                let _ = app.emit(
+                    "mobile-sync-event",
+                    serde_json::json!({
+                        "type": "call_transcript_completed",
+                        "message": format!("✅ '{}' 통화 스크립트(음성인식엔진 + 프롬프트 A/B) 생성 완료!", contact_display)
+                    }),
+                );
+                return build_document_payload(&conn, &existing_md_path);
+            }
+        }
+
         let combined_profile = match build_contact_ai_context_for_target(&conn, &contact_display, is_voice_rec) {
             Some(ctx) => format!("{}{}", user_profile, ctx),
             None => user_profile.clone(),
@@ -793,145 +892,3 @@ pub(crate) async fn transcribe_single_call_item(
     .map_err(|e| e.to_string())?
 }
 
-/// 통화/음성 녹음의 4단계 스크립트 상태(`1`=미생성 대기🔊, `2`=확인 전❓, `3`=추가 요구사항 대기❗, `4`=확인 완료📄)와
-/// 사용자 추가 요구사항(`user_requirement`)을 변경합니다.
-#[tauri::command]
-pub(crate) async fn update_call_transcript_stage(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    room_or_sender: String,
-    attachment_uuid: Option<String>,
-    stage: u8,
-    user_requirement: Option<String>,
-) -> Result<DocumentPayload, String> {
-    let db_path = state.db_path.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open_db(&db_path)?;
-        let clean_stage = stage.clamp(1, 4);
-        let contacts_map = load_mobile_contacts_map(&conn);
-
-        let (audio_path, file_name, file_stem, mut md_path, _) =
-            find_call_audio_and_md(&conn, &room_or_sender, attachment_uuid.as_deref())
-                .ok_or_else(|| "해당 항목의 녹음 파일을 찾을 수 없습니다.".to_string())?;
-        let safe_stem = sanitize_filename_stem(&file_stem);
-        let is_voice_rec = audio_path.to_string_lossy().replace('\\', "/").contains("/recordings/");
-
-        if !md_path.exists() {
-            if is_voice_rec {
-                let (_, rec_source, r_date, r_time) = parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
-                md_path = write_voice_recording_markdown(&conn, &file_name, &rec_source, &r_date, &r_time, None, None);
-            } else {
-                let (c_disp, r_date, r_time) = parse_call_audio_filename_meta(&file_stem, &contacts_map);
-                md_path = write_call_recording_markdown(&conn, &file_name, &c_disp, &r_date, &r_time, None, None);
-            }
-        }
-
-        let existing_req: String = conn
-            .query_row(
-                "SELECT user_requirement FROM call_transcript_meta WHERE safe_stem = ?1",
-                params![safe_stem],
-                |r| r.get(0),
-            )
-            .ok()
-            .unwrap_or_default();
-
-        let eff_req = user_requirement.map(|s| s.trim().to_string()).unwrap_or(existing_req);
-
-        upsert_call_transcript_meta(&conn, &safe_stem, clean_stage, &eff_req);
-
-        let status_str = match clean_stage {
-            1 => "pending_quota",
-            2 => "unverified",
-            3 => "needs_revision",
-            _ => "verified",
-        };
-
-        if let Ok(raw_md) = fs::read_to_string(&md_path) {
-            let (yaml_raw, mut body_content, _) = parse_markdown_yaml(&raw_md);
-            let mut new_yaml_lines: Vec<String> = Vec::new();
-            let mut replaced_status = false;
-            let mut replaced_req = false;
-            for line in yaml_raw.lines() {
-                let tl = line.trim_start();
-                if tl.starts_with("transcript_status:") {
-                    new_yaml_lines.push(format!("transcript_status: \"{}\"", status_str));
-                    replaced_status = true;
-                } else if tl.starts_with("user_requirement:") {
-                    if !eff_req.is_empty() {
-                        new_yaml_lines.push(format!(
-                            "user_requirement: \"{}\"",
-                            eff_req.replace('"', "\\\"").replace('\n', " ")
-                        ));
-                    }
-                    replaced_req = true;
-                } else {
-                    new_yaml_lines.push(line.to_string());
-                }
-            }
-            if !replaced_status {
-                new_yaml_lines.push(format!("transcript_status: \"{}\"", status_str));
-            }
-            if !replaced_req && !eff_req.is_empty() {
-                new_yaml_lines.push(format!(
-                    "user_requirement: \"{}\"",
-                    eff_req.replace('"', "\\\"").replace('\n', " ")
-                ));
-            }
-
-            let cleaned_body_lines: Vec<String> = body_content
-                .lines()
-                .filter(|l| !l.trim_start().starts_with("> 📌 **사용자 추가 요구사항**:"))
-                .map(|l| l.to_string())
-                .collect();
-            body_content = cleaned_body_lines.join("\n");
-            if !eff_req.is_empty() {
-                if let Some(pos) = body_content.find("## 💡 요약") {
-                    let (before, after) = body_content.split_at(pos);
-                    body_content = format!("{}> 📌 **사용자 추가 요구사항**: {}\n\n{}", before, eff_req, after);
-                } else {
-                    body_content = format!("> 📌 **사용자 추가 요구사항**: {}\n\n{}", eff_req, body_content);
-                }
-            }
-
-            let updated_md = format!("---\n{}\n---\n\n{}", new_yaml_lines.join("\n"), body_content.trim_start());
-            let _ = fs::write(&md_path, updated_md.as_bytes());
-        }
-
-        let attach_tag = if clean_stage == 1 || clean_stage == 3 {
-            format!("pending_transcript:{}", safe_stem)
-        } else {
-            format!("transcribed:{}", safe_stem)
-        };
-        let _ = conn.execute(
-            "UPDATE lifelog_messages
-             SET attachment_uuid = ?1
-             WHERE room_or_sender = ?2
-                OR attachment_uuid = ?3
-                OR attachment_uuid = ?4
-                OR attachment_uuid = ?5",
-            params![
-                attach_tag,
-                safe_stem,
-                format!("transcribed:{}", safe_stem),
-                format!("pending_transcript:{}", safe_stem),
-                file_name
-            ],
-        );
-
-        if (clean_stage == 1 || (clean_stage == 3 && !eff_req.trim().is_empty()))
-            && is_auto_call_transcription_enabled(&conn)
-        {
-            if !spawn_detached_ai_queue_worker_if_needed(false) {
-                let db_clone = db_path.clone();
-                let app_clone = app.clone();
-                thread::spawn(move || {
-                    let _ = process_pending_call_transcriptions(&db_clone, Some(&app_clone), false);
-                });
-            }
-        }
-
-        build_document_payload(&conn, &md_path)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}

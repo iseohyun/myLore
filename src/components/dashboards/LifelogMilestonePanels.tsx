@@ -1,13 +1,14 @@
 /**
  * @file LifelogMilestonePanels.tsx
  * @description 마일스톤 Step-by-Step 컴포넌트 모음:
- * - CallPromptManagerPanel (AI #5 / M#2 Step 1): 통화 분석 프롬프트 설정 및 통화 대시보드 관리
- * - MultiLlmSettingsRows (AI #6·#7·#8 / M#3 Step 1·2·3): Claude · GPT · Grok 개별 API 연동
+ * - CallPromptManagerPanel (AI #5 / M#2 Step 1): 통화 분석 프롬프트 설정 및 프롬프트 A / B 원문 열람·관리
+ * - MultiLlmSettingsRows (AI #6·#7·#8 / M#3 Step 1·2·3): Claude · GPT · Grok 개별 API 연동 및 크레딧($) 잔액 관리
  * - MediaOriginRegistryPanel (ADD #8 / M#1 Step 1): 미디어 원본(origin) 해시 DB화 및 중복 방지 추적
  * - LocationMovementTrackerPanel (ADD #9·#10 / M#4 Step 1·2): 모바일 GPS·Wi-Fi 동선 로깅 수집 및 지도 연동 추적
  */
 import React, { useEffect, useState } from 'react';
 import {
+  ContactPromptTournamentStatus,
   LocationMovementSummary,
   MediaOriginRegistrySummary,
   MultiLlmProvidersStatus,
@@ -16,6 +17,7 @@ import {
 import {
   DEFAULT_CALL_ANALYSIS_PROMPT,
   getAppSettings,
+  getContactPromptTournamentStatus,
   getLocationMovementLogs,
   getMediaOriginRegistrySummary,
   getMultiLlmProvidersStatus,
@@ -25,11 +27,12 @@ import {
   saveAppSettings,
   saveLlmProviderBillingConfig,
   setActiveTextLlmProvider,
+  updateContactPromptSlotManual,
   updateMediaOriginStatus,
 } from '../../services/tauriClient';
 
 // ============================================================================
-// 1. AI #5 (M#2 Step 1): 통화 분석 프롬프트 설정 및 통화 대시보드 관리 패널
+// 1. AI #5 (M#2 Step 1): 통화 분석 프롬프트 설정 및 프롬프트 A / B 관리 패널
 // ============================================================================
 
 export interface CallPromptManagerPanelProps {
@@ -50,32 +53,43 @@ export function CallPromptManagerPanel({
     appSettings?.callAnalysisPrompt || DEFAULT_CALL_ANALYSIS_PROMPT
   );
   const [saveMsg, setSaveMsg] = useState('');
+  const [abStatus, setAbStatus] = useState<ContactPromptTournamentStatus | null>(null);
+  const [titleA, setTitleA] = useState('');
+  const [textA, setTextA] = useState('');
+  const [titleB, setTitleB] = useState('');
+  const [textB, setTextB] = useState('');
 
   useEffect(() => {
     if (appSettings?.callAnalysisPrompt) {
       setPromptDraft(appSettings.callAnalysisPrompt);
     } else {
       getAppSettings()
-        .then((s) => {
-          setPromptDraft(s.callAnalysisPrompt || DEFAULT_CALL_ANALYSIS_PROMPT);
-        })
+        .then((s) => setPromptDraft(s.callAnalysisPrompt || DEFAULT_CALL_ANALYSIS_PROMPT))
         .catch(() => {});
     }
+    getContactPromptTournamentStatus()
+      .then((st) => {
+        setAbStatus(st);
+        if (st?.slotA) {
+          setTitleA(st.slotA.promptTitle);
+          setTextA(st.slotA.promptText);
+        }
+        if (st?.slotB) {
+          setTitleB(st.slotB.promptTitle);
+          setTextB(st.slotB.promptText);
+        }
+      })
+      .catch(() => {});
   }, [appSettings?.callAnalysisPrompt]);
 
   const handleSavePrompt = async () => {
     try {
       const current = appSettings || (await getAppSettings());
-      const nextPrompt =
-        promptDraft.trim() || DEFAULT_CALL_ANALYSIS_PROMPT;
-      const saved = await saveAppSettings({
-        ...current,
-        callAnalysisPrompt: nextPrompt,
-      });
+      const nextPrompt = promptDraft.trim() || DEFAULT_CALL_ANALYSIS_PROMPT;
+      const saved = await saveAppSettings({ ...current, callAnalysisPrompt: nextPrompt });
       setPromptDraft(saved.callAnalysisPrompt || nextPrompt);
       onSettingsUpdated?.(saved);
-      const msg =
-        '✅ 통화 AI 분석 프롬프트 및 연락처 관계 열람 정책이 저장되었습니다.';
+      const msg = '✅ 통화 AI 분석 프롬프트 및 연락처 관계 열람 정책이 저장되었습니다.';
       setSaveMsg(msg);
       setStatusMessage?.(msg);
       window.setTimeout(() => setSaveMsg(''), 3500);
@@ -84,116 +98,114 @@ export function CallPromptManagerPanel({
     }
   };
 
-  const handleResetPrompt = async () => {
+  const handleSaveAbSlot = async (slot: 'A' | 'B') => {
     try {
-      const current = appSettings || (await getAppSettings());
-      setPromptDraft(DEFAULT_CALL_ANALYSIS_PROMPT);
-      const saved = await saveAppSettings({
-        ...current,
-        callAnalysisPrompt: DEFAULT_CALL_ANALYSIS_PROMPT,
+      const next = await updateContactPromptSlotManual({
+        slot,
+        promptTitle: slot === 'A' ? titleA : titleB,
+        promptText: slot === 'A' ? textA : textB,
+        reason: `설정 > AI Setting에서 프롬프트 ${slot} 수정`,
       });
-      onSettingsUpdated?.(saved);
-      const msg = '↺ 통화 AI 분석 프롬프트를 기본 템플릿으로 복원했습니다.';
+      setAbStatus(next);
+      const msg = `✅ 프롬프트 ${slot} 저장 완료 (v${slot === 'A' ? next.slotA.version : next.slotB.version})`;
       setSaveMsg(msg);
       setStatusMessage?.(msg);
       window.setTimeout(() => setSaveMsg(''), 3500);
     } catch (err) {
-      setSaveMsg(`복원 오류: ${String(err)}`);
+      setSaveMsg(`프롬프트 ${slot} 저장 오류: ${String(err)}`);
     }
   };
 
   return (
-    <div
-      style={{
-        padding: '12px 16px',
-        marginBottom: compactInDashboard ? '12px' : 0,
-        backgroundColor: 'var(--bg-secondary)',
-        border: '1px solid var(--border-color)',
-        borderRadius: '10px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '8px',
-        }}
-      >
+    <div style={{ padding: '12px 16px', marginBottom: compactInDashboard ? '12px' : 0, backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span
-            style={{
-              fontSize: '13px',
-              fontWeight: 700,
-              color: 'var(--heading-color)',
-            }}
-          >
-            📝 통화 분석 프롬프트 & 연락처 관계 열람 정책 관리 (M#2 Step 1)
+          <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--heading-color)' }}>
+            📝 통화 분석 프롬프트 & 프롬프트 A / B 원문 관리 (M#2 Step 1)
           </span>
-          <span
-            style={{
-              fontSize: '11px',
-              padding: '2px 8px',
-              borderRadius: '999px',
-              backgroundColor: 'rgba(99, 102, 241, 0.16)',
-              color: '#a5b4fc',
-              fontWeight: 600,
-            }}
-          >
-            {'{contact_name}'} 자동 치환 · 연락처 인물/소속모임 자동 첨부
+          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '999px', backgroundColor: 'rgba(99, 102, 241, 0.16)', color: '#a5b4fc', fontWeight: 600 }}>
+            {'{contact_name}'} 자동 치환 · 프롬프트 A(전화목소리 보관관리) / B 동시 열람·편집
           </span>
         </div>
         {compactInDashboard && (
-          <button
-            className="toolbar-btn"
-            style={{ padding: '4px 10px', fontSize: '12px' }}
-            onClick={() => setIsOpen((prev) => !prev)}
-          >
-            {isOpen ? '▾ 프롬프트 편집기 접기' : '▸ 통화 분석 프롬프트 열람·수정'}
+          <button className="toolbar-btn" style={{ padding: '4px 10px', fontSize: '12px' }} onClick={() => setIsOpen((prev) => !prev)}>
+            {isOpen ? '▾ 프롬프트 편집기 접기' : '▸ 통화 분석 & 프롬프트 A/B 열람·수정'}
           </button>
         )}
       </div>
 
       {isOpen && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {abStatus && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '10px' }}>
+              {(['A', 'B'] as const).map((slot) => {
+                const isA = slot === 'A';
+                const tVal = isA ? titleA : titleB;
+                const bVal = isA ? textA : textB;
+                const info = isA ? abStatus.slotA : abStatus.slotB;
+                return (
+                  <div
+                    key={slot}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '6px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      backgroundColor: 'var(--bg-primary)',
+                      border: isA ? '1px solid rgba(56, 189, 248, 0.45)' : '1px solid rgba(168, 85, 247, 0.45)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px' }}>
+                      <strong style={{ fontSize: '12.5px', color: isA ? '#38bdf8' : '#c084fc' }}>
+                        {isA ? '🅰️ 프롬프트 A (전화목소리 별도 보관관리 포함)' : '🅱️ 프롬프트 B (표준 경합 프롬프트)'} · v{info.version}
+                      </strong>
+                      <button
+                        type="button"
+                        className="toolbar-btn primary"
+                        style={{ padding: '3px 9px', fontSize: '11.5px' }}
+                        onClick={() => void handleSaveAbSlot(slot)}
+                      >
+                        💾 프롬프트 {slot} 저장
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      className="input-field"
+                      style={{ fontSize: '12px', fontWeight: 700 }}
+                      value={tVal}
+                      onChange={(e) => (isA ? setTitleA(e.target.value) : setTitleB(e.target.value))}
+                    />
+                    <textarea
+                      className="ai-profile-textarea"
+                      style={{ minHeight: '150px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', lineHeight: 1.45 }}
+                      value={bVal}
+                      onChange={(e) => (isA ? setTextA(e.target.value) : setTextB(e.target.value))}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ fontSize: '12px', fontWeight: 700, color: 'var(--heading-color)' }}>
+            🎙️ 기본 통화 오디오 전사 프롬프트 (문장 단위 타임스탬프 · 화자혼동 방지)
+          </div>
           <textarea
             className="ai-profile-textarea"
-            style={{ minHeight: '155px', fontFamily: 'var(--font-mono)', fontSize: '12px' }}
+            style={{ minHeight: '135px', fontFamily: 'var(--font-mono)', fontSize: '12px' }}
             value={promptDraft}
             onChange={(e) => setPromptDraft(e.target.value)}
             placeholder={DEFAULT_CALL_ANALYSIS_PROMPT}
           />
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: '8px',
-            }}
-          >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
             <span style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
-              💡 음성통화를 LLM에 의뢰할 때 위 프롬프트와 함께{' '}
-              <code>[👤 사용자 개인화 정보]</code> 및{' '}
-              <code>[📇 연락처 당사자 관계 · 소속 모임 배경지식]</code>이 자동으로 결합되어 전달됩니다.
-              {saveMsg && (
-                <strong style={{ marginLeft: '8px', color: '#4ade80' }}>
-                  {saveMsg}
-                </strong>
-              )}
+              💡 음성통화를 LLM에 의뢰할 때 위 프롬프트와 함께 <code>[👤 사용자 개인화 정보]</code> 및 <code>[📇 연락처 당사자 관계 · 소속 모임 배경지식]</code>이 자동으로 결합되어 전달됩니다.
+              {saveMsg && <strong style={{ marginLeft: '8px', color: '#4ade80' }}>{saveMsg}</strong>}
             </span>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button className="toolbar-btn primary" onClick={handleSavePrompt}>
-                💾 통화 프롬프트 저장
-              </button>
-              <button className="toolbar-btn" onClick={handleResetPrompt}>
-                ↺ 기본값 복원
-              </button>
-            </div>
+            <button className="toolbar-btn primary" onClick={handleSavePrompt}>
+              💾 통화 프롬프트 저장
+            </button>
           </div>
         </div>
       )}
@@ -225,14 +237,7 @@ const PROVIDER_META: Array<{
     placeholder: 'sk-ant-... 전체 키 입력 또는 붙여넣기 시 검증·저장',
     consoleUrl: 'https://console.anthropic.com/settings/keys',
     consoleBtnLabel: 'Claude 키 발급',
-    models: [
-      'claude-sonnet-4-5',
-      'claude-haiku-4-5',
-      'claude-sonnet-4-0',
-      'claude-3-7-sonnet-latest',
-      'claude-3-5-sonnet-latest',
-      'claude-3-5-haiku-latest',
-    ],
+    models: ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-sonnet-4-0', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
   },
   {
     key: 'openai',
@@ -254,41 +259,22 @@ const PROVIDER_META: Array<{
   },
 ];
 
-export function MultiLlmSettingsRows({
-  setStatusMessage,
-}: MultiLlmSettingsRowsProps) {
-  const [multiStatus, setMultiStatus] =
-    useState<MultiLlmProvidersStatus | null>(null);
-  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({
-    claude: '',
-    openai: '',
-    grok: '',
+export function MultiLlmSettingsRows({ setStatusMessage }: MultiLlmSettingsRowsProps) {
+  const [multiStatus, setMultiStatus] = useState<MultiLlmProvidersStatus | null>(null);
+  const [keyInputs, setKeyInputs] = useState<Record<string, string>>({ claude: '', openai: '', grok: '' });
+  const [modelSelections, setModelSelections] = useState<Record<string, string>>({
+    claude: 'claude-haiku-4-5',
+    openai: 'gpt-4o-mini',
+    grok: 'grok-3-mini',
   });
-  const [modelSelections, setModelSelections] = useState<Record<string, string>>(
-    {
-      claude: 'claude-haiku-4-5',
-      openai: 'gpt-4o-mini',
-      grok: 'grok-3-mini',
-    }
-  );
   const [chargedCredits, setChargedCredits] = useState<Record<string, string>>({
     claude: '5.00',
     openai: '0.00',
     grok: '5.00',
   });
-  const [adminKeyInputs, setAdminKeyInputs] = useState<Record<string, string>>({
-    claude: '',
-    openai: '',
-    grok: '',
-  });
-  const [teamIdInputs, setTeamIdInputs] = useState<Record<string, string>>({
-    claude: '',
-    openai: '',
-    grok: '',
-  });
-  const [verifyingProvider, setVerifyingProvider] = useState<string | null>(
-    null
-  );
+  const [adminKeyInputs, setAdminKeyInputs] = useState<Record<string, string>>({ claude: '', openai: '', grok: '' });
+  const [teamIdInputs, setTeamIdInputs] = useState<Record<string, string>>({ claude: '', openai: '', grok: '' });
+  const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
 
   const syncFromStatus = (res: MultiLlmProvidersStatus) => {
     setMultiStatus(res);
@@ -310,15 +296,10 @@ export function MultiLlmSettingsRows({
   };
 
   useEffect(() => {
-    getMultiLlmProvidersStatus()
-      .then(syncFromStatus)
-      .catch(() => {});
+    getMultiLlmProvidersStatus().then(syncFromStatus).catch(() => {});
   }, []);
 
-  const handleSaveProviderKey = async (
-    provider: 'claude' | 'openai' | 'grok',
-    rawKey: string
-  ) => {
+  const handleSaveProviderKey = async (provider: 'claude' | 'openai' | 'grok', rawKey: string) => {
     const trimmed = rawKey.trim();
     const alreadyHasKey = Boolean(multiStatus?.[provider]?.hasKey);
     if (!trimmed && !alreadyHasKey) {
@@ -327,37 +308,25 @@ export function MultiLlmSettingsRows({
     }
     setVerifyingProvider(provider);
     try {
-      const updated = await saveAndVerifyLlmProviderKey(
-        provider,
-        trimmed,
-        modelSelections[provider]
-      );
+      const updated = await saveAndVerifyLlmProviderKey(provider, trimmed, modelSelections[provider]);
       syncFromStatus(updated);
       setKeyInputs((prev) => ({ ...prev, [provider]: '' }));
       window.dispatchEvent(new CustomEvent('mylore-multi-llm-updated'));
       const savedProv = updated[provider];
       if (savedProv?.lastError) {
-        setStatusMessage(
-          `✅ ${provider.toUpperCase()} API 키가 정상 등록되었습니다 (잔여 크레딧/쿼터 제한 상태: ${savedProv.lastError})`
-        );
+        setStatusMessage(`✅ ${provider.toUpperCase()} API 키가 정상 등록되었습니다 (잔여 크레딧/쿼터 제한 상태: ${savedProv.lastError})`);
       } else {
-        setStatusMessage(
-          `✅ ${provider.toUpperCase()} API 키 검증 및 연동이 완료되었습니다 (${savedProv?.modelName || ''}).`
-        );
+        setStatusMessage(`✅ ${provider.toUpperCase()} API 키 검증 및 연동이 완료되었습니다 (${savedProv?.modelName || ''}).`);
       }
     } catch (err) {
-      setStatusMessage(
-        `❌ ${provider.toUpperCase()} API 검증 실패: ${String(err)}`
-      );
+      setStatusMessage(`❌ ${provider.toUpperCase()} API 검증 실패: ${String(err)}`);
       getMultiLlmProvidersStatus().then(syncFromStatus).catch(() => {});
     } finally {
       setVerifyingProvider(null);
     }
   };
 
-  const handleSaveBillingConfig = async (
-    provider: 'claude' | 'openai' | 'grok'
-  ) => {
+  const handleSaveBillingConfig = async (provider: 'claude' | 'openai' | 'grok') => {
     setVerifyingProvider(provider);
     try {
       const parsedUsd = parseFloat(chargedCredits[provider] || '0');
@@ -371,30 +340,22 @@ export function MultiLlmSettingsRows({
       setAdminKeyInputs((prev) => ({ ...prev, [provider]: '' }));
       window.dispatchEvent(new CustomEvent('mylore-multi-llm-updated'));
       const savedProv = updated[provider];
-      setStatusMessage(
-        `💰 ${provider.toUpperCase()} 크레딧 잔액 설정 완료: ${savedProv.creditDisplayText || '0$'} (${savedProv.balanceSource || ''})`
-      );
+      setStatusMessage(`💰 ${provider.toUpperCase()} 크레딧 잔액 설정 완료: ${savedProv.creditDisplayText || '0$'} (${savedProv.balanceSource || ''})`);
     } catch (err) {
-      setStatusMessage(
-        `⚠️ ${provider.toUpperCase()} 크레딧/Management API 조회 오류: ${String(err)}`
-      );
+      setStatusMessage(`⚠️ ${provider.toUpperCase()} 크레딧/Management API 조회 오류: ${String(err)}`);
       getMultiLlmProvidersStatus().then(syncFromStatus).catch(() => {});
     } finally {
       setVerifyingProvider(null);
     }
   };
 
-  const handleDeleteProviderKey = async (
-    provider: 'claude' | 'openai' | 'grok'
-  ) => {
+  const handleDeleteProviderKey = async (provider: 'claude' | 'openai' | 'grok') => {
     setVerifyingProvider(provider);
     try {
       const updated = await saveAndVerifyLlmProviderKey(provider, '__DELETE__');
       syncFromStatus(updated);
       window.dispatchEvent(new CustomEvent('mylore-multi-llm-updated'));
-      setStatusMessage(
-        `🗑️ ${provider.toUpperCase()} API 키가 보안 저장소에서 삭제되었습니다.`
-      );
+      setStatusMessage(`🗑️ ${provider.toUpperCase()} API 키가 보안 저장소에서 삭제되었습니다.`);
     } catch (err) {
       setStatusMessage(`삭제 실패: ${String(err)}`);
     } finally {
@@ -412,9 +373,7 @@ export function MultiLlmSettingsRows({
           <tr key={meta.key}>
             <td style={{ fontWeight: 700 }}>
               <div>{meta.title}</div>
-              <div style={{ fontSize: '10.5px', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                ({meta.stepLabel})
-              </div>
+              <div style={{ fontSize: '10.5px', color: 'var(--text-secondary)', fontWeight: 500 }}>({meta.stepLabel})</div>
             </td>
             <td>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -453,14 +412,8 @@ export function MultiLlmSettingsRows({
                       fontSize: '11.5px',
                       fontWeight: 800,
                       fontFamily: 'var(--font-mono)',
-                      backgroundColor:
-                        stat?.creditExhausted || (stat?.remainingCreditUsd ?? 0) <= 0.005
-                          ? 'rgba(239, 68, 68, 0.18)'
-                          : 'rgba(56, 189, 248, 0.16)',
-                      color:
-                        stat?.creditExhausted || (stat?.remainingCreditUsd ?? 0) <= 0.005
-                          ? '#f87171'
-                          : '#38bdf8',
+                      backgroundColor: stat?.creditExhausted || (stat?.remainingCreditUsd ?? 0) <= 0.005 ? 'rgba(239, 68, 68, 0.18)' : 'rgba(56, 189, 248, 0.16)',
+                      color: stat?.creditExhausted || (stat?.remainingCreditUsd ?? 0) <= 0.005 ? '#f87171' : '#38bdf8',
                     }}
                     title={`충전: $${(stat?.chargedCreditUsd ?? 0).toFixed(2)} | 사용 차감: $${(stat?.spentCreditUsd ?? 0).toFixed(4)} (${stat?.balanceSource || '-'})`}
                   >
@@ -471,14 +424,10 @@ export function MultiLlmSettingsRows({
                     className="task-status-select"
                     style={{ padding: '4px 8px', fontSize: '12px', fontFamily: 'var(--font-mono)' }}
                     value={modelSelections[meta.key] || meta.models[0]}
-                    onChange={(e) =>
-                      setModelSelections((prev) => ({ ...prev, [meta.key]: e.target.value }))
-                    }
+                    onChange={(e) => setModelSelections((prev) => ({ ...prev, [meta.key]: e.target.value }))}
                   >
                     {meta.models.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
+                      <option key={m} value={m}>{m}</option>
                     ))}
                   </select>
 
@@ -488,18 +437,14 @@ export function MultiLlmSettingsRows({
                     style={{ flex: 1, minWidth: '180px', maxWidth: '250px', fontFamily: 'var(--font-mono)' }}
                     value={keyInputs[meta.key] || ''}
                     disabled={isVerifying}
-                    onChange={(e) =>
-                      setKeyInputs((prev) => ({ ...prev, [meta.key]: e.target.value }))
-                    }
+                    onChange={(e) => setKeyInputs((prev) => ({ ...prev, [meta.key]: e.target.value }))}
                     onPaste={(e) => {
                       const pasted = e.clipboardData.getData('text');
                       if (pasted && pasted.trim()) {
                         e.preventDefault();
                         const clean = pasted.trim();
                         setKeyInputs((prev) => ({ ...prev, [meta.key]: clean }));
-                        setTimeout(() => {
-                          handleSaveProviderKey(meta.key, clean);
-                        }, 20);
+                        setTimeout(() => handleSaveProviderKey(meta.key, clean), 20);
                       }
                     }}
                     placeholder={meta.placeholder}
@@ -509,47 +454,26 @@ export function MultiLlmSettingsRows({
                     {meta.consoleBtnLabel}
                   </button>
 
-                  <button
-                    className="toolbar-btn primary"
-                    disabled={isVerifying}
-                    onClick={() => handleSaveProviderKey(meta.key, keyInputs[meta.key] || '')}
-                  >
+                  <button className="toolbar-btn primary" disabled={isVerifying} onClick={() => handleSaveProviderKey(meta.key, keyInputs[meta.key] || '')}>
                     {isVerifying ? '검증 중...' : '검증·저장'}
                   </button>
 
                   {stat?.hasKey && (
-                    <button
-                      className="toolbar-btn"
-                      disabled={isVerifying}
-                      onClick={() => handleDeleteProviderKey(meta.key)}
-                    >
+                    <button className="toolbar-btn" disabled={isVerifying} onClick={() => handleDeleteProviderKey(meta.key)}>
                       삭제
                     </button>
                   )}
                 </div>
 
-                {/* 유료 LLM 크레딧($) 충전액 및 Grok Management API / Claude Admin API 잔액 조회 설정 */}
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    flexWrap: 'wrap',
-                    fontSize: '11.5px',
-                  }}
-                >
-                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
-                    충전 크레딧($):
-                  </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', fontSize: '11.5px' }}>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>충전 크레딧($):</span>
                   <input
                     type="number"
                     step="0.01"
                     className="input-field"
                     style={{ width: '80px', padding: '3px 6px', fontFamily: 'var(--font-mono)', fontSize: '11.5px' }}
                     value={chargedCredits[meta.key] ?? '0.00'}
-                    onChange={(e) =>
-                      setChargedCredits((prev) => ({ ...prev, [meta.key]: e.target.value }))
-                    }
+                    onChange={(e) => setChargedCredits((prev) => ({ ...prev, [meta.key]: e.target.value }))}
                   />
                   {meta.key === 'grok' && (
                     <>
@@ -558,23 +482,15 @@ export function MultiLlmSettingsRows({
                         className="input-field"
                         style={{ width: '165px', padding: '3px 6px', fontFamily: 'var(--font-mono)', fontSize: '11.5px' }}
                         value={adminKeyInputs.grok || ''}
-                        onChange={(e) =>
-                          setAdminKeyInputs((prev) => ({ ...prev, grok: e.target.value }))
-                        }
-                        placeholder={
-                          stat?.hasAdminKey
-                            ? `Management키 (${stat.maskedAdminKey})`
-                            : 'xAI Management API Key (선택)'
-                        }
+                        onChange={(e) => setAdminKeyInputs((prev) => ({ ...prev, grok: e.target.value }))}
+                        placeholder={stat?.hasAdminKey ? `Management키 (${stat.maskedAdminKey})` : 'xAI Management API Key (선택)'}
                       />
                       <input
                         type="text"
                         className="input-field"
                         style={{ width: '140px', padding: '3px 6px', fontFamily: 'var(--font-mono)', fontSize: '11.5px' }}
                         value={teamIdInputs.grok || ''}
-                        onChange={(e) =>
-                          setTeamIdInputs((prev) => ({ ...prev, grok: e.target.value }))
-                        }
+                        onChange={(e) => setTeamIdInputs((prev) => ({ ...prev, grok: e.target.value }))}
                         placeholder="xAI Team ID (선택)"
                       />
                     </>
@@ -585,22 +501,11 @@ export function MultiLlmSettingsRows({
                       className="input-field"
                       style={{ width: '220px', padding: '3px 6px', fontFamily: 'var(--font-mono)', fontSize: '11.5px' }}
                       value={adminKeyInputs.claude || ''}
-                      onChange={(e) =>
-                        setAdminKeyInputs((prev) => ({ ...prev, claude: e.target.value }))
-                      }
-                      placeholder={
-                        stat?.hasAdminKey
-                          ? `Admin키 (${stat.maskedAdminKey})`
-                          : 'sk-ant-admin-... (조직 Admin 키 · 선택)'
-                      }
+                      onChange={(e) => setAdminKeyInputs((prev) => ({ ...prev, claude: e.target.value }))}
+                      placeholder={stat?.hasAdminKey ? `Admin키 (${stat.maskedAdminKey})` : 'sk-ant-admin-... (조직 Admin 키 · 선택)'}
                     />
                   )}
-                  <button
-                    className="toolbar-btn"
-                    style={{ padding: '3px 9px', fontSize: '11.5px' }}
-                    disabled={isVerifying}
-                    onClick={() => handleSaveBillingConfig(meta.key)}
-                  >
+                  <button className="toolbar-btn" style={{ padding: '3px 9px', fontSize: '11.5px' }} disabled={isVerifying} onClick={() => handleSaveBillingConfig(meta.key)}>
                     💰 잔액 동기화·저장
                   </button>
                   <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
@@ -609,23 +514,12 @@ export function MultiLlmSettingsRows({
                 </div>
 
                 {(stat?.hasKey || stat?.lastError) && (
-                  <div
-                    style={{
-                      fontSize: '11.5px',
-                      fontFamily: 'var(--font-mono)',
-                      color: stat?.lastError ? '#fca5a5' : 'var(--text-secondary)',
-                      display: 'flex',
-                      gap: '10px',
-                      flexWrap: 'wrap',
-                    }}
-                  >
+                  <div style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', color: stat?.lastError ? '#fca5a5' : 'var(--text-secondary)', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                     {stat?.hasKey && (
                       <span>
                         📊 오늘 사용: {(stat.todayUsedTokens || 0).toLocaleString('ko-KR')} 토큰 ({stat.todayRequestCount || 0}회) | 누적:{' '}
                         {(stat.totalUsedTokens || 0).toLocaleString('ko-KR')} 토큰 |{' '}
-                        {stat.retryAfterAt
-                          ? `⏳ 5시간 대기 (해제 예정: ${stat.retryAfterAt})`
-                          : `상태: ${stat.verifiedAt || '-'}`}
+                        {stat.retryAfterAt ? `⏳ 5시간 대기 (해제 예정: ${stat.retryAfterAt})` : `상태: ${stat.verifiedAt || '-'}`}
                       </span>
                     )}
                     {stat?.lastError && <span>⚠️ {stat.lastError}</span>}
@@ -640,14 +534,7 @@ export function MultiLlmSettingsRows({
       <tr>
         <td style={{ fontWeight: 700 }}>기본 텍스트 분석 LLM</td>
         <td>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              flexWrap: 'wrap',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             {(
               [
                 { id: 'gemini', label: '✨ Google Gemini' },
@@ -658,19 +545,13 @@ export function MultiLlmSettingsRows({
             ).map((p) => (
               <button
                 key={p.id}
-                className={`toolbar-btn ${
-                  (multiStatus?.activeTextProvider || 'gemini') === p.id
-                    ? 'primary'
-                    : ''
-                }`}
+                className={`toolbar-btn ${(multiStatus?.activeTextProvider || 'gemini') === p.id ? 'primary' : ''}`}
                 style={{ padding: '4px 12px', fontSize: '12px' }}
                 onClick={async () => {
                   try {
                     const updated = await setActiveTextLlmProvider(p.id);
                     setMultiStatus(updated);
-                    setStatusMessage(
-                      `✅ 기본 텍스트/문서 분석 LLM 공급자가 '${p.label}'로 설정되었습니다.`
-                    );
+                    setStatusMessage(`✅ 기본 텍스트/문서 분석 LLM 공급자가 '${p.label}'로 설정되었습니다.`);
                   } catch (err) {
                     setStatusMessage(`공급자 변경 오류: ${String(err)}`);
                   }
@@ -824,9 +705,7 @@ export function LocationMovementTrackerPanel({
     try {
       const res = await getLocationMovementLogs({ limit: 500 });
       setLocSummary(res);
-      if (!selectedDate && res.logs.length > 0) {
-        setSelectedDate(res.logs[0].logDate);
-      }
+      if (!selectedDate && res.logs.length > 0) setSelectedDate(res.logs[0].logDate);
     } catch {
       // ignore
     }
@@ -842,10 +721,7 @@ export function LocationMovementTrackerPanel({
     return () => window.removeEventListener('mylore-select-location-date', onSelectDate);
   }, []);
 
-  const availableDates = Array.from(
-    new Set((locSummary?.logs || []).map((l) => l.logDate).filter(Boolean))
-  ).sort((a, b) => b.localeCompare(a));
-
+  const availableDates = Array.from(new Set((locSummary?.logs || []).map((l) => l.logDate).filter(Boolean))).sort((a, b) => b.localeCompare(a));
   const activeDate = selectedDate || availableDates[0] || new Date().toISOString().slice(0, 10);
   const dayLogs = (locSummary?.logs || [])
     .filter((l) => l.logDate === activeDate)
@@ -934,7 +810,6 @@ export function LocationMovementTrackerPanel({
         </div>
       )}
 
-      {/* 구글 지도 임베드 뷰 + 주요 시간대별 이동 동선 라벨 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.1fr) minmax(280px, 1fr)', gap: '12px' }}>
         <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border-color)', minHeight: '230px', backgroundColor: 'var(--bg-primary)' }}>
           <iframe

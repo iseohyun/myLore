@@ -2,13 +2,19 @@
 
 use crate::*;
 
+mod call_ab_review;
 mod client;
 mod multi_llm;
+mod postprocess_pipeline;
 mod transcription;
+mod voiceprint;
 
+pub(crate) use call_ab_review::*;
 pub(crate) use client::*;
 pub(crate) use multi_llm::*;
+pub(crate) use postprocess_pipeline::*;
 pub(crate) use transcription::*;
+pub(crate) use voiceprint::*;
 
 #[tauri::command]
 pub(crate) fn get_call_ai_transcription_stats(
@@ -40,6 +46,10 @@ pub(crate) fn get_call_ai_transcription_stats(
     let mut total_audio_calls = 0usize;
     let mut completed_calls = 0usize;
     let mut remaining_calls = 0usize;
+    let mut asr_converted_calls = 0usize;
+    let mut ai_postprocessed_calls = 0usize;
+    let mut pending_approval_calls = 0usize;
+    let mut verified_calls = 0usize;
     let mut total_audio_bytes = 0u64;
     let mut completed_audio_bytes = 0u64;
     let mut remaining_audio_bytes = 0u64;
@@ -75,13 +85,16 @@ pub(crate) fn get_call_ai_transcription_stats(
             total_audio_bytes = total_audio_bytes.saturating_add(file_bytes);
 
             let mut is_completed = false;
+            let mut has_asr = false;
+            let mut has_post = false;
+            let mut eff_stage: u8 = 1;
             let mut fallback_date = String::new();
             let mut md_prov: &'static str = "gemini";
 
             let md_path = calls_dir.join(format!("{}.md", safe_stem));
             if md_path.exists() {
                 if let Ok(md_raw) = fs::read_to_string(&md_path) {
-                    let (fm, _) = parse_frontmatter_and_body_simple(&md_raw);
+                    let (fm, body) = parse_frontmatter_and_body_simple(&md_raw);
                     if let Some(p_str) = fm.get("llm_provider") {
                         md_prov = match p_str.trim().to_lowercase().as_str() {
                             "claude" => "claude",
@@ -94,8 +107,21 @@ pub(crate) fn get_call_ai_transcription_stats(
                         .get("transcript_status")
                         .map(|s| s.as_str())
                         .unwrap_or("");
-                    if status == "completed" || status == "unverified" || status == "verified" {
+                    has_asr = body.contains("### 음성인식엔진");
+                    has_post = has_asr && body.contains("### ✨ AI 후처리");
+                    if status == "verified" && has_post {
+                        eff_stage = 4;
                         is_completed = true;
+                    } else if has_post {
+                        eff_stage = 3;
+                        is_completed = true;
+                    } else if has_asr {
+                        eff_stage = 2;
+                        is_completed = true;
+                    } else {
+                        eff_stage = 1;
+                    }
+                    if is_completed {
                         if let Some(ls) = fm.get("last_synced") {
                             if ls.len() >= 10 {
                                 fallback_date = ls[..10].to_string();
@@ -106,13 +132,23 @@ pub(crate) fn get_call_ai_transcription_stats(
             }
 
             if let Some((st, upd)) = meta_map.get(&safe_stem) {
-                if *st == 2 || *st == 4 {
-                    is_completed = true;
-                    if upd.len() >= 10 {
-                        fallback_date = upd[..10].to_string();
-                    }
+                if *st == 4 && has_post {
+                    eff_stage = 4;
+                }
+                if upd.len() >= 10 && fallback_date.is_empty() {
+                    fallback_date = upd[..10].to_string();
+                }
+            }
+
+            if has_asr {
+                asr_converted_calls += 1;
+            }
+            if has_post {
+                ai_postprocessed_calls += 1;
+                if eff_stage == 4 {
+                    verified_calls += 1;
                 } else {
-                    is_completed = false;
+                    pending_approval_calls += 1;
                 }
             }
 
@@ -126,6 +162,12 @@ pub(crate) fn get_call_ai_transcription_stats(
             }
         }
     }
+
+    // 통화 녹음 파일이 없이 통화 목록(부재중·거절·미녹음 일반통화)에만 존재하는 기록은
+    // 4단계 음성 파이프라인(1.다운로드 → 2.ASR → 3.후처리 → 4.확인) 모수에서 제외하고
+    // 실제 통화 녹음이 존재하는 건수만 기준으로 집계한다.
+    let total_call_records = total_audio_calls;
+    let downloaded_calls = total_audio_calls;
 
     let today = Local::now().date_naive();
     let mut last_7_days: Vec<(String, String, String)> = Vec::with_capacity(7);
@@ -264,6 +306,12 @@ pub(crate) fn get_call_ai_transcription_stats(
         total_audio_calls,
         completed_calls,
         remaining_calls,
+        total_call_records,
+        downloaded_calls,
+        asr_converted_calls,
+        ai_postprocessed_calls,
+        pending_approval_calls,
+        verified_calls,
         total_audio_bytes,
         completed_audio_bytes,
         remaining_audio_bytes,
@@ -277,8 +325,14 @@ pub(crate) fn get_call_approval_items(
     state: State<'_, AppState>,
 ) -> Result<Vec<CallApprovalItem>, String> {
     let conn = open_db(&state.db_path)?;
-    let contacts_map = load_mobile_contacts_map(&conn);
-    let calls_dir = get_archive_mobile_dir(&conn, "calls");
+    get_call_approval_items_from_conn(&conn)
+}
+
+pub(crate) fn get_call_approval_items_from_conn(
+    conn: &Connection,
+) -> Result<Vec<CallApprovalItem>, String> {
+    let contacts_map = load_mobile_contacts_map(conn);
+    let calls_dir = get_archive_mobile_dir(conn, "calls");
     let audio_dir = calls_dir.join("audio");
     let rec_dir = get_archive_mobile_dir(&conn, "recordings");
     let rec_audio_dir = rec_dir.join("audio");
@@ -346,16 +400,25 @@ pub(crate) fn get_call_approval_items(
                 .get("transcript_status")
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            let mut stage: u8 = match status_str {
-                "unverified" | "completed" => 2,
-                "needs_revision" => 3,
-                "verified" => 4,
-                _ => 1,
+            let has_asr = body.contains("### 음성인식엔진");
+            let has_post = has_asr && body.contains("### ✨ AI 후처리");
+            let meta_st = meta_map.get(&safe_stem).map(|(st, _, _)| *st);
+            let stage: u8 = if is_voice_memo {
+                if status_str == "verified" || meta_st == Some(4) { 4 } else { 3 }
+            } else if (status_str == "verified" || meta_st == Some(4)) && has_post {
+                4
+            } else if meta_st == Some(2) {
+                2
+            } else if has_post {
+                3
+            } else if has_asr {
+                2
+            } else {
+                1
             };
             let mut user_req = fm.get("user_requirement").cloned().unwrap_or_default();
             let mut updated_at = fm.get("last_synced").cloned().unwrap_or_default();
-            if let Some((m_stage, m_req, m_upd)) = meta_map.get(&safe_stem) {
-                stage = *m_stage;
+            if let Some((_, m_req, m_upd)) = meta_map.get(&safe_stem) {
                 if !m_req.trim().is_empty() {
                     user_req = m_req.clone();
                 }
@@ -363,7 +426,6 @@ pub(crate) fn get_call_approval_items(
                     updated_at = m_upd.clone();
                 }
             }
-            // 결재창에서는 스크립트가 생성된 항목(2단계 결재 대기, 3단계 반려/재작성, 4단계 결재 완료)만 표시
             if stage < 2 {
                 continue;
             }
@@ -506,9 +568,6 @@ pub(crate) fn spawn_detached_ai_queue_worker_if_needed(force_now: bool) -> bool 
         if !is_auto_call_transcription_enabled(&conn) {
             return false;
         }
-        if get_unlocked_available_agents(&conn).is_empty() {
-            return false;
-        }
     }
     let Ok(exe_path) = std::env::current_exe() else {
         return false;
@@ -518,7 +577,7 @@ pub(crate) fn spawn_detached_ai_queue_worker_if_needed(force_now: bool) -> bool 
     if force_now {
         cmd.arg("--force-now");
     }
-    cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS_FLAG);
+    cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS_FLAG | 0x00000040); // IDLE_PRIORITY_CLASS: 본체 동작 방해 방지
     cmd.spawn().is_ok()
 }
 
@@ -658,30 +717,52 @@ pub(crate) fn get_ai_queue_dashboard_status(
             let mut stage: u8 = 1;
             let mut user_req = String::new();
 
+            let md_raw_opt = if md_path.exists() {
+                fs::read_to_string(&md_path).ok()
+            } else {
+                None
+            };
+            let has_asr_and_post = if let Some(ref md_raw) = md_raw_opt {
+                if is_voice_memo {
+                    true
+                } else {
+                    md_raw.contains("### 음성인식엔진") && md_raw.contains("### ✨ AI 후처리")
+                }
+            } else {
+                false
+            };
+
             if let Some((st, req_str)) = transcript_meta_map.get(&safe_stem) {
-                if *st == 2 || *st == 4 {
+                if (*st == 2 || *st == 4) && has_asr_and_post {
                     continue;
                 }
                 stage = *st;
                 user_req = req_str.clone();
-            } else if md_path.exists() {
-                if let Ok(md_raw) = fs::read_to_string(&md_path) {
-                    let (fm, _) = parse_frontmatter_and_body_simple(&md_raw);
-                    let status = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
-                    if status == "completed" || status == "unverified" || status == "verified" {
-                        continue;
-                    }
-                    if status == "needs_revision" {
-                        stage = 3;
-                    }
-                    if let Some(r) = fm.get("user_requirement") {
-                        user_req = r.clone();
-                    }
+            } else if let Some(ref md_raw) = md_raw_opt {
+                let (fm, _) = parse_frontmatter_and_body_simple(md_raw);
+                let status = fm.get("transcript_status").map(|s| s.as_str()).unwrap_or("");
+                if (status == "completed" || status == "unverified" || status == "verified")
+                    && has_asr_and_post
+                {
+                    continue;
+                }
+                if status == "needs_revision" {
+                    stage = 3;
+                }
+                if let Some(r) = fm.get("user_requirement") {
+                    user_req = r.clone();
                 }
             }
 
             let file_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            let has_existing_script = extract_existing_valid_script_body(&md_path).is_some();
+            let has_existing_script = if is_voice_memo {
+                extract_existing_valid_script_body(&md_path).is_some()
+            } else {
+                md_raw_opt
+                    .as_ref()
+                    .map(|r| r.contains("### 음성인식엔진"))
+                    .unwrap_or(false)
+            };
             let (contact_name, rec_date, rec_time) = if is_voice_memo {
                 let (_, rec_src, r_d, r_t) = parse_voice_recording_filename_meta(&file_stem, "SM-S901N");
                 (rec_src, r_d, r_t)
@@ -705,7 +786,8 @@ pub(crate) fn get_ai_queue_dashboard_status(
     }
 
     raw_pending.sort_by(|a, b| {
-        b.3.cmp(&a.3)
+        b.8.cmp(&a.8)
+            .then_with(|| b.3.cmp(&a.3))
             .then_with(|| b.4.cmp(&a.4))
             .then_with(|| b.0.cmp(&a.0))
     });

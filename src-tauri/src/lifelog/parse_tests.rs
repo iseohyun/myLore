@@ -230,3 +230,52 @@ fn normalize_script_cleans_dirty_speaker_names() {
         "- **[00:00:00] 홍길동**: 네"
     );
 }
+
+#[test]
+fn enforce_call_script_timetag_and_speaker_rules_fixes_mm_ss_ff_and_splits_sentences() {
+    let input = "- **[00:00:05] 아정당대표번호**: 네, 정서현입니다.\n\
+                 - **[00:00:19] 나**: 접수 도와드리는 담당자입니다. 잠시 통화 가능하실까요?\n\
+                 - **[01:14:00] 아정당대표번호**: 이미 LG로 했습니다.";
+    let out = enforce_call_script_timetag_and_speaker_rules(
+        input,
+        "아정당대표번호",
+        "아정당대표번호_18333504_20261105205929",
+        Some(90.0),
+        None,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 4);
+    // 첫 문장: "네, 정서현입니다" -> 화자혼동 교정되어 '나'가 되며 실제 시각 [00:00:05] 유지
+    assert!(lines[0].contains("[00:00:05] 나**: 네, 정서현입니다."));
+    // 둘째 턴: 2문장으로 분할되어 [00:00:19] 및 보간 시각이 부여되고 화자는 '아정당대표번호'
+    assert!(lines[1].contains("[00:00:19] 아정당대표번호**: 접수 도와드리는 담당자입니다."));
+    assert!(lines[2].contains("아정당대표번호**: 잠시 통화 가능하실까요?"));
+    // 셋째 턴: [01:14:00]이 1시간 14분이 아니라 [00:01:14]로 복원되고 화자는 '나'로 교정
+    assert!(lines[3].contains("[00:01:14] 나**: 이미 LG로 했습니다."));
+}
+
+#[test]
+fn slot_a_and_slot_b_produce_distinct_dual_ab_scripts() {
+    let input = "- **[00:00:05] 상담사**: 안녕하세요 고객님. 본인 확인 도와드리겠습니다. 잠시 통화 가능하실까요?";
+    let out_a = enforce_call_script_timetag_and_speaker_rules(
+        input,
+        "상담사",
+        "상담사_15880000_20261106100000",
+        Some(30.0),
+        None,
+    );
+    let out_b = enforce_call_script_timetag_and_speaker_rules_slot_b(
+        input,
+        "상담사",
+        "상담사_15880000_20261106100000",
+        Some(30.0),
+    );
+    // Slot A(min_sentence_chars=6)는 짧은 인사말까지 세밀하게 분할하고, Slot B(min_sentence_chars=24)는 호흡 단위로 묶어 분할
+    assert!(out_a.lines().count() >= out_b.lines().count());
+    assert_ne!(out_a, out_b);
+}
+
+
+
+
+

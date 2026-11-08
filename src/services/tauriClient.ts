@@ -1,69 +1,25 @@
 /**
  * @file tauriClient.ts
- * @description Rust 백엔드 `#[tauri::command]` 56개에 대응하는 `invoke()` 래퍼 함수 모음 및 비-Tauri 브라우저 미리보기 폴백.
+ * @description Rust 백엔드 `#[tauri::command]` 94개에 대응하는 `invoke()` 래퍼 함수 모음 및 비-Tauri 브라우저 미리보기 폴백.
  */
 import { invoke } from '@tauri-apps/api/core';
 import {
-  BaseFolderConfig,
-  BaseFolderRole,
-  BatchScanSummary,
-  CallAiTranscriptionStats,
-  CallApprovalItem,
-  DetachedPreviewState,
-  DocumentPayload,
-  FileNode,
-  FinanceTransaction,
-  GeminiApiKeyStatus,
-  GoogleCalendarSyncResult,
-  GoogleCalendarSyncStatus,
-  LifelogMessage,
-  LocationMovementSummary,
-  MediaInboxItem,
-  MediaOriginRegistrySummary,
-  MobilePairingPayload,
-  MobileSyncProgressPayload,
-  MultiLlmProvidersStatus,
-  MyLoreAppSettings,
-  PcActivitySummaryPayload,
-  ScanProgressPayload,
-  SearchMatchItem,
-  ServiceLogsPayload,
-  TaskPriorityCode,
-  TrashedFileRecord,
-  VaultTemplateItem,
+  BaseFolderConfig, BaseFolderRole, BatchScanSummary, CallAiTranscriptionStats, CallApprovalItem,
+  DetachedPreviewState, DocumentPayload, FileNode, FinanceTransaction, GeminiApiKeyStatus,
+  GoogleCalendarSyncResult, GoogleCalendarSyncStatus, LifelogMessage, LocationMovementSummary,
+  MediaInboxItem, MediaOriginRegistrySummary, MobilePairingPayload, MobileSyncProgressPayload,
+  MultiLlmProvidersStatus, MyLoreAppSettings, PcActivitySummaryPayload, ScanProgressPayload,
+  SearchMatchItem, ServiceLogsPayload, TaskPriorityCode, TrashedFileRecord, VaultTemplateItem,
 } from '../types/mylore';
 
-const isTauriEnv = (): boolean => {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-};
+const isTauriEnv = (): boolean => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 // 브라우저(비 Tauri) 미리보기 전용 기본값. 실제 앱에서는 백엔드(db.rs)가
 // `%USERPROFILE%\Documents\myLore\{Data,Diary,Projects}`를 기본 베이스 폴더로 등록합니다.
 export const DEFAULT_BASE_FOLDERS: BaseFolderConfig[] = [
-  {
-    id: 'base-data-1',
-    role: 'data',
-    path: '%USERPROFILE%\\Documents\\myLore\\Data',
-    label: '데이터 (아카이브)',
-    purpose: '과거 문서, 위키, 미디어 원본 아카이브 및 분류 대기 문서',
-    enabled: true,
-  },
-  {
-    id: 'base-diary-1',
-    role: 'diary',
-    path: '%USERPROFILE%\\Documents\\myLore\\Diary',
-    label: '일기',
-    purpose: '매일의 작업/일상 기록 및 구글 캘린더 1:1 동기화 폴더',
-    enabled: true,
-  },
-  {
-    id: 'base-projects-1',
-    role: 'projects',
-    path: '%USERPROFILE%\\Documents\\myLore\\Projects',
-    label: '프로젝트',
-    purpose: '폴더별 main.md 기반 프로젝트 관리 폴더',
-    enabled: true,
-  },
+  { id: 'base-data-1', role: 'data', path: '%USERPROFILE%\\Documents\\myLore\\Data', label: '데이터 (아카이브)', purpose: '과거 문서, 위키, 미디어 원본 아카이브 및 분류 대기 문서', enabled: true },
+  { id: 'base-diary-1', role: 'diary', path: '%USERPROFILE%\\Documents\\myLore\\Diary', label: '일기', purpose: '매일의 작업/일상 기록 및 구글 캘린더 1:1 동기화 폴더', enabled: true },
+  { id: 'base-projects-1', role: 'projects', path: '%USERPROFILE%\\Documents\\myLore\\Projects', label: '프로젝트', purpose: '폴더별 main.md 기반 프로젝트 관리 폴더', enabled: true },
 ];
 
 export async function getBaseFolders(): Promise<BaseFolderConfig[]> {
@@ -233,19 +189,32 @@ export async function toggleWindowFullscreen(): Promise<boolean> {
   }
 }
 
-export async function searchInFiles(query: string): Promise<SearchMatchItem[]> {
+export async function searchInFiles(
+  query: string,
+  useRegex?: boolean
+): Promise<SearchMatchItem[]> {
   if (isTauriEnv()) {
-    return await invoke<SearchMatchItem[]>('search_in_files', { query });
+    return await invoke<SearchMatchItem[]>('search_in_files', {
+      query,
+      useRegex: Boolean(useRegex),
+    });
   }
   return [];
 }
 
 export async function replaceInFiles(
   query: string,
-  replacement: string
+  replacement: string,
+  useRegex?: boolean,
+  useEscape?: boolean
 ): Promise<number> {
   if (isTauriEnv()) {
-    return await invoke<number>('replace_in_files', { query, replacement });
+    return await invoke<number>('replace_in_files', {
+      query,
+      replacement,
+      useRegex: Boolean(useRegex),
+      useEscape: useEscape ?? true,
+    });
   }
   return 0;
 }
@@ -608,21 +577,13 @@ export async function getMobileSyncProgressState(): Promise<MobileSyncProgressPa
   return null;
 }
 
-export async function getAllLifelogMessages(
-  limit?: number
-): Promise<LifelogMessage[]> {
-  if (isTauriEnv()) {
-    return await invoke<LifelogMessage[]>('get_all_lifelog_messages', {
-      limit: limit ?? 4000,
-    });
-  }
+export async function getAllLifelogMessages(limit?: number): Promise<LifelogMessage[]> {
+  if (isTauriEnv()) return await invoke<LifelogMessage[]>('get_all_lifelog_messages', { limit: limit ?? 4000 });
   return [];
 }
 
 export async function getMobileContactsMap(): Promise<Record<string, string>> {
-  if (isTauriEnv()) {
-    return await invoke<Record<string, string>>('get_mobile_contacts_map');
-  }
+  if (isTauriEnv()) return await invoke<Record<string, string>>('get_mobile_contacts_map');
   return {};
 }
 
@@ -630,22 +591,12 @@ export const DEFAULT_CONTACT_PROFILE_TEMPLATE =
   '이 사람의 호칭(복수 가능): \n나를 부르는 호칭: \n소속 모임: \n이 사람은?(직업, 사는곳, 이미지, ): ';
 
 export async function getContactAiProfiles(): Promise<Record<string, string>> {
-  if (isTauriEnv()) {
-    return await invoke<Record<string, string>>('get_contact_ai_profiles');
-  }
+  if (isTauriEnv()) return await invoke<Record<string, string>>('get_contact_ai_profiles');
   return {};
 }
 
-export async function saveContactAiProfile(
-  contactName: string,
-  profileText: string
-): Promise<Record<string, string>> {
-  if (isTauriEnv()) {
-    return await invoke<Record<string, string>>('save_contact_ai_profile', {
-      contactName,
-      profileText,
-    });
-  }
+export async function saveContactAiProfile(contactName: string, profileText: string): Promise<Record<string, string>> {
+  if (isTauriEnv()) return await invoke<Record<string, string>>('save_contact_ai_profile', { contactName, profileText });
   return { [contactName]: profileText };
 }
 
@@ -706,84 +657,44 @@ export async function getCallRecordingPlayInfo(params: {
 }
 
 export async function transcribeSingleCallItem(params: {
-  roomOrSender: string;
-  attachmentUuid?: string | null;
-  userRequirement?: string | null;
+  roomOrSender: string; attachmentUuid?: string | null; userRequirement?: string | null;
 }): Promise<DocumentPayload> {
   if (isTauriEnv()) {
     return await invoke<DocumentPayload>('transcribe_single_call_item', {
-      roomOrSender: params.roomOrSender,
-      attachmentUuid: params.attachmentUuid ?? null,
-      userRequirement: params.userRequirement ?? null,
+      roomOrSender: params.roomOrSender, attachmentUuid: params.attachmentUuid ?? null, userRequirement: params.userRequirement ?? null,
     });
   }
   throw new Error('Tauri 환경에서만 동작합니다.');
 }
 
 export async function updateCallTranscriptStage(params: {
-  roomOrSender: string;
-  attachmentUuid?: string | null;
-  stage: number;
-  userRequirement?: string | null;
+  roomOrSender: string; attachmentUuid?: string | null; stage: number; userRequirement?: string | null;
 }): Promise<DocumentPayload> {
   if (isTauriEnv()) {
     return await invoke<DocumentPayload>('update_call_transcript_stage', {
-      roomOrSender: params.roomOrSender,
-      attachmentUuid: params.attachmentUuid ?? null,
-      stage: params.stage,
-      userRequirement: params.userRequirement ?? null,
+      roomOrSender: params.roomOrSender, attachmentUuid: params.attachmentUuid ?? null, stage: params.stage, userRequirement: params.userRequirement ?? null,
     });
   }
   throw new Error('Tauri 환경에서만 동작합니다.');
 }
 
 export async function sendMobileUdpWakeBroadcast(): Promise<string> {
-  if (isTauriEnv()) {
-    return await invoke<string>('send_mobile_udp_wake_broadcast');
-  }
+  if (isTauriEnv()) return await invoke<string>('send_mobile_udp_wake_broadcast');
   return 'UDP 브로드캐스트 송출 완료';
 }
 
 export async function getGeminiApiKeyStatus(): Promise<GeminiApiKeyStatus> {
-  if (isTauriEnv()) {
-    return await invoke<GeminiApiKeyStatus>('get_gemini_api_key_status');
-  }
-  return {
-    hasKey: false,
-    maskedKey: '',
-    modelName: 'gemini-3.8-flash',
-    lastVerifiedAt: '',
-    storageLocation: '%APPDATA%\\com.iseohyun.mylore\\gemini_secret.json',
-  };
+  if (isTauriEnv()) return await invoke<GeminiApiKeyStatus>('get_gemini_api_key_status');
+  return { hasKey: false, maskedKey: '', modelName: 'gemini-3.8-flash', lastVerifiedAt: '', storageLocation: '%APPDATA%\\com.iseohyun.mylore\\gemini_secret.json' };
 }
 
-export async function saveAndVerifyGeminiApiKey(
-  apiKey: string
-): Promise<GeminiApiKeyStatus> {
-  if (isTauriEnv()) {
-    return await invoke<GeminiApiKeyStatus>('save_and_verify_gemini_api_key', {
-      apiKey,
-    });
-  }
-  return {
-    hasKey: Boolean(apiKey.trim()),
-    maskedKey: apiKey.trim() ? 'AIzaSy••••••••••••••••' : '',
-    modelName: 'gemini-3.8-flash',
-    lastVerifiedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
-    storageLocation: '%APPDATA%\\com.iseohyun.mylore\\gemini_secret.json',
-  };
+export async function saveAndVerifyGeminiApiKey(apiKey: string): Promise<GeminiApiKeyStatus> {
+  if (isTauriEnv()) return await invoke<GeminiApiKeyStatus>('save_and_verify_gemini_api_key', { apiKey });
+  return { hasKey: Boolean(apiKey.trim()), maskedKey: apiKey.trim() ? 'AIzaSy••••••••••••••••' : '', modelName: 'gemini-3.8-flash', lastVerifiedAt: '', storageLocation: '%APPDATA%\\com.iseohyun.mylore\\gemini_secret.json' };
 }
 
-export async function transcribeLocalAudioFile(
-  audioPath: string,
-  contactName: string
-): Promise<string> {
-  if (isTauriEnv()) {
-    return await invoke<string>('transcribe_local_audio_file', {
-      audioPath,
-      contactName,
-    });
-  }
+export async function transcribeLocalAudioFile(audioPath: string, contactName: string): Promise<string> {
+  if (isTauriEnv()) return await invoke<string>('transcribe_local_audio_file', { audioPath, contactName });
   return '데모 환경 통화 녹음 스크립트 변환 결과입니다.';
 }
 
@@ -807,6 +718,68 @@ export async function resolveKakaoUpdateRequest(
   action: 'dismiss' | 'mark_auto_channel' | 'clear_all'
 ): Promise<import('../types/mylore').KakaoUpdateRequestItem[]> {
   if (isTauriEnv()) return await invoke('resolve_kakao_update_request', { roomName, action });
+  return [];
+}
+
+export async function syncContactPersonMarkdownFiles(): Promise<import('../types/mylore').ContactPersonDocInfo[]> {
+  if (isTauriEnv()) return await invoke('sync_contact_person_markdown_files');
+  return [];
+}
+
+export async function openContactPersonDocument(contactName: string): Promise<DocumentPayload> {
+  if (isTauriEnv()) return await invoke<DocumentPayload>('open_contact_person_document', { contactName });
+  throw new Error('Tauri runtime required');
+}
+
+export async function getContactPromptTournamentStatus(): Promise<import('../types/mylore').ContactPromptTournamentStatus> {
+  if (isTauriEnv()) return await invoke('get_contact_prompt_tournament_status');
+  const emptySlot = (slot: 'A' | 'B') => ({
+    slot, version: 1, promptTitle: `프롬프트 ${slot} (v1)`, promptText: '',
+    winCount: 0, lossCount: 0, consecutiveLosses: 0, lastEvolutionReason: '', updatedAt: '',
+  });
+  return { slotA: emptySlot('A'), slotB: emptySlot('B'), recentHistory: [] };
+}
+
+export async function updateContactPromptSlotManual(params: {
+  slot: 'A' | 'B'; promptTitle: string; promptText: string; reason?: string;
+}): Promise<import('../types/mylore').ContactPromptTournamentStatus> {
+  if (isTauriEnv()) return await invoke('update_contact_prompt_slot_manual', { ...params, reason: params.reason ?? null });
+  return await getContactPromptTournamentStatus();
+}
+
+export async function getContactProfileApprovals(statusFilter?: string): Promise<import('../types/mylore').ContactProfileApprovalItem[]> {
+  if (isTauriEnv()) return await invoke('get_contact_profile_approvals', { statusFilter: statusFilter ?? null });
+  return [];
+}
+
+export async function generateContactProfileAbUpdate(params: {
+  contactName: string; sourceType?: string; sourceRef?: string; rawEventText?: string;
+}): Promise<import('../types/mylore').ContactProfileApprovalItem> {
+  if (isTauriEnv()) {
+    return await invoke('generate_contact_profile_ab_update', {
+      contactName: params.contactName, sourceType: params.sourceType ?? null,
+      sourceRef: params.sourceRef ?? null, rawEventText: params.rawEventText ?? null,
+    });
+  }
+  throw new Error('Tauri runtime required');
+}
+
+export async function resolveContactProfileApproval(params: {
+  approvalId: number;
+  action: 'approve' | 'dismiss' | 'reanalyze_with_feedback' | 'approve_and_evolve_prompt';
+  chosenSlot?: 'A' | 'B';
+  finalProfileText?: string;
+  userFeedback?: string;
+}): Promise<import('../types/mylore').ContactProfileApprovalItem[]> {
+  if (isTauriEnv()) {
+    return await invoke('resolve_contact_profile_approval', {
+      approvalId: params.approvalId,
+      action: params.action,
+      chosenSlot: params.chosenSlot ?? null,
+      finalProfileText: params.finalProfileText ?? null,
+      userFeedback: params.userFeedback ?? null,
+    });
+  }
   return [];
 }
 
@@ -960,4 +933,62 @@ export async function controlAiQueueWorker(action: 'start_now' | 'stop_worker'):
   return await getAiQueueDashboardStatus();
 }
 
+export async function reanalyzeRecentPendingApprovalCalls(count = 1): Promise<CallApprovalItem[]> {
+  if (isTauriEnv()) return await invoke<CallApprovalItem[]>('reanalyze_recent_pending_approval_calls', { count });
+  return await getCallApprovalItems();
+}
 
+export async function resolveCallAbDecisionWithFeedback(params: {
+  safeStem: string; action: 'reanalyze_with_feedback' | 'approve_and_evolve_prompt';
+  chosenSlot?: 'ASR' | 'A' | 'B' | 'BOTH'; userFeedback?: string; editedScript?: string;
+}): Promise<CallApprovalItem[]> {
+  if (isTauriEnv()) {
+    return await invoke<CallApprovalItem[]>('resolve_call_ab_decision_with_feedback', {
+      safeStem: params.safeStem, action: params.action, chosenSlot: params.chosenSlot ?? null,
+      userFeedback: params.userFeedback ?? null, editedScript: params.editedScript ?? null,
+    });
+  }
+  return await getCallApprovalItems();
+}
+
+export async function analyzeSingleCallAsrAndAb(params: {
+  roomOrSender: string; attachmentUuid?: string;
+  mode?: 'asr_only' | 'asr_full' | 'asr_time_only' | 'asr_time_speaker' | 'ai_postprocess' | 'ai_postprocess_full' | 'ai_postprocess_discard_prev' | 'ai_postprocess_with_comment' | 'both';
+  editEntries?: import('../types/mylore').UserScriptEditEntry[];
+  editedPostScript?: string; userComment?: string;
+}): Promise<DocumentPayload> {
+  if (isTauriEnv()) {
+    return await invoke<DocumentPayload>('analyze_single_call_asr_and_ab', {
+      roomOrSender: params.roomOrSender, attachmentUuid: params.attachmentUuid ?? null,
+      mode: params.mode ?? 'both', editEntries: params.editEntries ?? [],
+      editedPostScript: params.editedPostScript ?? null, userComment: params.userComment ?? null,
+    });
+  }
+  throw new Error('Tauri 환경에서만 동작합니다.');
+}
+
+export async function getCallPostprocessPromptAndLog(): Promise<import('../types/mylore').CallPostprocessPromptPayload> {
+  if (isTauriEnv()) return await invoke('get_call_postprocess_prompt_and_log');
+  return { promptMarkdown: '', promptPath: 'mobile/calls/postprocess_prompt.md', editLogMarkdown: '', editLogPath: 'mobile/calls/postprocess_user_edit_log.md' };
+}
+
+export async function saveCallPostprocessPrompt(params: {
+  promptMarkdown: string; evolveFromLog?: boolean;
+}): Promise<import('../types/mylore').CallPostprocessPromptPayload> {
+  if (isTauriEnv()) return await invoke('save_call_postprocess_prompt', { promptMarkdown: params.promptMarkdown, evolveFromLog: params.evolveFromLog ?? false });
+  return await getCallPostprocessPromptAndLog();
+}
+
+export async function confirmCallScriptWithUserEdits(params: {
+  roomOrSender: string; attachmentUuid?: string; originalPostScript?: string; finalPostScript?: string;
+  editEntries?: import('../types/mylore').UserScriptEditEntry[];
+}): Promise<DocumentPayload> {
+  if (isTauriEnv()) {
+    return await invoke<DocumentPayload>('confirm_call_script_with_user_edits', {
+      roomOrSender: params.roomOrSender, attachmentUuid: params.attachmentUuid ?? null,
+      originalPostScript: params.originalPostScript ?? null, finalPostScript: params.finalPostScript ?? null,
+      editEntries: params.editEntries ?? [],
+    });
+  }
+  throw new Error('Tauri 환경에서만 동작합니다.');
+}

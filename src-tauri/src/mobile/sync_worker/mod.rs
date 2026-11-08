@@ -36,6 +36,7 @@ pub(crate) enum SyncWorkerJob {
     },
     CallLogs {
         dev_id: String,
+        #[allow(dead_code)]
         dev_name: String,
         items: Vec<(String, String, String, i64, i64)>, // (number, name, call_type, duration_sec, ts)
     },
@@ -65,6 +66,7 @@ pub(crate) enum SyncWorkerJob {
         contact_label: String,
         transcript_text: String,
         audio_bytes: Vec<u8>,
+        #[allow(dead_code)]
         now_ms: i64,
     },
     Media {

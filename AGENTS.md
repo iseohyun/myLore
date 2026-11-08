@@ -10,29 +10,29 @@ Tauri v2 데스크톱 앱: **Rust 백엔드(`src-tauri/src/`) + React/TypeScript
 개인 지식 관리(마크다운 볼트, `mylore://` UUID 링크), 일기/구글 캘린더, 모바일 라이프로그(카톡·문자·통화·녹음·헬스), 가계부, Gemini 통화 녹음 스크립트화.
 안드로이드 동반 앱은 별도 저장소 `c:\git\myLoreSync`(Kotlin)이며, 로컬 HTTP(포트 18443)로 데이터를 보냅니다.
 
-## 2. 규모 (2026-10-31 기준)
+## 2. 규모 (2026-11-07 기준)
 
 | 영역 | 파일 | 줄 수 | 비고 |
 |---|---|---|---|
-| Rust 백엔드 | 46 | 약 13,700 | 파일당 최대 약 880줄 (단위 테스트 26개 / 3개 파일 포함) |
-| TSX/TS 프론트엔드 | 42 | 약 15,200 | `App.tsx` (279줄) + 컴포넌트 26개(`src/components/**`) + 훅 9개(`src/hooks/**`) — 모든 파일 ≤ 920줄 |
-| CSS | 1 | 약 1,600 | `src/styles/app.css` |
+| Rust 백엔드 | 52 | 약 27,370 | 모든 파일 ≤ 997줄 (단위 테스트 29개 / 3개 파일 포함, 컴파일 경고 0개) |
+| TSX/TS 프론트엔드 | 61 | 약 33,900 | `App.tsx` (413줄) + 컴포넌트 45개(`src/components/**`) + 훅 9개(`src/hooks/**`) — 모든 파일 ≤ 995줄 |
+| CSS | 1 | 약 2,000 | `src/styles/app.css` |
 
 ## 3. 진입점과 데이터 흐름
 
 ```
-[UI] src/main.tsx → src/App.tsx (279줄: DetachedPreviewWindowView 분기 + MainApp 조합)
+[UI] src/main.tsx → src/App.tsx (413줄: DetachedPreviewWindowView 분기 + MainApp 조합)
         ├─ hooks/      useFileTree · useLifelogAudio · useDocuments · useDocumentActions ·
         │              useLifelogAndFinance · useEditorCommands · useDetachedPreviewAndSettings ·
         │              useAppStartup · useKeybindings
-        ├─ components/ header/ · dashboards/(Diary, Finance, Lifelog, Settings, AiQueueSection, ApprovalDashboard, LogDashboard) · editor/ · sidebar/(RightSidebar, ApprovalSidebarContent, MobileLifelogSidebar, SidebarSpecialTabs) · footer/ · modals/ · window/
+        ├─ components/ header/ · dashboards/(Diary, Finance, Lifelog, ContactsDashboardView, Settings(10개 서브 대시보드·기본 설정 트리), HelpDashboard, LoginDashboard, AiQueueSection, VoiceprintSection(2탭 서버/Sync 녹음), ApprovalDashboard, CallScriptAbComparisonPanel(통화 ASR/후처리 병렬 비교·동기 스크롤·Space 재생·대사 분리/결합), callScriptCompareUtils, ContactProfileApprovalPanel, LogDashboard) · editor/ · sidebar/(ActivityBar, RightSidebar, SidebarSearchPanel, ApprovalSidebarContent, MobileLifelogSidebar, SidebarSpecialTabs) · footer/ · modals/(ContextMenus, CallScriptCompareModal 등) · window/
         │  invoke("snake_case_command")      (래퍼: src/services/tauriClient.ts, 타입: src/types/mylore.ts)
         ▼
-[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 81개 등록)
+[Rust] src-tauri/src/main.rs → lib.rs::run()  (generate_handler! 에 커맨드 98개 등록)
         ├─ vault/      문서·스캔·마크다운·휴지통
         ├─ calendar_sync.rs Google Calendar API v3 양방향 동기화(OAuth 2.0 PKCE 로컬 콜백, 신규 일정 업로드, 시작 시/F5 일정 다운로드)
-        ├─ lifelog/    연락처(인물 서술 AI 프로필·소속 모임 컨텍스트 포함)·파서·녹음·카톡·백필·조회·pc_activity(ActivityWatch 연동)·media_and_location(원본 해시 DB·GPS/Wi-Fi 동선) (+ parse_tests.rs)
-        ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화·multi_llm(Claude/GPT/Grok 다중 LLM 연동 및 $ 크레딧 잔액 관리)
+        ├─ lifelog/    연락처(인원별 .md+UUID·인물 서술 AI 프로필·소속 모임·음성지문 요약 컨텍스트)·contact_evolution(단일 프롬프트 수락/수정 진화·결재)·파서·녹음·카톡·백필·조회·pc_activity(ActivityWatch 연동)·media_and_location(원본 해시 DB·GPS/Wi-Fi 동선) (+ parse_tests.rs)
+        ├─ gemini/     Gemini API 클라이언트(ureq + native-tls)·자동 스크립트화·multi_llm(Claude/GPT/Grok 다중 LLM 연동 및 $ 크레딧 잔액 관리)·voiceprint(2종 오픈소스 CAM++·ResNet34 교차검증 음성지문)·call_ab_review(통화 녹음 ASR+성문·후처리 재작성·폐기 옵션)·postprocess_pipeline(후처리 프롬프트·사용자 편집 로그·4단계 상태·ASR 부분 재처리)
         ├─ mobile/     페어링(현재 Wi-Fi SSID·비밀번호 자동 탐지)·인증·저장소·진행률·헬스·ack_state (+ pairing_tests.rs)
         │   ├─ http_server/  URL 라우팅(mod.rs) → routes_core / routes_sync / routes_media (session-plan, complete, ack, location-logs 포함)
         │   └─ sync_worker/  큐·배치 루프(mod.rs) → jobs_messages / jobs_meta / jobs_files

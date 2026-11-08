@@ -20,6 +20,7 @@ export interface FileTreePanelProps {
   setTreeFilter: React.Dispatch<React.SetStateAction<string>>;
   activeTreeRoleTab: BaseFolderRole;
   setActiveTreeRoleTab: React.Dispatch<React.SetStateAction<BaseFolderRole>>;
+  roles?: BaseFolderRole[];
   handleMoveRole: (
     targetRole: BaseFolderRole,
     sourcePath?: string,
@@ -55,8 +56,8 @@ export interface FileTreePanelProps {
 export function FileTreePanel({
   baseFolders,
   treeFilter,
-  setTreeFilter,
   activeTreeRoleTab,
+  roles,
   handleMoveRole,
   trashHistory,
   handleRestoreTrashedDocument,
@@ -625,16 +626,15 @@ export function FileTreePanel({
     );
   };
 
+  const visibleRoleList: BaseFolderRole[] =
+    roles && roles.length > 0
+      ? roles
+      : activeTreeRoleTab === 'diary'
+        ? ['diary']
+        : ['projects', 'data', 'git'];
+
   return (
     <>
-      <input
-        className="input-field"
-        style={{ marginBottom: '10px' }}
-        placeholder="파일 또는 제목 필터..."
-        value={treeFilter}
-        onChange={(e) => setTreeFilter(e.target.value)}
-      />
-
       {trashHistory.length > 0 && (
         <button
           className="toolbar-btn"
@@ -652,7 +652,7 @@ export function FileTreePanel({
         </button>
       )}
 
-      {([activeTreeRoleTab] as BaseFolderRole[]).map(
+      {visibleRoleList.map(
         (roleKey) => {
           const roleLabel =
             roleKey === 'projects'
